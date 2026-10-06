@@ -4,6 +4,8 @@
 
 <br/>
 
+
+
 # Trade Journal
 
 Broker sync, deep analytics, a P&L calendar, trade replay, prop firm tracking, daily journaling with voice dictation, and AI reflection. Run it locally, or use it free inside LuxAlgo.
@@ -30,6 +32,46 @@ _Dashboard with generated demo data. All screenshots below use synthetic records
 > ⚠️ **Early release.** APIs and schema may still move before 1.0. Parser validation varies by format, from synthetic fixtures to cross-checked field sources; per-format status lives in [docs/importers.md](docs/importers.md).
 
 ## Quickstart
+
+# MT5 to Notion Automated Trade Journal Sync
+
+Reconstructs closed trade positions from MetaTrader 5, clusters split-order executions (e.g., EarnForex Position Sizer entries) into unified trade setups, computes true institutional execution analytics, and synchronizes them directly into a Notion database via the Notion REST API.
+
+## Features
+
+- **Execution Clustering:** Merges multi-target split orders (TP1, TP2, runners) executed within a configurable time window into a single trade setup.
+- **Accurate P&L Math:** Captures entry commissions, exit commissions, swap fees, and broker charges down to the cent.
+- **Execution Analytics:**
+  - Realized R-Multiple ($R$) and Planned R:R ($R$)
+  - Maximum Adverse Excursion (MAE in $R$) bounded to trade lifespan
+  - Maximum Favorable Excursion (MFE in $R$)
+  - Capture Efficiency % ($\frac{\text{Realized R}}{\text{MFE}} \times 100$)
+  - Partial Exits breakdown text string
+  - Trading Session (Asia, London, NY AM, NY PM) and Day of Week
+- **Dual-Platform:** Runs natively on Windows or inside a dedicated Wine prefix on Linux.
+
+## Setup
+
+1. Copy `.env.example` to `.env` and fill in your credentials:
+   ```bash
+   cp .env.example .env
+   ```
+2. Ensure your Notion database includes the required properties (or let the script dynamically map against your existing schema).
+
+## Execution
+
+### Linux (Wine)
+```bash
+WINEPREFIX=~/.mt5 wine python mt5_notion_sync_wine.py
+```
+*(Or use the `mt5sync` alias)*
+
+### Windows
+```cmd
+pip install -r requirements.txt
+python mt5_notion_sync_wine.py
+```
+
 
 > **Prefer not to self-host?** A free hosted journal is available inside [LuxAlgo](https://app.luxalgo.com), alongside Quant Charts. Everything below is for running your own copy; this README describes the code in this checkout. See the [platform announcement](https://www.luxalgo.com/blog/luxalgo-charting-platform/) for hosted product context.
 

@@ -20,8 +20,24 @@ data/
 .env
 .env.local
 .env*.local
-
+*.env
 # misc
 .DS_Store
 *.log
 coverage/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+
+# IDE / Editor configs
+.vscode/
+.idea/
+*.swp
+*~
