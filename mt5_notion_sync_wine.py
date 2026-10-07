@@ -1,4 +1,5 @@
 import os
+import sqlite3
 import time
 import requests
 from datetime import datetime, timedelta, timezone
@@ -352,6 +353,106 @@ def get_existing_cluster_ids():
 
     return existing
 
+DB_PATH = os.path.join("apps", "web", "data", "journal.db")
+
+def save_to_sqlite(trade, notion_page_id=None, notion_url=None):
+    """Saves or updates a trade directly in the local LuxAlgo journal database."""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        # Flush any pending WAL frames into the main database
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        cur = conn.cursor()
+
+        # 1. Map direction ('BUY' -> 'long', 'SELL' -> 'short')
+        direction = "long" if str(trade.get("direction", "")).upper() in ["BUY", "LONG"] else "short"
+
+        # 2. Map status ('open', 'win', 'loss', 'breakeven')
+        net_pnl = float(trade.get("net_pnl", 0.0))
+        if not trade.get("close_time"):
+            status = "open"
+        elif net_pnl > 0:
+            status = "win"
+        elif net_pnl < 0:
+            status = "loss"
+        else:
+            status = "breakeven"
+
+        # 3. Default note only used for brand new trades
+        notes_content = trade.get("partials_breakdown", "")
+        if notion_url:
+            notes_content = f"Notion: {notion_url}\n{notes_content}"
+
+        query = """
+        INSERT INTO trades (
+            key, account_id, symbol, direction, status,
+            opened_at, closed_at, quantity, open_quantity,
+            avg_entry, avg_exit, gross_pnl, fees, net_pnl,
+            notes, notion_page_id, notion_url,
+            realized_r, planned_r, mae_r, mfe_r, capture_eff,
+            risk_percent, exit_reason, partials_breakdown, tickets
+        ) VALUES (
+            :key, :account_id, :symbol, :direction, :status,
+            :opened_at, :closed_at, :quantity, :open_quantity,
+            :avg_entry, :avg_exit, :gross_pnl, :fees, :net_pnl,
+            :notes, :notion_page_id, :notion_url,
+            :realized_r, :planned_r, :mae_r, :mfe_r, :capture_eff,
+            :risk_percent, :exit_reason, :partials_breakdown, :tickets
+        )
+        ON CONFLICT(key) DO UPDATE SET
+            avg_exit = excluded.avg_exit,
+            closed_at = excluded.closed_at,
+            status = excluded.status,
+            net_pnl = excluded.net_pnl,
+            gross_pnl = excluded.gross_pnl,
+            -- PRESERVE USER NOTES: If notes already exist in DB, keep them untouched
+            notes = CASE 
+                WHEN trades.notes IS NOT NULL AND TRIM(trades.notes) != '' THEN trades.notes 
+                ELSE excluded.notes 
+            END,
+            notion_page_id = COALESCE(trades.notion_page_id, excluded.notion_page_id),
+            notion_url = COALESCE(trades.notion_url, excluded.notion_url),
+            realized_r = excluded.realized_r,
+            mae_r = excluded.mae_r,
+            mfe_r = excluded.mfe_r,
+            capture_eff = excluded.capture_eff;
+        """
+
+        params = {
+            "key": str(trade["cluster_id"]),
+            "account_id": "mt5-main",
+            "symbol": str(trade["symbol"]),
+            "direction": direction,
+            "status": status,
+            "opened_at": str(trade["open_time"]),
+            "closed_at": str(trade["close_time"]) if trade.get("close_time") else None,
+            "quantity": float(trade.get("volume", 0.0)),
+            "open_quantity": 0.0,
+            "avg_entry": float(trade.get("entry_price", 0.0)),
+            "avg_exit": float(trade.get("exit_price", 0.0)) if trade.get("exit_price") is not None else None,
+            "gross_pnl": net_pnl,
+            "fees": 0.0,
+            "net_pnl": net_pnl,
+            "notes": notes_content,
+            "notion_page_id": notion_page_id,
+            "notion_url": notion_url,
+            "realized_r": trade.get("realized_r"),
+            "planned_r": trade.get("planned_r"),
+            "mae_r": trade.get("mae_r"),
+            "mfe_r": trade.get("mfe_r"),
+            "capture_eff": trade.get("capture_eff"),
+            "risk_percent": trade.get("risk_percent"),
+            "exit_reason": str(trade.get("exit_reason", "")),
+            "partials_breakdown": str(trade.get("partials_breakdown", "")),
+            "tickets": str(trade.get("tickets", ""))
+        }
+
+        cur.execute(query, params)
+        conn.commit()
+        conn.close()
+        print(f"[SQLite] Synced: {trade['cluster_id']} to journal.db")
+    except Exception as e:
+        print(f"[SQLite] Error saving trade {trade.get('cluster_id')}: {e}")
+
 def push_to_notion(trade, available_props, max_retries=3):
     url = "https://api.notion.com/v1/pages"
 
@@ -399,19 +500,21 @@ def push_to_notion(trade, available_props, max_retries=3):
         try:
             res = session.post(url, json=payload, timeout=15)
             if res.status_code == 200:
-                print(f"Synced: {trade['cluster_id']} | Net: ${trade['net_pnl']} | MAE: {trade.get('mae_r', 'N/A')}R | MFE: {trade.get('mfe_r', 'N/A')}R")
+                data = res.json()
+                print(f"[Notion] Synced: {trade['cluster_id']} | Net: ${trade['net_pnl']} | MAE: {trade.get('mae_r', 'N/A')}R | MFE: {trade.get('mfe_r', 'N/A')}R")
                 time.sleep(0.4)
-                return True
+                return {"id": data.get("id"), "url": data.get("url")}
             elif res.status_code == 429:
                 retry_after = int(res.headers.get("Retry-After", 2))
                 time.sleep(retry_after)
             else:
-                print(f"Failed {trade['cluster_id']} (HTTP {res.status_code}): {res.text}")
-                return False
+                print(f"[Notion] Failed {trade['cluster_id']} (HTTP {res.status_code}): {res.text}")
+                return None
         except requests.exceptions.RequestException:
             time.sleep(1)
 
-    return False
+    return None
+
 
 if __name__ == "__main__":
     init_mt5()
@@ -424,12 +527,22 @@ if __name__ == "__main__":
     schema = get_database_properties()
     existing = get_existing_cluster_ids()
 
-    synced_count = 0
+    synced_notion_count = 0
     for t in trade_ideas:
-        if t['cluster_id'] not in existing:
-            if push_to_notion(t, schema):
-                synced_count += 1
+        cid = t['cluster_id']
+        if cid not in existing:
+            # 1. New trade: Push to Notion
+            notion_info = push_to_notion(t, schema)
+            if notion_info:
+                synced_notion_count += 1
+                # 2. Write to SQLite with the Notion page link
+                save_to_sqlite(t, notion_page_id=notion_info.get("id"), notion_url=notion_info.get("url"))
+            else:
+                # If Notion network failed, still record it locally
+                save_to_sqlite(t)
         else:
-            print(f"Skipping {t['cluster_id']} (Already synced)")
+            print(f"[Notion] Skipping {cid} (Already in Notion)")
+            # Trade already in Notion, ensure it's recorded in the local SQLite DB
+            save_to_sqlite(t)
 
-    print(f"\nDone! Successfully synced {synced_count} setups.")
+    print(f"\nDone! Synced {synced_notion_count} new trades to Notion, and updated local journal.db.")
