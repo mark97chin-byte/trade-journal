@@ -18,6 +18,15 @@ export const useApi = <T>(url: string | null): ApiState<T> => {
   const [tick, setTick] = useState(0);
   const [dataUrl, setDataUrl] = useState(url);
 
+  const refresh = useCallback(() => setTick((value) => value + 1), []);
+
+  // Listen for global sync events to update data on screen in-place
+  useEffect(() => {
+    const handleGlobalRefresh = () => refresh();
+    window.addEventListener("journal:refresh", handleGlobalRefresh);
+    return () => window.removeEventListener("journal:refresh", handleGlobalRefresh);
+  }, [refresh]);
+
   useEffect(() => {
     if (!url) {
       setData(null);
@@ -31,32 +40,29 @@ export const useApi = <T>(url: string | null): ApiState<T> => {
     setError(null);
     const request = acquireJson<T>(url);
     request.promise
-      .then((body) => {
-        if (cancelled) return;
-        // Render fresh data as a transition so React yields to the browser mid-render
-        // instead of blocking the main thread for the whole page.
-        startTransition(() => {
-          setData(body);
-          setDataUrl(url);
-          setError(null);
-          setLoading(false);
-        });
-      })
-      .catch((cause: unknown) => {
-        if (!cancelled) {
-          setError(cause instanceof Error ? cause.message : "Network error");
-          setData(null);
-          setDataUrl(url);
-          setLoading(false);
-        }
+    .then((body) => {
+      if (cancelled) return;
+      startTransition(() => {
+        setData(body);
+        setDataUrl(url);
+        setError(null);
+        setLoading(false);
       });
+    })
+    .catch((cause: unknown) => {
+      if (!cancelled) {
+        setError(cause instanceof Error ? cause.message : "Network error");
+        setData(null);
+        setDataUrl(url);
+        setLoading(false);
+      }
+    });
     return () => {
       cancelled = true;
       request.release();
     };
   }, [url, tick]);
 
-  const refresh = useCallback(() => setTick((value) => value + 1), []);
   const current = dataUrl === url;
   return {
     data: current ? data : null,

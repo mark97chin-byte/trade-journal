@@ -141,6 +141,8 @@ export const trades = sqliteTable(
     stopLoss: real("stop_loss"),
     profitTarget: real("profit_target"),
     reviewedAt: text("reviewed_at"),
+    notionPageId: text("notion_page_id"),
+    notionUrl: text("notion_url"),
   },
   (table) => [
     index("trades_account_closed").on(table.accountId, table.closedAt),

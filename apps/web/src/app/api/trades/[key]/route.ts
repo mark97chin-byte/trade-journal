@@ -6,6 +6,10 @@ import { deleteExecutionsForTrades, listExecutions } from "@/server/executions";
 import { nowIso } from "@/server/ids";
 import { getTradeByKey, rowToTrade } from "@/server/trades-query";
 import { getTimeZone } from "@/server/settings";
+import { patchNotionTradePage } from "@/lib/notion-sync";
+
+export const dynamic = "force-dynamic";
+export const revalidate = 0;
 
 type Params = { params: Promise<{ key: string }> };
 
@@ -17,21 +21,21 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
   const fills = listExecutions(row.accountId, trade.executionIds);
   return ok({
     timeZone: getTimeZone(),
-    trade: {
-      ...row,
-      status: trade.status,
-      riskAmount: tradeRisk(trade),
-      realizedR: tradeR(trade),
-      plannedR: plannedR(trade),
-      contractMultiplier: trade.contractMultiplier ?? null,
-      currency:
-        db
-          .select({ currency: accounts.currency })
-          .from(accounts)
-          .where(eq(accounts.id, row.accountId))
-          .get()?.currency ?? "USD",
-    },
-    executions: fills,
+            trade: {
+              ...row,
+              status: trade.status,
+              riskAmount: tradeRisk(trade),
+            realizedR: tradeR(trade),
+            plannedR: plannedR(trade),
+            contractMultiplier: trade.contractMultiplier ?? null,
+            currency:
+            db
+            .select({ currency: accounts.currency })
+            .from(accounts)
+            .where(eq(accounts.id, row.accountId))
+            .get()?.currency ?? "USD",
+            },
+            executions: fills,
   });
 });
 
@@ -56,28 +60,36 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
   for (const field of ["stopLoss", "profitTarget", "rating"] as const)
     requireValue(
       body[field] == null || (typeof body[field] === "number" && Number.isFinite(body[field])),
-      `Invalid ${field}.`,
+                 `Invalid ${field}.`,
     );
   requireValue(
     body.rating == null || (Number.isInteger(body.rating) && body.rating >= 1 && body.rating <= 5),
-    "Rating must be 1–5.",
+               "Rating must be 1–5.",
   );
   requireValue(
     body.notes == null || (typeof body.notes === "string" && body.notes.length <= 100000),
-    "Notes must be at most 100,000 characters.",
+               "Notes must be at most 100,000 characters.",
   );
   for (const field of ["tags", "mistakes"] as const)
     requireValue(
       body[field] === undefined ||
-        (Array.isArray(body[field]) &&
-          body[field]!.length <= 100 &&
-          body[field]!.every((s) => typeof s === "string" && s.length <= 200)),
-      `Invalid ${field}.`,
+      (Array.isArray(body[field]) &&
+      body[field]!.length <= 100 &&
+      body[field]!.every((s) => typeof s === "string" && s.length <= 200)),
+                 `Invalid ${field}.`,
     );
-  requireValue(
-    !body.playbookId || db.select().from(playbooks).where(eq(playbooks.id, body.playbookId)).get(),
-    "Playbook not found.",
-  );
+
+  let selectedPlaybookTitle: string | null | undefined = undefined;
+  if (body.playbookId !== undefined) {
+    if (body.playbookId) {
+      const pb = db.select().from(playbooks).where(eq(playbooks.id, body.playbookId)).get();
+      requireValue(Boolean(pb), "Playbook not found.");
+      selectedPlaybookTitle = pb?.title ?? pb?.name ?? body.playbookId;
+    } else {
+      selectedPlaybookTitle = null;
+    }
+  }
+
   const patch: Partial<typeof trades.$inferInsert> = {};
   if (body.notes !== undefined) patch.notes = body.notes;
   if (body.tags !== undefined) patch.tagsJson = JSON.stringify(body.tags);
@@ -89,7 +101,24 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
   if (body.reviewed !== undefined) patch.reviewedAt = body.reviewed ? nowIso() : null;
 
   if (!Object.keys(patch).length) return ok({ updated: true });
+
+  // 1. Update SQLite
   db.update(trades).set(patch).where(eq(trades.key, decoded)).run();
+
+  // 2. Sync to Notion if this trade is linked to a Notion page
+  const notionPageId = (row as any).notionPageId ?? (row as any).notion_page_id;
+  if (notionPageId) {
+    void patchNotionTradePage(notionPageId, {
+      rating: body.rating,
+      reviewed: body.reviewed,
+      tags: body.tags,
+      mistakes: body.mistakes,
+      playbook: selectedPlaybookTitle,
+      stopLoss: body.stopLoss,
+      profitTarget: body.profitTarget,
+    });
+  }
+
   return ok({ updated: true });
 });
 
@@ -97,7 +126,6 @@ export const DELETE = handler(async (_request: Request, { params }: Params) => {
   const { key } = await params;
   const row = getTradeByKey(key);
   if (!row) return bad("Trade not found", 404);
-  // Deleting a trade means deleting its executions; the rebuild removes the row.
   deleteExecutionsForTrades(row.accountId, JSON.parse(row.executionIdsJson) as string[]);
   return ok({ deleted: true });
 });
