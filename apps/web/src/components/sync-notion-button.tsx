@@ -95,7 +95,7 @@ export function SyncNotionButton({ iconOnly = false }: SyncNotionButtonProps) {
     );
 
     return (
-        <HoverHint label={tooltipLabel} side="right">
+        <HoverHint content={tooltipLabel} side="right">
         {buttonContent}
         </HoverHint>
     );

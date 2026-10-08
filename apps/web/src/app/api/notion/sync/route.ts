@@ -41,7 +41,7 @@ export async function POST() {
         const allPlaybooks = db.select().from(playbooks).all();
         const playbookMap = new Map<string, string>();
         for (const pb of allPlaybooks) {
-            const name = pb.title ?? (pb as any).name;
+            const name = pb.name;
             if (name) playbookMap.set(name.toLowerCase().trim(), pb.id);
             playbookMap.set(pb.id.toLowerCase().trim(), pb.id);
         }

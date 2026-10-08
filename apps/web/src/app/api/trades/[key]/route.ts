@@ -84,7 +84,7 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
     if (body.playbookId) {
       const pb = db.select().from(playbooks).where(eq(playbooks.id, body.playbookId)).get();
       requireValue(Boolean(pb), "Playbook not found.");
-      selectedPlaybookTitle = pb?.title ?? pb?.name ?? body.playbookId;
+      selectedPlaybookTitle = pb?.name ?? body.playbookId;
     } else {
       selectedPlaybookTitle = null;
     }
