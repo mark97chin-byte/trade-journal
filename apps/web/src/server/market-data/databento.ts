@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { RESOLUTIONS, type MarketBar } from "@/lib/market-data";
 import { MarketDataError, type MarketDataProvider } from "./provider";
 import { boundedSignal, credentials, result } from "./http";
@@ -56,32 +58,57 @@ export const databento: MarketDataProvider = {
     const startIso = new Date(Math.floor(request.from / step) * step).toISOString();
     const endIso = new Date(Math.ceil(request.to / step) * step).toISOString();
 
-    const url = new URL("https://hist.databento.com/v0/timeseries.get_range");
-    url.searchParams.set("dataset", request.dataset || "GLBX.MDP3");
-    url.searchParams.set("symbols", symbol);
-    url.searchParams.set("schema", schema);
-    url.searchParams.set("stype_in", symbol.includes(".c.") || symbol.includes(".v.") ? "continuous" : "raw_symbol");
-    url.searchParams.set("encoding", "json");
-    url.searchParams.set("pretty_px", "true");
-    url.searchParams.set("start", startIso);
-    url.searchParams.set("end", endIso);
+    // Normalize dataset identifier
+    let dataset = (request.dataset || "GLBX.MDP3").trim();
+    if (dataset.includes("GLBX.MDP3")) dataset = "GLBX.MDP3";
+    if (dataset.includes("OPRA.PILLAR")) dataset = "OPRA.PILLAR";
+    if (dataset.includes("XNAS.ITCH")) dataset = "XNAS.ITCH";
 
-    const signal = boundedSignal(request.signal);
-    const response = await fetch(url.toString(), {
-      headers: {
-        Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
-      },
-      signal,
-    });
-
-    if (!response.ok) {
-      const errText = await response.text();
-      if (response.status === 401) throw new MarketDataError("Databento authentication failed.");
-      if (response.status === 404) throw new MarketDataError(`Symbol ${symbol} not found in Databento dataset.`);
-      throw new MarketDataError(`Databento API error (${response.status}): ${errText.slice(0, 150)}`);
+    // Prepare disk cache
+    const cacheDir = path.resolve(process.cwd(), "data/cache/databento");
+    if (!fs.existsSync(cacheDir)) {
+      fs.mkdirSync(cacheDir, { recursive: true });
     }
 
-    const rawText = await response.text();
+    const safeStart = startIso.replace(/[:.]/g, "-");
+    const safeEnd = endIso.replace(/[:.]/g, "-");
+    const cacheKey = `${dataset}_${symbol}_${schema}_${safeStart}_${safeEnd}.json`;
+    const cachePath = path.join(cacheDir, cacheKey);
+
+    let rawText = "";
+
+    if (fs.existsSync(cachePath)) {
+      rawText = fs.readFileSync(cachePath, "utf8");
+    } else {
+      const url = new URL("https://hist.databento.com/v0/timeseries.get_range");
+      url.searchParams.set("dataset", dataset);
+      url.searchParams.set("symbols", symbol);
+      url.searchParams.set("schema", schema);
+      url.searchParams.set("stype_in", symbol.includes(".c.") || symbol.includes(".v.") ? "continuous" : "raw_symbol");
+      url.searchParams.set("encoding", "json");
+      url.searchParams.set("pretty_px", "true");
+      url.searchParams.set("start", startIso);
+      url.searchParams.set("end", endIso);
+
+      const signal = boundedSignal(request.signal);
+      const response = await fetch(url.toString(), {
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${apiKey}:`).toString("base64")}`,
+        },
+        signal,
+      });
+
+      if (!response.ok) {
+        const errText = await response.text();
+        if (response.status === 401) throw new MarketDataError("Databento authentication failed.");
+        if (response.status === 404) throw new MarketDataError(`Symbol ${symbol} not found in Databento dataset.`);
+        throw new MarketDataError(`Databento API error (${response.status}): ${errText.slice(0, 150)}`);
+      }
+
+      rawText = await response.text();
+      fs.writeFileSync(cachePath, rawText, "utf8");
+    }
+
     const lines = rawText.trim().split("\n");
     const bars: MarketBar[] = [];
 

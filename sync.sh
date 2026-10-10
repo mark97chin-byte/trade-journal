@@ -1,49 +1,76 @@
-#!/usr/bin/env bash
+#!/bin/bash
 set -e
 
 TABLET_IP="100.73.77.95"
-TABLET_PORT="8022"
-LOCAL_DATA="apps/web/data"
-REMOTE_DATA="~/trade-journal/apps/web/data"
+TABLET_USER="u0_a322"
+PORT="8022"
 
 echo "========================================================"
-echo "[1/5] Stopping tablet server to release SQLite locks..."
+echo "[1/4] Building Next.js on desktop..."
 echo "========================================================"
-ssh -p "$TABLET_PORT" markc@"$TABLET_IP" "pkill -f node" || true
-
-echo ""
-echo "========================================================"
-echo "[2/5] PULLING latest database (including WAL) to PC..."
-echo "========================================================"
-mkdir -p "$LOCAL_DATA"
-
-# Pull journal.db and any active journal.db-wal / journal.db-shm
-scp -P "$TABLET_PORT" "markc@$TABLET_IP:$REMOTE_DATA/journal.db*" "$LOCAL_DATA/"
-
-# Local safety backup
-cp -f "$LOCAL_DATA/journal.db" "$LOCAL_DATA/journal_backup.db"
+pnpm build
 
 echo ""
 echo "========================================================"
-echo "[3/5] Merging MT5 trades & preserving journal notes..."
+echo "[2/4] Syncing build artifacts to tablet..."
 echo "========================================================"
-python3 mt5_notion_sync_wine.py
+# Sync .next build directory; exclude cache to save bandwidth and card wear
+rsync -avz --delete \
+  --exclude="cache/" \
+  -e "ssh -p $PORT" \
+  apps/web/.next/ "$TABLET_USER@$TABLET_IP:~/trade-journal/apps/web/.next/"
+
+# Sync public directory if it exists
+if [ -d "apps/web/public" ]; then
+  rsync -avz --delete \
+    -e "ssh -p $PORT" \
+    apps/web/public/ "$TABLET_USER@$TABLET_IP:~/trade-journal/apps/web/public/"
+fi
 
 echo ""
 echo "========================================================"
-echo "[4/5] PUSHING consolidated database back to tablet..."
+echo "[3/4] Ensuring port 3000 is completely released..."
 echo "========================================================"
-# Push the consolidated main database
-scp -P "$TABLET_PORT" "$LOCAL_DATA/journal.db" "markc@$TABLET_IP:$REMOTE_DATA/journal.db"
+ssh -p $PORT "$TABLET_USER@$TABLET_IP" 'bash -s' << 'EOF'
+  tmux kill-session -t journal 2>/dev/null || true
 
-# Clean up old WAL files on tablet now that everything is merged into journal.db
-ssh -p "$TABLET_PORT" markc@"$TABLET_IP" "rm -f $REMOTE_DATA/journal.db-wal $REMOTE_DATA/journal.db-shm"
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -9 3000/tcp 2>/dev/null || true
+  fi
+  if command -v lsof >/dev/null 2>&1; then
+    lsof -ti:3000 | xargs -r kill -9 2>/dev/null || true
+  fi
+
+  pkill -9 -f 'next-server|node|pnpm' 2>/dev/null || true
+
+  for i in {1..5}; do
+    if ! ss -tuln 2>/dev/null | grep -q ':3000 ' && ! netstat -tuln 2>/dev/null | grep -q ':3000 '; then
+      echo "Port 3000 successfully freed."
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "Proceeding..."
+EOF
 
 echo ""
 echo "========================================================"
-echo "[5/5] Restarting journal server on tablet..."
+echo "[4/4] Starting fresh server in tmux..."
 echo "========================================================"
-ssh -p "$TABLET_PORT" markc@"$TABLET_IP" "cd ~/trade-journal && nohup npm run start > server.log 2>&1 &"
+ssh -p $PORT "$TABLET_USER@$TABLET_IP" 'bash -s' << 'EOF'
+  tmux new-session -d -s journal
+  tmux send-keys -t journal "cd ~/trade-journal && HOST=0.0.0.0 PORT=3000 pnpm start" C-m
+EOF
 
-echo ""
-echo "=== Sync Complete! All notes and manual edits preserved. ==="
+echo "Waiting for Next.js to initialize..."
+sleep 4
+
+# Automated HTTP Verification
+HTTP_CODE=$(ssh -p $PORT "$TABLET_USER@$TABLET_IP" "curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3000/ || true")
+if [ "$HTTP_CODE" = "200" ] || [ "$HTTP_CODE" = "307" ] || [ "$HTTP_CODE" = "308" ]; then
+  echo "Server is live and healthy (HTTP $HTTP_CODE)!"
+else
+  echo "Server started. Verify output with: ssh -p $PORT $TABLET_USER@$TABLET_IP 'tmux a -t journal'"
+fi
+
+echo "Deployment complete!"

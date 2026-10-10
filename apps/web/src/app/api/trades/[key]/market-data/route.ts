@@ -35,7 +35,7 @@ export const POST = handler(
     );
     requireValue(
       body.dataset === undefined ||
-        (typeof body.dataset === "string" && /^[a-zA-Z0-9_-]{0,80}$/.test(body.dataset)),
+        (typeof body.dataset === "string" && /^[a-zA-Z0-9._-]{0,80}$/.test(body.dataset)),
       "Invalid dataset.",
     );
     requireValue(isResolution(body.resolution), "Choose a supported candle resolution.");

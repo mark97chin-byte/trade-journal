@@ -8,7 +8,6 @@ import { binance, coinbase } from "./public-crypto";
 import { oanda } from "./oanda";
 import { csvDatasets, marketCsv } from "./csv";
 import { MarketDataError, type MarketDataProvider } from "./provider";
-import { dukascopy } from "./dukascopy";
 import { databento } from "./databento";
 const providers: MarketDataProvider[] = [
   londonStrategicEdge,
@@ -17,7 +16,6 @@ const providers: MarketDataProvider[] = [
   coinbase,
   oanda,
   marketCsv,
-  dukascopy,
   databento,
 ].sort((a, b) => a.name.localeCompare(b.name));
 export const providerFor = (id: string) => {

@@ -51,13 +51,16 @@ export function TradeMarketData({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const controller = useRef<AbortController | null>(null);
+
   useEffect(() => () => controller.current?.abort(), []);
+
   const invalidate = () => {
     controller.current?.abort();
     setBusy(false);
     setResult(null);
     setError("");
   };
+
   const load = async () => {
     if (!available.some((item) => item.id === provider) || (info?.datasets && !dataset)) return;
     controller.current?.abort();
@@ -92,6 +95,7 @@ export function TradeMarketData({
       if (!request.signal.aborted) setBusy(false);
     }
   };
+
   return (
     <div className="space-y-3">
       <Card>
@@ -339,11 +343,67 @@ export function TradeMarketData({
               dataset and plan coverage.
             </p>
           )}
-          <TradeChart trade={trade} executions={executions} />
+          <TradeChart
+            trade={trade}
+            executions={getEffectiveExecutions(trade, executions, result)}
+          />
         </>
       )}
     </div>
   );
+}
+
+function getEffectiveExecutions(
+  trade: ChartTrade,
+  executions: ChartExecution[],
+  history?: TradeMarketResult | null,
+): ChartExecution[] {
+  // 1. If discrete executions exist and price basis is valid, use them
+  if (executions.length > 0 && !history?.estimate?.priceBasisMismatch) {
+    return executions;
+  }
+
+  // 2. Synthesize fills snapped to the 1m bar averages
+  if (!history?.bars?.length || !trade.openedAt) {
+    return executions;
+  }
+
+  const openMs = Date.parse(trade.openedAt);
+  const closeMs = trade.closedAt ? Date.parse(trade.closedAt) : openMs;
+
+  // Find nearest candles to the entry and exit timestamps
+  const entryBar = history.bars.reduce((prev, curr) =>
+    Math.abs(curr.time - openMs) < Math.abs(prev.time - openMs) ? curr : prev,
+  );
+  const exitBar = history.bars.reduce((prev, curr) =>
+    Math.abs(curr.time - closeMs) < Math.abs(prev.time - closeMs) ? curr : prev,
+  );
+
+  const isShort = trade.direction
+    ? trade.direction.toLowerCase() === "short" || trade.direction.toLowerCase() === "sell"
+    : false;
+  const entryAvg = Number(((entryBar.open + entryBar.close) / 2).toFixed(2));
+  const exitAvg = Number(((exitBar.open + exitBar.close) / 2).toFixed(2));
+
+  const fills: ChartExecution[] = [
+    {
+      side: isShort ? "sell" : "buy",
+      price: entryAvg,
+      quantity: (trade as any).quantity || 1,
+      executedAt: new Date(entryBar.time).toISOString(),
+    },
+  ];
+
+  if (trade.closedAt) {
+    fills.push({
+      side: isShort ? "buy" : "sell",
+      price: exitAvg,
+      quantity: (trade as any).quantity || 1,
+      executedAt: new Date(exitBar.time).toISOString(),
+    });
+  }
+
+  return fills;
 }
 
 export function HistoricalReplay({
@@ -360,10 +420,12 @@ export function HistoricalReplay({
   const [count, setCount] = useState(history.bars.length);
   const [playing, setPlaying] = useState(false);
   const [speed, setSpeed] = useState("4");
+
   useEffect(() => {
     setCount(history.bars.length);
     setPlaying(false);
   }, [history]);
+
   useEffect(() => {
     if (!playing || privacy) return;
     const timer = window.setInterval(
@@ -374,14 +436,22 @@ export function HistoricalReplay({
     );
     return () => window.clearInterval(timer);
   }, [playing, privacy, speed, history.bars.length]);
+
   useEffect(() => {
     if (count >= history.bars.length || privacy) setPlaying(false);
   }, [count, privacy, history.bars.length]);
+
   const complete = count === history.bars.length;
-  const frame = useMemo(
-    () => replayFrame(history, history.estimate.priceBasisMismatch ? [] : executions, count),
-    [history, executions, count],
+  const effectiveExecutions = useMemo(
+    () => getEffectiveExecutions(trade, executions, history),
+    [trade, executions, history],
   );
+
+  const frame = useMemo(
+    () => replayFrame(history, effectiveExecutions, count),
+    [history, effectiveExecutions, count],
+  );
+
   return (
     <Card className="journal-replay-enter">
       <CardHeader>
@@ -497,8 +567,16 @@ export function HistoricalReplay({
             />
             <p className="text-xs text-muted-foreground">
               {count} / {history.bars.length} candles · Through{" "}
-              {new Date(frame.through).toISOString()} (UTC). Candles are revealed at bar close; this
-              is not a tick-by-tick simulation.
+              {Number.isFinite(frame.through)
+                ? new Intl.DateTimeFormat("en-US", {
+                    timeZone: "America/New_York",
+                    hour: "2-digit",
+                    minute: "2-digit",
+                    second: "2-digit",
+                    hour12: false,
+                  }).format(new Date(frame.through)) + " (NY)"
+                : "—"}
+              . Candles are revealed at bar close; this is not a tick-by-tick simulation.
             </p>
           </>
         )}
@@ -541,6 +619,64 @@ export function HistoricalReplay({
   );
 }
 
+/** Calculate the DST-safe epoch offset (in ms) between UTC and America/New_York. */
+function getNewYorkOffsetMs(date: Date = new Date()): number {
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  let year = date.getUTCFullYear();
+  let month = date.getUTCMonth() + 1;
+  let day = date.getUTCDate();
+  let hour = date.getUTCHours();
+  let minute = date.getUTCMinutes();
+  let second = date.getUTCSeconds();
+
+  for (const part of dtf.formatToParts(date)) {
+    const val = parseInt(part.value, 10);
+    if (Number.isNaN(val)) continue;
+    switch (part.type) {
+      case "year":
+        year = val;
+        break;
+      case "month":
+        month = val;
+        break;
+      case "day":
+        day = val;
+        break;
+      case "hour":
+        hour = val % 24;
+        break;
+      case "minute":
+        minute = val;
+        break;
+      case "second":
+        second = val;
+        break;
+    }
+  }
+
+  const nyUtcMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  const actualUtcMs = Date.UTC(
+    date.getUTCFullYear(),
+    date.getUTCMonth(),
+    date.getUTCDate(),
+    date.getUTCHours(),
+    date.getUTCMinutes(),
+    date.getUTCSeconds(),
+  );
+
+  return nyUtcMs - actualUtcMs;
+}
+
 function ReplayChart({
   history,
   nextFrame,
@@ -548,7 +684,6 @@ function ReplayChart({
   history: TradeMarketResult;
   nextFrame: ReturnType<typeof replayFrame<ChartExecution>>;
 }) {
-  // Chart-local identity also works on HTTP LAN origins without crypto.randomUUID.
   const indicatorType = `replay-fills-${useId()}`;
   const host = useRef<HTMLDivElement>(null);
   const chart = useRef<Vela | null>(null);
@@ -558,16 +693,25 @@ function ReplayChart({
   const update = useRef<(() => void) | null>(null);
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
+
+  // Offset UTC timestamps into America/New_York display coordinates
+  const nyShiftMs = useMemo(() => {
+    const refTime = history.bars[0]?.time ?? Date.now();
+    return getNewYorkOffsetMs(new Date(refTime));
+  }, [history]);
+
   useEffect(() => {
     let disposed = false;
     let cleanup = () => {};
     setError("");
     setReady(false);
+
     void (async () => {
       const { Vela, registerNativeIndicator, unregisterNativeIndicator } =
         await import("@luxalgo/vela");
       if (disposed || !host.current) return;
       const type = indicatorType;
+
       registerNativeIndicator({
         type,
         title: "Recorded fills",
@@ -582,7 +726,7 @@ function ReplayChart({
                 id: `fill-${index}`,
                 paneId: "price",
                 xloc: "bar_time" as const,
-                x: Date.parse(fill.executedAt),
+                x: Date.parse(fill.executedAt) + nyShiftMs,
                 y: fill.price,
                 yloc: "price" as const,
                 text: `${fill.side.toUpperCase()} ${fill.quantity}`,
@@ -605,13 +749,20 @@ function ReplayChart({
           stop() {},
         }),
       });
+
       const dark = () => document.documentElement.classList.contains("dark");
+      const shiftedInitialBars = latest.current.bars.map((bar) => ({
+        ...bar,
+        time: bar.time + nyShiftMs,
+      }));
+
       const instance = new Vela(host.current, {
         symbol: history.symbol,
-        timeframe: { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "1d": "1D" }[
-          history.resolution
-        ],
-        data: latest.current.bars,
+        timeframe:
+          { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "1d": "1D" }[
+            history.resolution
+          ] ?? "1",
+        data: shiftedInitialBars,
         live: false,
         height: 420,
         theme: dark() ? "dark" : "light",
@@ -619,18 +770,23 @@ function ReplayChart({
         volume: true,
         drawings: false,
       });
+
       chart.current = instance;
       frame.current = latest.current;
       instance.addNativeIndicator(type);
+
       let updating = false;
-      // Coalesce rapid scrubbing/ticks instead of queuing expensive Vela reloads.
       const flush = async () => {
         if (updating || disposed) return;
         updating = true;
         try {
           do {
             frame.current = latest.current;
-            await instance.setMarket({ data: frame.current.bars });
+            const shiftedBars = frame.current.bars.map((bar) => ({
+              ...bar,
+              time: bar.time + nyShiftMs,
+            }));
+            await instance.setMarket({ data: shiftedBars });
           } while (!disposed && frame.current !== latest.current);
         } catch {
           if (!disposed) setError("The replay chart could not be updated.");
@@ -638,11 +794,14 @@ function ReplayChart({
           updating = false;
         }
       };
+
       update.current = () => {
         void flush();
       };
+
       const observer = new MutationObserver(() => instance.setTheme(dark() ? "dark" : "light"));
       observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+
       cleanup = () => {
         update.current = null;
         observer.disconnect();
@@ -650,19 +809,23 @@ function ReplayChart({
         unregisterNativeIndicator(type);
         if (chart.current === instance) chart.current = null;
       };
+
       await instance.ready();
       if (!disposed) setReady(true);
     })().catch(() => {
       if (!disposed) setError("The historical chart could not be rendered.");
     });
+
     return () => {
       disposed = true;
       cleanup();
     };
-  }, [history, indicatorType]);
+  }, [history, indicatorType, nyShiftMs]);
+
   useEffect(() => {
     update.current?.();
   }, [nextFrame, history]);
+
   return (
     <>
       {error && (

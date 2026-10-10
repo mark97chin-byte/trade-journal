@@ -4,16 +4,22 @@ import time
 import requests
 import json
 from datetime import datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
 from dotenv import load_dotenv
 import MetaTrader5 as mt5
 
-# Load variables from .env file in the current or script directory
-load_dotenv()
+# Resolve path relative to script directory
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
 DAYS_LOOKBACK = int(os.getenv("DAYS_LOOKBACK", 60))
 CLUSTER_WINDOW_SECONDS = int(os.getenv("CLUSTER_WINDOW_SECONDS", 10))
+
+BROKER_TZ = ZoneInfo(os.getenv("MT5_BROKER_TIMEZONE", "Europe/Helsinki"))
+NY_TZ = ZoneInfo("America/New_York")
+DB_PATH = os.path.join(BASE_DIR, "apps", "web", "data", "journal.db")
 
 if not NOTION_TOKEN or not NOTION_DATABASE_ID:
     raise ValueError("Missing NOTION_TOKEN or NOTION_DATABASE_ID in environment / .env")
@@ -43,7 +49,13 @@ def init_mt5():
         if not mt5.initialize(path=terminal_path):
             raise SystemError(f"MT5 Init failed: {mt5.last_error()}")
 
-def get_session_name(dt_utc):
+def broker_time_to_ny(epoch_seconds: int) -> datetime:
+    naive_dt = datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).replace(tzinfo=None)
+    broker_dt = naive_dt.replace(tzinfo=BROKER_TZ)
+    return broker_dt.astimezone(NY_TZ)
+
+def get_session_name(dt: datetime) -> str:
+    dt_utc = dt.astimezone(timezone.utc)
     hour = dt_utc.hour
     if 0 <= hour < 7:
         return "Asia"
@@ -62,13 +74,12 @@ def format_duration(seconds):
     return f"{hours}h {mins % 60}m"
 
 def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close_ts, worst_exit_price, is_sl_hit):
-    """
-    Calculates MFE and MAE strictly bounded to the active trade lifespan.
-    Eliminates phantom post-trade candle wick bleed.
-    """
     dt_from = datetime.fromtimestamp(open_ts, tz=timezone.utc)
-    # Strictly bound to close timestamp (no extra minutes)
     dt_to = datetime.fromtimestamp(close_ts, tz=timezone.utc)
+
+    # Ensure at least 1 minute window for quick scalps
+    if dt_to <= dt_from:
+        dt_to = dt_from + timedelta(minutes=1)
 
     rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, dt_from, dt_to)
     if rates is None or len(rates) == 0:
@@ -79,7 +90,6 @@ def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close
     risk_distance = abs(entry_price - initial_sl) if initial_sl > 0 else None
 
     if direction == "BUY":
-        # If trade closed via SL, price while trade was active couldn't drop below the actual exit price
         if is_sl_hit and worst_exit_price > 0:
             lowest = max(lowest, worst_exit_price)
         price_mfe = max(0.0, highest - entry_price)
@@ -93,9 +103,7 @@ def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close
     if risk_distance and risk_distance > 0:
         mfe_r = round(price_mfe / risk_distance, 2)
         mae_r = round(price_mae / risk_distance, 2)
-        # Cap MAE at 1.0R unless actual slippage occurred on fill
         if is_sl_hit and mae_r > 1.0:
-            slippage_distance = abs(worst_exit_price - initial_sl)
             actual_fill_r = round(abs(entry_price - worst_exit_price) / risk_distance, 2)
             mae_r = actual_fill_r
     else:
@@ -112,7 +120,6 @@ def fetch_reconstructed_trades():
     if not deals:
         return []
 
-    # Get closed exit deals (entry == 1)
     closed_deals = [d for d in deals if d.entry == 1 and d.symbol]
 
     positions = {}
@@ -137,14 +144,12 @@ def fetch_reconstructed_trades():
         close_time = max(d.time for d in out_deals)
         volume = sum(d.volume for d in out_deals)
 
-        # 100% full P&L accounting (entry + exit commissions, swap, fee)
         net_pnl = sum(d.profit + d.swap + d.commission + d.fee for d in pos_deals)
 
         entry_price = in_deal.price
         exit_vol = sum(d.volume for d in out_deals)
         exit_price = sum(d.price * d.volume for d in out_deals) / exit_vol if exit_vol > 0 else 0
 
-        # Retrieve initial Stop Loss & Take Profit from order history
         initial_sl = 0.0
         initial_tp = 0.0
         pos_orders = mt5.history_orders_get(position=pos_id)
@@ -155,7 +160,6 @@ def fetch_reconstructed_trades():
                 if o.tp > 0 and initial_tp == 0.0:
                     initial_tp = o.tp
 
-        # Detail each partial fill within this position
         partial_details = []
         for out in sorted(out_deals, key=lambda x: x.time):
             p_reason = DEAL_REASON_MAP.get(out.reason, "Manual")
@@ -187,7 +191,6 @@ def fetch_reconstructed_trades():
             'partial_details': partial_details
         }
 
-    # Cluster Position Sizer split tickets opened within threshold
     sorted_positions = sorted(positions.values(), key=lambda x: x['open_time'])
     clusters = []
 
@@ -223,7 +226,6 @@ def fetch_reconstructed_trades():
         initial_sl = next((p['initial_sl'] for p in subs if p['initial_sl'] > 0), 0.0)
         initial_tp = next((p['initial_tp'] for p in subs if p['initial_tp'] > 0), 0.0)
 
-        # Collect and format all partial/split exits
         all_partials = []
         for p in subs:
             all_partials.extend(p['partial_details'])
@@ -236,7 +238,6 @@ def fetch_reconstructed_trades():
             breakdown_parts.append(p_str)
         partials_text = " | ".join(breakdown_parts)
 
-        # Risk and R-Multiple calculations
         dollar_risk = 0.0
         realized_r = None
         risk_percent = None
@@ -259,28 +260,25 @@ def fetch_reconstructed_trades():
 
         open_ts = c['open_time']
         close_ts = max(p['close_time'] for p in subs)
-        open_dt = datetime.fromtimestamp(open_ts, tz=timezone.utc)
-        close_dt = datetime.fromtimestamp(close_ts, tz=timezone.utc)
+
+        open_dt = broker_time_to_ny(open_ts)
+        close_dt = broker_time_to_ny(close_ts)
         duration_sec = (close_dt - open_dt).total_seconds()
 
-        # Primary exit reason
         reasons = [part['reason'] for part in all_partials]
         is_sl_hit = "SL" in reasons
         exit_reason = "TP" if "TP" in reasons else ("SL" if "SL" in reasons else reasons[-1])
 
-        # Worst exit price across splits (used to clamp MAE cleanly)
         if c['direction'] == "BUY":
             worst_exit = min(part['price'] for part in all_partials)
         else:
             worst_exit = max(part['price'] for part in all_partials)
 
-        # Accurate MAE and MFE without candle bleed
         mfe_r, mae_r = calculate_mae_mfe(
             c['symbol'], c['direction'], weighted_entry, initial_sl,
             open_ts, close_ts, worst_exit, is_sl_hit
         )
 
-        # Capture Efficiency
         capture_eff = None
         if realized_r is not None and mfe_r and mfe_r > 0:
             capture_eff = round((realized_r / mfe_r) * 100, 1)
@@ -354,105 +352,91 @@ def get_existing_cluster_ids():
 
     return existing
 
-DB_PATH = os.path.join("apps", "web", "data", "journal.db")
+def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
+    """Saves or updates a trade using an active connection."""
+    cur = conn.cursor()
+    direction = "long" if str(trade.get("direction", "")).upper() in ["BUY", "LONG"] else "short"
 
-def save_to_sqlite(trade, notion_page_id=None, notion_url=None):
-    """Saves or updates a trade directly in the local LuxAlgo journal database."""
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        # Flush any pending WAL frames into the main database
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        cur = conn.cursor()
+    net_pnl = float(trade.get("net_pnl", 0.0))
+    if not trade.get("close_time"):
+        status = "open"
+    elif net_pnl > 0:
+        status = "win"
+    elif net_pnl < 0:
+        status = "loss"
+    else:
+        status = "breakeven"
 
-        # 1. Map direction ('BUY' -> 'long', 'SELL' -> 'short')
-        direction = "long" if str(trade.get("direction", "")).upper() in ["BUY", "LONG"] else "short"
+    notes_content = trade.get("partials_breakdown", "")
+    if notion_url:
+        notes_content = f"Notion: {notion_url}\n{notes_content}"
 
-        # 2. Map status ('open', 'win', 'loss', 'breakeven')
-        net_pnl = float(trade.get("net_pnl", 0.0))
-        if not trade.get("close_time"):
-            status = "open"
-        elif net_pnl > 0:
-            status = "win"
-        elif net_pnl < 0:
-            status = "loss"
-        else:
-            status = "breakeven"
+    query = """
+    INSERT INTO trades (
+        key, account_id, symbol, direction, status,
+        opened_at, closed_at, quantity, open_quantity,
+        avg_entry, avg_exit, gross_pnl, fees, net_pnl,
+        notes, notion_page_id, notion_url,
+        realized_r, planned_r, mae_r, mfe_r, capture_eff,
+        risk_percent, exit_reason, partials_breakdown, tickets
+    ) VALUES (
+        :key, :account_id, :symbol, :direction, :status,
+        :opened_at, :closed_at, :quantity, :open_quantity,
+        :avg_entry, :avg_exit, :gross_pnl, :fees, :net_pnl,
+        :notes, :notion_page_id, :notion_url,
+        :realized_r, :planned_r, :mae_r, :mfe_r, :capture_eff,
+        :risk_percent, :exit_reason, :partials_breakdown, :tickets
+    )
+    ON CONFLICT(key) DO UPDATE SET
+        opened_at = excluded.opened_at,
+        closed_at = excluded.closed_at,
+        avg_exit = excluded.avg_exit,
+        status = excluded.status,
+        net_pnl = excluded.net_pnl,
+        gross_pnl = excluded.gross_pnl,
+        notes = CASE
+            WHEN trades.notes IS NOT NULL AND TRIM(trades.notes) != '' THEN trades.notes
+            ELSE excluded.notes
+        END,
+        notion_page_id = COALESCE(trades.notion_page_id, excluded.notion_page_id),
+        notion_url = COALESCE(trades.notion_url, excluded.notion_url),
+        realized_r = excluded.realized_r,
+        mae_r = excluded.mae_r,
+        mfe_r = excluded.mfe_r,
+        capture_eff = excluded.capture_eff;
+    """
 
-        # 3. Default note only used for brand new trades
-        notes_content = trade.get("partials_breakdown", "")
-        if notion_url:
-            notes_content = f"Notion: {notion_url}\n{notes_content}"
+    params = {
+        "key": str(trade["cluster_id"]),
+        "account_id": "mt5-main",
+        "symbol": str(trade["symbol"]),
+        "direction": direction,
+        "status": status,
+        "opened_at": str(trade["open_time"]),
+        "closed_at": str(trade["close_time"]) if trade.get("close_time") else None,
+        "quantity": float(trade.get("volume", 0.0)),
+        "open_quantity": 0.0,
+        "avg_entry": float(trade.get("entry_price", 0.0)),
+        "avg_exit": float(trade.get("exit_price", 0.0)) if trade.get("exit_price") is not None else None,
+        "gross_pnl": net_pnl,
+        "fees": 0.0,
+        "net_pnl": net_pnl,
+        "notes": notes_content,
+        "notion_page_id": notion_page_id,
+        "notion_url": notion_url,
+        "realized_r": trade.get("realized_r"),
+        "planned_r": trade.get("planned_r"),
+        "mae_r": trade.get("mae_r"),
+        "mfe_r": trade.get("mfe_r"),
+        "capture_eff": trade.get("capture_eff"),
+        "risk_percent": trade.get("risk_percent"),
+        "exit_reason": str(trade.get("exit_reason", "")),
+        "partials_breakdown": str(trade.get("partials_breakdown", "")),
+        "tickets": str(trade.get("tickets", ""))
+    }
 
-        query = """
-        INSERT INTO trades (
-            key, account_id, symbol, direction, status,
-            opened_at, closed_at, quantity, open_quantity,
-            avg_entry, avg_exit, gross_pnl, fees, net_pnl,
-            notes, notion_page_id, notion_url,
-            realized_r, planned_r, mae_r, mfe_r, capture_eff,
-            risk_percent, exit_reason, partials_breakdown, tickets
-        ) VALUES (
-            :key, :account_id, :symbol, :direction, :status,
-            :opened_at, :closed_at, :quantity, :open_quantity,
-            :avg_entry, :avg_exit, :gross_pnl, :fees, :net_pnl,
-            :notes, :notion_page_id, :notion_url,
-            :realized_r, :planned_r, :mae_r, :mfe_r, :capture_eff,
-            :risk_percent, :exit_reason, :partials_breakdown, :tickets
-        )
-        ON CONFLICT(key) DO UPDATE SET
-            avg_exit = excluded.avg_exit,
-            closed_at = excluded.closed_at,
-            status = excluded.status,
-            net_pnl = excluded.net_pnl,
-            gross_pnl = excluded.gross_pnl,
-            -- PRESERVE USER NOTES: If notes already exist in DB, keep them untouched
-            notes = CASE
-                WHEN trades.notes IS NOT NULL AND TRIM(trades.notes) != '' THEN trades.notes
-                ELSE excluded.notes
-            END,
-            notion_page_id = COALESCE(trades.notion_page_id, excluded.notion_page_id),
-            notion_url = COALESCE(trades.notion_url, excluded.notion_url),
-            realized_r = excluded.realized_r,
-            mae_r = excluded.mae_r,
-            mfe_r = excluded.mfe_r,
-            capture_eff = excluded.capture_eff;
-        """
-
-        params = {
-            "key": str(trade["cluster_id"]),
-            "account_id": "mt5-main",
-            "symbol": str(trade["symbol"]),
-            "direction": direction,
-            "status": status,
-            "opened_at": str(trade["open_time"]),
-            "closed_at": str(trade["close_time"]) if trade.get("close_time") else None,
-            "quantity": float(trade.get("volume", 0.0)),
-            "open_quantity": 0.0,
-            "avg_entry": float(trade.get("entry_price", 0.0)),
-            "avg_exit": float(trade.get("exit_price", 0.0)) if trade.get("exit_price") is not None else None,
-            "gross_pnl": net_pnl,
-            "fees": 0.0,
-            "net_pnl": net_pnl,
-            "notes": notes_content,
-            "notion_page_id": notion_page_id,
-            "notion_url": notion_url,
-            "realized_r": trade.get("realized_r"),
-            "planned_r": trade.get("planned_r"),
-            "mae_r": trade.get("mae_r"),
-            "mfe_r": trade.get("mfe_r"),
-            "capture_eff": trade.get("capture_eff"),
-            "risk_percent": trade.get("risk_percent"),
-            "exit_reason": str(trade.get("exit_reason", "")),
-            "partials_breakdown": str(trade.get("partials_breakdown", "")),
-            "tickets": str(trade.get("tickets", ""))
-        }
-
-        cur.execute(query, params)
-        conn.commit()
-        conn.close()
-        print(f"[SQLite] Synced: {trade['cluster_id']} to journal.db")
-    except Exception as e:
-        print(f"[SQLite] Error saving trade {trade.get('cluster_id')}: {e}")
+    cur.execute(query, params)
+    print(f"[SQLite] Queued: {trade['cluster_id']}")
 
 def push_to_notion(trade, available_props, max_retries=3):
     url = "https://api.notion.com/v1/pages"
@@ -528,22 +512,31 @@ if __name__ == "__main__":
     schema = get_database_properties()
     existing = get_existing_cluster_ids()
 
-    synced_notion_count = 0
-    for t in trade_ideas:
-        cid = t['cluster_id']
-        if cid not in existing:
-            # 1. New trade: Push to Notion
-            notion_info = push_to_notion(t, schema)
-            if notion_info:
-                synced_notion_count += 1
-                # 2. Write to SQLite with the Notion page link
-                save_to_sqlite(t, notion_page_id=notion_info.get("id"), notion_url=notion_info.get("url"))
-            else:
-                # If Notion network failed, still record it locally
-                save_to_sqlite(t)
-        else:
-            print(f"[Notion] Skipping {cid} (Already in Notion)")
-            # Trade already in Notion, ensure it's recorded in the local SQLite DB
-            save_to_sqlite(t)
+    # Open single SQLite transaction for all updates
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+    db_conn = sqlite3.connect(DB_PATH)
 
-    print(f"\nDone! Synced {synced_notion_count} new trades to Notion, and updated local journal.db.")
+    synced_notion_count = 0
+    try:
+        for t in trade_ideas:
+            cid = t['cluster_id']
+            if cid not in existing:
+                notion_info = push_to_notion(t, schema)
+                if notion_info:
+                    synced_notion_count += 1
+                    save_to_sqlite(db_conn, t, notion_page_id=notion_info.get("id"), notion_url=notion_info.get("url"))
+                else:
+                    save_to_sqlite(db_conn, t)
+            else:
+                print(f"[Notion] Skipping {cid} (Already in Notion)")
+                save_to_sqlite(db_conn, t)
+
+        db_conn.commit()
+
+        # Checkpoint WAL directly into the primary journal.db file
+        db_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        print("\n[SQLite] PRAGMA wal_checkpoint(TRUNCATE) completed successfully.")
+    finally:
+        db_conn.close()
+
+    print(f"\nDone! Synced {synced_notion_count} new trades to Notion, and committed clean journal.db.")
