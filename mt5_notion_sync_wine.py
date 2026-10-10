@@ -2,6 +2,7 @@ import os
 import sqlite3
 import time
 import requests
+import json
 from datetime import datetime, timedelta, timezone
 from dotenv import load_dotenv
 import MetaTrader5 as mt5
@@ -405,9 +406,9 @@ def save_to_sqlite(trade, notion_page_id=None, notion_url=None):
             net_pnl = excluded.net_pnl,
             gross_pnl = excluded.gross_pnl,
             -- PRESERVE USER NOTES: If notes already exist in DB, keep them untouched
-            notes = CASE 
-                WHEN trades.notes IS NOT NULL AND TRIM(trades.notes) != '' THEN trades.notes 
-                ELSE excluded.notes 
+            notes = CASE
+                WHEN trades.notes IS NOT NULL AND TRIM(trades.notes) != '' THEN trades.notes
+                ELSE excluded.notes
             END,
             notion_page_id = COALESCE(trades.notion_page_id, excluded.notion_page_id),
             notion_url = COALESCE(trades.notion_url, excluded.notion_url),
