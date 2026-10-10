@@ -2,7 +2,7 @@
 
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Vela } from "@luxalgo/vela";
-import { ChevronLeft, ChevronRight, Pause, Play, RotateCcw, SkipForward } from "lucide-react";
+import { ChevronLeft, ChevronRight, Pause, Play, RotateCcw, SkipForward, Plus, Minus, Loader2 } from "lucide-react";
 import {
   RESOLUTIONS,
   type MarketConnection,
@@ -22,6 +22,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { OptionSelect } from "./ui/option-select";
+import { resolveProviderSymbol } from "@/lib/symbol-mapping";
 
 export function TradeMarketData({
   trade,
@@ -38,10 +39,26 @@ export function TradeMarketData({
     "/api/market-data/connections",
   );
   const available = connections?.connections.filter((connection) => connection.configured) ?? [];
+  
   const [provider, setProvider] = useState("");
   const [symbol, setSymbol] = useState(trade.symbol);
   const [dataset, setDataset] = useState("");
   const [resolution, setResolution] = useState<Resolution>("1m");
+  const [paddingDays, setPaddingDays] = useState<number>(5);
+
+  // Automatically default provider and auto-map symbol & dataset on mount
+  useEffect(() => {
+    if (!provider && available.length > 0) {
+      const lse = available.find((a) => a.id === "london-strategic-edge");
+      const targetProvider = lse?.id ?? available[0]?.id ?? "";
+      setProvider(targetProvider);
+
+      const mapped = resolveProviderSymbol(targetProvider, trade.symbol);
+      setSymbol(mapped.symbol);
+      setDataset(mapped.dataset || "");
+    }
+  }, [available, provider, trade.symbol]);
+
   const info = providerInfo(provider);
   const { data: csv } = useApi<{ datasets: MarketCsvDataset[] }>(
     info?.mode === "csv" ? "/api/market-data/csv" : null,
@@ -61,14 +78,17 @@ export function TradeMarketData({
     setError("");
   };
 
-  const load = async () => {
+  const load = async (overrides?: { resolution?: Resolution; paddingDays?: number }) => {
     if (!available.some((item) => item.id === provider) || (info?.datasets && !dataset)) return;
     controller.current?.abort();
     const request = new AbortController();
     controller.current = request;
     setBusy(true);
     setError("");
-    setResult(null);
+
+    const targetRes = overrides?.resolution ?? resolution;
+    const targetPadding = overrides?.paddingDays ?? paddingDays;
+
     try {
       const response = await fetch(`/api/trades/${encodeURIComponent(trade.key)}/market-data`, {
         method: "POST",
@@ -77,7 +97,8 @@ export function TradeMarketData({
           provider,
           symbol,
           dataset,
-          resolution,
+          resolution: targetRes,
+          paddingDays: targetPadding,
           basisConfirmed: confirmed,
         }),
         signal: request.signal,
@@ -86,6 +107,8 @@ export function TradeMarketData({
       if (!response.ok) throw new Error(body.error ?? "History request failed.");
       if (!request.signal.aborted) {
         setResult(body);
+        if (overrides?.resolution) setResolution(overrides.resolution);
+        if (overrides?.paddingDays !== undefined) setPaddingDays(overrides.paddingDays);
         refreshSaved();
       }
     } catch (cause) {
@@ -95,6 +118,10 @@ export function TradeMarketData({
       if (!request.signal.aborted) setBusy(false);
     }
   };
+
+  const currentAutoMapped = useMemo(() => {
+    return provider ? resolveProviderSymbol(provider, trade.symbol) : null;
+  }, [provider, trade.symbol]);
 
   return (
     <div className="space-y-3">
@@ -125,7 +152,7 @@ export function TradeMarketData({
           ) : (
             available.length > 0 && (
               <>
-                <div className="grid gap-3 sm:grid-cols-2">
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                   <div className="space-y-1">
                     <Label htmlFor="market-provider">Data provider</Label>
                     <OptionSelect
@@ -134,7 +161,9 @@ export function TradeMarketData({
                       onValueChange={(value) => {
                         invalidate();
                         setProvider(value);
-                        setDataset("");
+                        const mapped = resolveProviderSymbol(value, trade.symbol);
+                        setSymbol(mapped.symbol);
+                        setDataset(mapped.dataset || "");
                         setConfirmed(false);
                       }}
                     >
@@ -149,7 +178,21 @@ export function TradeMarketData({
                     </OptionSelect>
                   </div>
                   <div className="space-y-1">
-                    <Label htmlFor="market-symbol">Provider symbol</Label>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="market-symbol">Provider symbol</Label>
+                      {currentAutoMapped && symbol !== currentAutoMapped.symbol && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSymbol(currentAutoMapped.symbol);
+                            setDataset(currentAutoMapped.dataset || "");
+                          }}
+                          className="text-[11px] text-blue-500 hover:underline"
+                        >
+                          Reset to {currentAutoMapped.symbol}
+                        </button>
+                      )}
+                    </div>
                     <Input
                       id="market-symbol"
                       value={symbol}
@@ -177,53 +220,74 @@ export function TradeMarketData({
                       ))}
                     </OptionSelect>
                   </div>
-                  {(info?.datasets ||
-                    info?.mode === "csv" ||
-                    info?.id === "london-strategic-edge") && (
-                    <div className="space-y-1">
-                      <Label htmlFor="market-dataset">Data feed / dataset</Label>
-                      {info?.datasets || info?.mode === "csv" ? (
-                        <OptionSelect
-                          id="market-dataset"
-                          value={dataset}
-                          onValueChange={(value) => {
-                            invalidate();
-                            setDataset(value);
-                            setConfirmed(false);
-                          }}
-                        >
-                          {(
-                            info.datasets ?? [
-                              { value: "", label: "Automatic matching file" },
-                              ...(csv?.datasets ?? []).map((item) => ({
-                                value: item.id,
-                                label: `${item.name} · ${item.symbol} · ${item.resolution}`,
-                              })),
-                            ]
-                          ).map((item) => (
-                            <option key={item.value} value={item.value}>
-                              {item.label}
-                            </option>
-                          ))}
-                        </OptionSelect>
-                      ) : (
-                        <Input
-                          id="market-dataset"
-                          value={dataset}
-                          placeholder="Leave blank for automatic selection"
-                          onChange={(event) => {
-                            invalidate();
-                            setDataset(event.target.value);
-                            setConfirmed(false);
-                          }}
-                        />
-                      )}
-                    </div>
-                  )}
+                  <div className="space-y-1">
+                    <Label htmlFor="market-padding">Lookback context</Label>
+                    <OptionSelect
+                      id="market-padding"
+                      value={String(paddingDays)}
+                      onValueChange={(val) => {
+                        invalidate();
+                        setPaddingDays(Number(val));
+                      }}
+                    >
+                      <option value="1">1 Day</option>
+                      <option value="3">3 Days</option>
+                      <option value="5">5 Days</option>
+                      <option value="10">10 Days</option>
+                      <option value="15">15 Days</option>
+                      <option value="30">30 Days</option>
+                    </OptionSelect>
+                  </div>
                 </div>
+
+                {(info?.datasets ||
+                  info?.mode === "csv" ||
+                  info?.id === "london-strategic-edge") && (
+                  <div className="space-y-1">
+                    <Label htmlFor="market-dataset">Data feed / dataset</Label>
+                    {info?.datasets || info?.mode === "csv" ? (
+                      <OptionSelect
+                        id="market-dataset"
+                        value={dataset}
+                        onValueChange={(value) => {
+                          invalidate();
+                          setDataset(value);
+                          setConfirmed(false);
+                        }}
+                      >
+                        {(
+                          info.datasets ?? [
+                            { value: "", label: "Automatic matching file" },
+                            ...(csv?.datasets ?? []).map((item) => ({
+                              value: item.id,
+                              label: `${item.name} · ${item.symbol} · ${item.resolution}`,
+                            })),
+                          ]
+                        ).map((item) => (
+                          <option key={item.value} value={item.value}>
+                            {item.label}
+                          </option>
+                        ))}
+                      </OptionSelect>
+                    ) : (
+                      <Input
+                        id="market-dataset"
+                        value={dataset}
+                        placeholder={
+                          currentAutoMapped?.dataset || "Leave blank for automatic selection"
+                        }
+                        onChange={(event) => {
+                          invalidate();
+                          setDataset(event.target.value);
+                          setConfirmed(false);
+                        }}
+                      />
+                    )}
+                  </div>
+                )}
+
                 <p className="text-xs text-muted-foreground">
-                  {info?.description} {info?.symbolHint} Option contract history is not supported
-                  yet.
+                  {info?.description} {info?.symbolHint} Option contract history is not supported yet.
                 </p>
                 <label className="flex items-start gap-2 text-xs text-muted-foreground">
                   <input
@@ -241,11 +305,6 @@ export function TradeMarketData({
                     {trade.currency}).
                   </span>
                 </label>
-                <p className="text-xs text-muted-foreground">
-                  Unchecked: load candles and replay only. Checked: also calculate monetary
-                  estimates and save valid results to Reports. Missing or mismatched data stays
-                  unavailable.
-                </p>
                 <div className="flex flex-wrap gap-2">
                   <Button
                     disabled={
@@ -283,18 +342,25 @@ export function TradeMarketData({
           )}
         </CardContent>
       </Card>
+
       {!result && saved?.saved && (
         <p className="text-xs text-muted-foreground">
           Previously saved MAE/MFE estimates are shown below. Loading candles without the checkbox
           keeps those saved estimates; it does not calculate new ones.
         </p>
       )}
+
       {result && result.bars.length > 0 ? (
         <HistoricalReplay
           history={result}
           trade={trade}
           executions={executions}
           privacy={privacy}
+          activeResolution={resolution}
+          paddingDays={paddingDays}
+          busy={busy}
+          onTimeframeChange={(res) => load({ resolution: res })}
+          onPaddingChange={(days) => load({ paddingDays: days })}
         />
       ) : (
         <>
@@ -358,12 +424,9 @@ function getEffectiveExecutions(
   executions: ChartExecution[],
   history?: TradeMarketResult | null,
 ): ChartExecution[] {
-  // 1. If discrete executions exist and price basis is valid, use them
   if (executions.length > 0 && !history?.estimate?.priceBasisMismatch) {
     return executions;
   }
-
-  // 2. Synthesize fills snapped to the 1m bar averages
   if (!history?.bars?.length || !trade.openedAt) {
     return executions;
   }
@@ -371,7 +434,6 @@ function getEffectiveExecutions(
   const openMs = Date.parse(trade.openedAt);
   const closeMs = trade.closedAt ? Date.parse(trade.closedAt) : openMs;
 
-  // Find nearest candles to the entry and exit timestamps
   const entryBar = history.bars.reduce((prev, curr) =>
     Math.abs(curr.time - openMs) < Math.abs(prev.time - openMs) ? curr : prev,
   );
@@ -406,16 +468,28 @@ function getEffectiveExecutions(
   return fills;
 }
 
+const QUICK_RESOLUTIONS: Resolution[] = ["1m", "5m", "15m", "1h", "4h", "1d"];
+
 export function HistoricalReplay({
   history,
   trade,
   executions,
   privacy,
+  activeResolution,
+  paddingDays,
+  busy,
+  onTimeframeChange,
+  onPaddingChange,
 }: {
   history: TradeMarketResult;
   trade: ChartTrade & { currency: string };
   executions: ChartExecution[];
   privacy: boolean;
+  activeResolution: Resolution;
+  paddingDays: number;
+  busy: boolean;
+  onTimeframeChange: (res: Resolution) => void;
+  onPaddingChange: (days: number) => void;
 }) {
   const [count, setCount] = useState(history.bars.length);
   const [playing, setPlaying] = useState(false);
@@ -454,12 +528,58 @@ export function HistoricalReplay({
 
   return (
     <Card className="journal-replay-enter">
-      <CardHeader>
-        <CardTitle>Historical candles</CardTitle>
+      <CardHeader className="pb-2">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <CardTitle>Historical candles</CardTitle>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-0.5 text-xs">
+              {QUICK_RESOLUTIONS.map((res) => (
+                <button
+                  key={res}
+                  disabled={busy}
+                  onClick={() => onTimeframeChange(res)}
+                  className={`rounded px-2 py-0.5 font-medium transition ${
+                    activeResolution === res
+                      ? "bg-primary text-primary-foreground shadow-sm"
+                      : "text-muted-foreground hover:bg-muted hover:text-foreground"
+                  }`}
+                >
+                  {res}
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-1 rounded-md border bg-muted/40 p-0.5 text-xs">
+              <span className="px-1 text-[11px] font-semibold text-muted-foreground uppercase">
+                {paddingDays}d context
+              </span>
+              <button
+                disabled={busy || paddingDays <= 1}
+                onClick={() => onPaddingChange(Math.max(1, paddingDays - 5))}
+                title="Decrease 5 days of history"
+                className="rounded p-1 text-muted-foreground hover:bg-muted hover:text-foreground disabled:opacity-40"
+              >
+                <Minus className="h-3 w-3" />
+              </button>
+              <button
+                disabled={busy}
+                onClick={() => onPaddingChange(paddingDays + 5)}
+                title="Add 5 days of history"
+                className="flex items-center gap-0.5 rounded bg-muted px-1.5 py-0.5 font-medium text-foreground hover:bg-accent"
+              >
+                <Plus className="h-3 w-3" />
+                <span>5d</span>
+              </button>
+            </div>
+
+            {busy && <Loader2 className="h-4 w-4 animate-spin text-primary" />}
+          </div>
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          {history.provider} · {history.symbol} · {history.resolution} ·{" "}
+          {history.provider} · {history.symbol} · {history.resolution} · {paddingDays}d context ·{" "}
           {history.bars.length.toLocaleString()} candles · Retrieved{" "}
           {new Date(history.fetchedAt).toLocaleString()}
         </p>
@@ -619,7 +739,6 @@ export function HistoricalReplay({
   );
 }
 
-/** Calculate the DST-safe epoch offset (in ms) between UTC and America/New_York. */
 function getNewYorkOffsetMs(date: Date = new Date()): number {
   const dtf = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York",
@@ -694,7 +813,6 @@ function ReplayChart({
   const [error, setError] = useState("");
   const [ready, setReady] = useState(false);
 
-  // Offset UTC timestamps into America/New_York display coordinates
   const nyShiftMs = useMemo(() => {
     const refTime = history.bars[0]?.time ?? Date.now();
     return getNewYorkOffsetMs(new Date(refTime));
@@ -759,7 +877,7 @@ function ReplayChart({
       const instance = new Vela(host.current, {
         symbol: history.symbol,
         timeframe:
-          { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "1d": "1D" }[
+          { "1m": "1", "5m": "5", "15m": "15", "1h": "60", "4h": "240", "1d": "1D" }[
             history.resolution
           ] ?? "1",
         data: shiftedInitialBars,
@@ -767,8 +885,10 @@ function ReplayChart({
         height: 420,
         theme: dark() ? "dark" : "light",
         priceStyle: "candles",
-        volume: true,
-        drawings: false,
+        volume: false,
+        drawings: true,
+        upColor: "#ffffff", // Bullish candles (white)
+        downColor: "#787b86", // Bearish candles (light slate gray)
       });
 
       chart.current = instance;
@@ -834,12 +954,12 @@ function ReplayChart({
         </p>
       )}
       <div
-        className="relative h-[420px] overflow-hidden rounded-lg border"
+        className="relative h-[420px] overflow-hidden rounded-lg border border-neutral-800 bg-[#181a20]"
         aria-busy={!ready && !error}
       >
         {!ready && !error && (
           <div
-            className="absolute inset-0 flex items-center justify-center bg-muted/20 text-sm text-muted-foreground"
+            className="absolute inset-0 flex items-center justify-center bg-[#181a20] text-sm text-neutral-400"
             role="status"
           >
             Preparing candle replay…

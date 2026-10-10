@@ -44,7 +44,7 @@ export const oanda: MarketDataProvider = {
     if (request.dataset)
       throw new MarketDataError("OANDA uses midpoint candles; leave the dataset blank.");
     const c = configFor(key);
-    const granularity = { "1m": "M1", "5m": "M5", "15m": "M15", "1h": "H1", "1d": "D" }[
+    const granularity = { "1m": "M1", "5m": "M5", "15m": "M15", "1h": "H1", "4h": "H4", "1d": "D" }[
       request.resolution
     ];
     const history = await windows(request, 4999, async (from, to, signal) => {

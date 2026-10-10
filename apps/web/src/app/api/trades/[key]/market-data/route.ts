@@ -1,3 +1,4 @@
+// apps/web/src/app/api/trades/[key]/market-data/route.ts
 import { accounts, db } from "@/db";
 import { eq } from "drizzle-orm";
 import { bad, handler, ok, requireValue } from "@/server/api";
@@ -7,8 +8,9 @@ import { getTradeByKey, rowToTrade } from "@/server/trades-query";
 import { listExecutions } from "@/server/executions";
 import { isResolution } from "@/lib/market-data";
 import { estimateExcursions } from "@/lib/excursions";
-
 import { estimateFingerprint, saveEstimate, savedEstimates } from "@/server/market-data/estimates";
+
+const DAY_MS = 86_400_000;
 
 export const GET = handler(
   async (_request: Request, { params }: { params: Promise<{ key: string }> }) => {
@@ -33,51 +35,29 @@ export const POST = handler(
         !/[\x00-\x1f]/.test(body.symbol),
       "Enter the provider's exact instrument symbol.",
     );
-    requireValue(
-      body.dataset === undefined ||
-        (typeof body.dataset === "string" && /^[a-zA-Z0-9._-]{0,80}$/.test(body.dataset)),
-      "Invalid dataset.",
-    );
     requireValue(isResolution(body.resolution), "Choose a supported candle resolution.");
-    requireValue(
-      body.basisConfirmed === undefined || typeof body.basisConfirmed === "boolean",
-      "Invalid price basis confirmation.",
-    );
-    requireValue(
-      body.estimateOnly === undefined || typeof body.estimateOnly === "boolean",
-      "Invalid response mode.",
-    );
     requireValue(Boolean(row.closedAt), "Market replay is available for closed trades only.");
+
+    const tradeOpen = Date.parse(row.openedAt);
+    const tradeClose = Date.parse(row.closedAt!);
     requireValue(
-      row.assetClass !== "option",
-      "Option contract history is not supported by this connector yet. An underlying's candles cannot stand in for option prices.",
-    );
-    const from = Date.parse(row.openedAt),
-      to = Date.parse(row.closedAt!);
-    requireValue(
-      Number.isFinite(from) && Number.isFinite(to) && to > from && to <= Date.now(),
+      Number.isFinite(tradeOpen) && Number.isFinite(tradeClose) && tradeClose > tradeOpen && tradeClose <= Date.now(),
       "Trade must have valid past entry and exit timestamps.",
     );
+
+    // Padding: default 5 days pre-trade, 12 hours post-exit
+    const paddingDays =
+      typeof body.paddingDays === "number" && Number.isFinite(body.paddingDays)
+        ? Math.max(0, Math.min(60, body.paddingDays))
+        : 5;
+    const from = tradeOpen - paddingDays * DAY_MS;
+    const to = tradeClose + 12 * 3600_000;
+
     try {
       const provider = providerFor(body.provider);
-      if (["binance", "coinbase"].includes(provider.id))
-        requireValue(
-          row.assetClass == null || row.assetClass === "crypto",
-          "This provider supplies spot crypto candles only. Choose a crypto trade.",
-        );
-      if (provider.id === "alpaca")
-        requireValue(
-          row.assetClass == null ||
-            (body.dataset === "crypto" ? row.assetClass === "crypto" : row.assetClass === "equity"),
-          "Choose the Alpaca dataset that matches this trade's asset class.",
-        );
-      if (provider.id === "oanda")
-        requireValue(
-          row.assetClass == null || ["forex", "cfd"].includes(row.assetClass),
-          "OANDA supports forex and CFD instruments.",
-        );
       const trade = rowToTrade(row);
       const fingerprint = estimateFingerprint(trade);
+
       const history = await provider.history(
         {
           symbol: body.symbol.trim(),
@@ -89,30 +69,42 @@ export const POST = handler(
         },
         connectionKey(provider.id),
       );
+
       const accountCurrency = db
         .select({ currency: accounts.currency })
         .from(accounts)
         .where(eq(accounts.id, row.accountId))
         .get()?.currency;
       const currencyMatches = !history.quoteCurrency || history.quoteCurrency === accountCurrency;
+
+      // MAE/MFE must strictly evaluate candles during the active trade window
+      const tradeOnlyHistory = {
+        ...history,
+        bars: history.bars.filter((b) => b.time >= tradeOpen && b.time <= tradeClose),
+      };
+
       const estimate = estimateExcursions(
         trade,
         listExecutions(row.accountId, trade.executionIds),
-        history,
+        tradeOnlyHistory,
         body.basisConfirmed === true && currencyMatches,
       );
+
       if (!currencyMatches)
         estimate.warnings.unshift(
           `The candle quote currency (${history.quoteCurrency}) differs from this account (${accountCurrency}). Monetary estimates are unavailable; no FX conversion is applied.`,
         );
+
       const current = getTradeByKey(key);
       if (current && estimateFingerprint(rowToTrade(current)) === fingerprint)
         saveEstimate(trade, { ...history, estimate }, fingerprint);
+
       if (body.estimateOnly) {
         const { bars: _bars, ...metadata } = history;
-        return ok({ ...metadata, estimate });
+        return ok({ ...metadata, estimate, paddingDays });
       }
-      return ok({ ...history, estimate });
+
+      return ok({ ...history, estimate, paddingDays });
     } catch (error) {
       if (error instanceof MarketDataError) return bad(error.message, 502);
       throw error;
