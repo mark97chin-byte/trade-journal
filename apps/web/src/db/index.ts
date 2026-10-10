@@ -47,6 +47,14 @@ const createDb = () => {
       first_time = json_extract(bars_json, '$[0].time'),
       last_time = json_extract(bars_json, '$[#-1].time') WHERE bar_count = 0`);
   })();
+  // Additive upgrade for Notion sync columns
+  const tradeColumns = sqlite.pragma("table_info(trades)") as { name: string }[];
+  if (!tradeColumns.some((column) => column.name === "notion_page_id")) {
+    sqlite.exec("ALTER TABLE trades ADD COLUMN notion_page_id TEXT");
+  }
+  if (!tradeColumns.some((column) => column.name === "notion_url")) {
+    sqlite.exec("ALTER TABLE trades ADD COLUMN notion_url TEXT");
+  }
   return drizzle(sqlite, { schema });
 };
 

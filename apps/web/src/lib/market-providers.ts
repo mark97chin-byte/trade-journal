@@ -65,6 +65,30 @@ export const MARKET_PROVIDERS: ProviderInfo[] = [
     fields: [],
   },
   {
+    id: "dukascopy",
+    name: "Dukascopy",
+    mode: "public",
+    description:
+      "Public Forex, Metals, and global Index CFD candles. No API key required. Deep intraday history.",
+    symbolHint:
+      "Forex: EURUSD. Metals: XAUUSD. Indices: US500, NAS100 (or broker symbols like US500.raw).",
+    fields: [],
+  },
+  {
+    id: "databento",
+    name: "Databento",
+    mode: "credentials",
+    description:
+      "Institutional CME Globex Futures (ES, NQ, YM). Unadjusted continuous contract historical candles.",
+    symbolHint:
+      "Indices: US500.raw, NAS100, or exact CME continuous codes: ES.c.0, NQ.c.0.",
+    fields: [{ key: "apiKey", label: "API Key", environmentKey: "DATABENTO_API_KEY" }],
+    resolutions: ["1m", "1h", "1d"],
+    datasets: [
+      { value: "GLBX.MDP3", label: "CME Globex (GLBX.MDP3)" },
+    ],
+  },
+  {
     id: "oanda",
     name: "OANDA",
     mode: "credentials",
