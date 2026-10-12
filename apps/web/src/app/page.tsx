@@ -44,6 +44,7 @@ import { HelpHint, Tooltip, TooltipContent, TooltipTrigger } from "@/components/
 import { postJson, useApi } from "@/lib/use-api";
 import type { CalendarPnlPoint } from "@/lib/calendar-insights";
 import { cn, fmtDuration, fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
+import { yearlyCalendarWidget } from "@/components/calendar/yearly-calendar";
 
 interface Bucket {
   key: string;
@@ -588,6 +589,7 @@ function DashboardContent({
               </Card>
             ),
           },
+          yearlyCalendarWidget(),
           {
             id: "widget-10",
             label: "Max drawdown",
