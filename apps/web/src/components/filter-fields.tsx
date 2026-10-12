@@ -8,23 +8,24 @@ import { MonetaryField } from "./privacy";
 import { ChevronDown, CircleHelp } from "lucide-react";
 import { HoverHint } from "./ui/tooltip";
 import { DatePicker } from "./ui/date-picker";
+import { MultiSelectDropdown } from "./ui/multi-select-dropdown";
+
 const FIELD_HINTS: Record<string, string> = {
   From: "First included date. Closed trades use their closing day; open trades use their opening day.",
   To: "Last included date. Dates follow the journal time zone.",
   Strategy: "Include trades assigned to this playbook. All includes trades without a playbook.",
-  "Symbols (comma-separated)":
-    "Include these symbols. Separate multiple symbols with commas, for example AAPL, NVDA.",
-  "Exclude symbols": "Hide these symbols from the results. Separate multiple symbols with commas.",
-  "Required tags (comma-separated)":
-    "Filter by tags recorded on your trades. Separate multiple tags with commas.",
-  "Required mistakes":
-    "Filter by recorded trading mistakes. Separate multiple mistakes with commas.",
+  Symbols: "Include these symbols in your results.",
+  "Exclude symbols": "Hide these symbols from the results.",
+  "Required tags": "Filter by tags recorded on your trades.",
+  "Required mistakes": "Filter by recorded trading mistakes.",
   "Review status": "Find trades you have marked reviewed, or those still awaiting review.",
   "Realized R": "Trade profit or loss expressed as a multiple of the trade's initial risk.",
   "Planned R": "The planned reward relative to the trade's initial risk.",
   "Minutes held": "Time between opening and closing a trade, measured in minutes.",
 };
+
 export const fieldClass = "h-9 w-full min-w-0 rounded-md border bg-background px-2 text-sm";
+
 export function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <label className="journal-filter-field grid min-w-0 gap-1 text-xs text-muted-foreground">
@@ -46,6 +47,21 @@ export function Field({ label, children }: { label: string; children: React.Reac
     </label>
   );
 }
+
+function parseTokens(val?: string | null): string[] {
+  if (!val) return [];
+  return val
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+interface FilterOptionsResponse {
+  symbols: string[];
+  tags: string[];
+  mistakes: string[];
+}
+
 export function FilterFields({
   value,
   onChange,
@@ -59,7 +75,10 @@ export function FilterFields({
   const { data: playbooks } = useApi<{ playbooks: { id: string; name: string }[] }>(
     "/api/playbooks",
   );
+  const { data: filterOptions } = useApi<FilterOptionsResponse>("/api/filter-options");
+
   const set = (key: FilterKey, v: string) => onChange({ ...value, [key]: v });
+
   const input = (key: FilterKey, label: string, type = "text") => (
     <Field key={key} label={label}>
       <MonetaryField sensitive={/^(entry|exit|pnl)(Min|Max)$/.test(key)}>
@@ -82,6 +101,7 @@ export function FilterFields({
       </MonetaryField>
     </Field>
   );
+
   const select = (key: FilterKey, label: string, choices: [string, string][]) => (
     <Field key={key} label={label}>
       <span className="journal-filter-select relative block min-w-0">
@@ -100,6 +120,7 @@ export function FilterFields({
       </span>
     </Field>
   );
+
   return (
     <div className="journal-filter-fields space-y-5">
       <div className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 md:grid-cols-3">
@@ -110,10 +131,51 @@ export function FilterFields({
           "Strategy",
           (playbooks?.playbooks ?? []).map((p) => [p.id, p.name]),
         )}
-        {input("symbol", "Symbols (comma-separated)")}
-        {input("excludeSymbol", "Exclude symbols")}
-        {input("tag", "Required tags (comma-separated)")}
-        {input("mistake", "Required mistakes")}
+
+        {/* 1. Symbols Dropdown */}
+        <Field label="Symbols">
+          <MultiSelectDropdown
+            placeholder="All symbols"
+            searchPlaceholder="Search symbols..."
+            options={filterOptions?.symbols ?? []}
+            selected={parseTokens(value.symbol)}
+            onChange={(items) => set("symbol", items.join(","))}
+          />
+        </Field>
+
+        {/* 2. Exclude Symbols Dropdown */}
+        <Field label="Exclude symbols">
+          <MultiSelectDropdown
+            placeholder="None"
+            searchPlaceholder="Search symbols to exclude..."
+            options={filterOptions?.symbols ?? []}
+            selected={parseTokens(value.excludeSymbol)}
+            onChange={(items) => set("excludeSymbol", items.join(","))}
+          />
+        </Field>
+
+        {/* 3. Required Tags Dropdown */}
+        <Field label="Required tags">
+          <MultiSelectDropdown
+            placeholder="All tags"
+            searchPlaceholder="Search tags..."
+            options={filterOptions?.tags ?? []}
+            selected={parseTokens(value.tag)}
+            onChange={(items) => set("tag", items.join(","))}
+          />
+        </Field>
+
+        {/* 4. Required Mistakes Dropdown */}
+        <Field label="Required mistakes">
+          <MultiSelectDropdown
+            placeholder="All mistakes"
+            searchPlaceholder="Search mistakes..."
+            options={filterOptions?.mistakes ?? []}
+            selected={parseTokens(value.mistake)}
+            onChange={(items) => set("mistake", items.join(","))}
+          />
+        </Field>
+
         {select("direction", "Direction", [
           ["long", "Long"],
           ["short", "Short"],
@@ -135,6 +197,7 @@ export function FilterFields({
           ["equity", "futures", "forex", "option", "crypto", "cfd", "other"].map((v) => [v, v]),
         )}
       </div>
+
       <fieldset className="journal-filter-accounts rounded-lg border p-3">
         <legend className="px-1 text-xs text-muted-foreground">
           Accounts · none selected means all
@@ -158,6 +221,7 @@ export function FilterFields({
             ))}
         </div>
       </fieldset>
+
       <details className="journal-filter-advanced">
         <summary className="flex cursor-pointer items-center justify-between gap-3 text-sm">
           <span>Size, price, risk and time</span>

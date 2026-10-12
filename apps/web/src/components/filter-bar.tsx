@@ -14,23 +14,102 @@ import {
 import { FilterFields } from "./filter-fields";
 import { SlidersHorizontal } from "lucide-react";
 import { AccountSelector } from "./account-selector";
+import { DateRangeSelect } from "./date-range-select";
+
 export const useFilters = () => {
   const params = useSearchParams();
   const { data } = useApi<{ timeZone: string }>("/api/settings");
-  const range = params.get("range") ?? "all",
-    timeZone = data?.timeZone ?? "UTC";
+  const range = params.get("range") ?? "all";
+  const timeZone = data?.timeZone ?? "UTC";
+
   return useMemo(() => {
     const f = readFilters(new URLSearchParams(params.toString()));
     const today = dayKeyOf(new Date().toISOString(), timeZone);
-    if (range === "ytd") {
-      f.from = `${today.slice(0, 4)}-01-01`;
-      f.to = today;
-    } else if (["7d", "30d", "90d"].includes(range)) {
-      const d = new Date(today + "T12:00:00Z");
-      d.setUTCDate(d.getUTCDate() - Number(range.slice(0, -1)) + 1);
-      f.from = d.toISOString().slice(0, 10);
-      f.to = today;
+    const [yStr, mStr, dStr] = today.split("-");
+    const year = Number(yStr);
+    const month = Number(mStr);
+    const day = Number(dStr);
+    const todayDate = new Date(Date.UTC(year, month - 1, day, 12, 0, 0));
+    const dayOfWeek = todayDate.getUTCDay();
+
+    switch (range) {
+      case "this-week": {
+        const diffToMon = (dayOfWeek + 6) % 7;
+        const mon = new Date(todayDate);
+        mon.setUTCDate(mon.getUTCDate() - diffToMon);
+        f.from = mon.toISOString().slice(0, 10);
+        f.to = today;
+        break;
+      }
+      case "last-week": {
+        const diffToMon = (dayOfWeek + 6) % 7;
+        const mon = new Date(todayDate);
+        mon.setUTCDate(mon.getUTCDate() - diffToMon - 7);
+        const sun = new Date(mon);
+        sun.setUTCDate(mon.getUTCDate() + 6);
+        f.from = mon.toISOString().slice(0, 10);
+        f.to = sun.toISOString().slice(0, 10);
+        break;
+      }
+      case "this-month": {
+        f.from = `${yStr}-${mStr}-01`;
+        f.to = today;
+        break;
+      }
+      case "last-month": {
+        const pYear = month === 1 ? year - 1 : year;
+        const pMonth = month === 1 ? 12 : month - 1;
+        const pMonthStr = String(pMonth).padStart(2, "0");
+        const lastDay = new Date(Date.UTC(pYear, pMonth, 0)).getUTCDate();
+        f.from = `${pYear}-${pMonthStr}-01`;
+        f.to = `${pYear}-${pMonthStr}-${String(lastDay).padStart(2, "0")}`;
+        break;
+      }
+      case "this-quarter": {
+        const q = Math.floor((month - 1) / 3);
+        const startM = String(q * 3 + 1).padStart(2, "0");
+        f.from = `${yStr}-${startM}-01`;
+        f.to = today;
+        break;
+      }
+      case "last-quarter": {
+        const currQ = Math.floor((month - 1) / 3);
+        const pQ = currQ === 0 ? 3 : currQ - 1;
+        const pY = currQ === 0 ? year - 1 : year;
+        const startM = String(pQ * 3 + 1).padStart(2, "0");
+        const endM = pQ * 3 + 3;
+        const lastDay = new Date(Date.UTC(pY, endM, 0)).getUTCDate();
+        f.from = `${pY}-${startM}-01`;
+        f.to = `${pY}-${String(endM).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+        break;
+      }
+      case "this-year":
+      case "ytd": {
+        f.from = `${yStr}-01-01`;
+        f.to = today;
+        break;
+      }
+      case "last-year": {
+        f.from = `${year - 1}-01-01`;
+        f.to = `${year - 1}-12-31`;
+        break;
+      }
+      case "7d":
+      case "30d":
+      case "90d": {
+        const d = new Date(today + "T12:00:00Z");
+        d.setUTCDate(d.getUTCDate() - Number(range.slice(0, -1)) + 1);
+        f.from = d.toISOString().slice(0, 10);
+        f.to = today;
+        break;
+      }
+      case "all":
+      default: {
+        // retain custom or empty bounds
+        break;
+      }
     }
+
     return {
       accounts: f.accounts ?? null,
       from: f.from ?? null,
@@ -42,27 +121,22 @@ export const useFilters = () => {
     };
   }, [params, range, timeZone]);
 };
+
 export type Filters = ReturnType<typeof useFilters>;
+
 export function FilterBar({ title, actions }: { title: string; actions?: React.ReactNode }) {
-  const router = useRouter(),
-    pathname = usePathname(),
-    params = useSearchParams();
+  const router = useRouter();
+  const pathname = usePathname();
+  const params = useSearchParams();
   const filters = useFilters();
   const showFilters =
     ["/", "/reports", "/trades", "/calendar", "/journal", "/playbooks"].includes(pathname) ||
     pathname.startsWith("/journal/");
-  const [open, setOpen] = useState(false),
-    [draft, setDraft] = useState<AnalysisFilters>({});
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState<AnalysisFilters>({});
   const filterTitle = useRef<HTMLHeadingElement>(null);
   const count = Object.keys(filters.values).filter((k) => !["from", "to"].includes(k)).length;
-  const apply = () => {
-    const next = new URLSearchParams(params.toString());
-    FILTER_KEYS.forEach((k) => next.delete(k));
-    next.set("range", "custom");
-    for (const [k, v] of Object.entries(draft)) if (v) next.set(k, v);
-    router.replace(`${pathname}?${next}`);
-    setOpen(false);
-  };
+
   return (
     <>
       <div className="journal-filter-bar sticky z-10 flex min-h-14 min-w-0 flex-wrap items-center gap-2 border-b bg-background/95 px-4 py-2 backdrop-blur">
@@ -70,29 +144,11 @@ export function FilterBar({ title, actions }: { title: string; actions?: React.R
         {showFilters && (
           <>
             <AccountSelector />
-            <div className="flex max-w-full shrink-0 items-center rounded-md border p-0.5">
-              {["7d", "30d", "90d", "ytd", "all"].map((range) => (
-                <Button
-                  key={range}
-                  variant={filters.range === range ? "secondary" : "ghost"}
-                  size="sm"
-                  className="h-7 px-2 text-xs"
-                  onClick={() => {
-                    const next = new URLSearchParams(params.toString());
-                    next.set("range", range);
-                    next.delete("from");
-                    next.delete("to");
-                    router.replace(`${pathname}?${next}`);
-                  }}
-                >
-                  {range === "all" ? "All" : range.toUpperCase()}
-                </Button>
-              ))}
-            </div>
+            <DateRangeSelect currentRange={filters.range} />
             <Button
               variant="outline"
               size="sm"
-              title="Filter by dates, symbols, strategy, outcome, and more. All selected conditions must match."
+              title="Filter by dates, symbols, strategy, outcome, and more."
               onClick={() => {
                 setDraft(filters.values);
                 setOpen(true);
@@ -109,37 +165,19 @@ export function FilterBar({ title, actions }: { title: string; actions?: React.R
           </div>
         )}
       </div>
+
       <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent
-          className="journal-filter-dialog sm:max-w-3xl"
-          onOpenAutoFocus={(event) => {
-            event.preventDefault();
-            filterTitle.current?.focus();
-          }}
-        >
+        <DialogContent className="journal-filter-dialog sm:max-w-3xl">
           <DialogHeader className="journal-filter-heading">
             <DialogTitle ref={filterTitle} tabIndex={-1} className="outline-none">
               Filter your journal
             </DialogTitle>
             <DialogDescription className="journal-filter-description">
-              Times use {filters.timeZone}. Dates use the closing day, or opening day for open
-              trades. All selected conditions must match.
+              Times use {filters.timeZone}. Dates use the closing day, or opening day for open trades.
             </DialogDescription>
           </DialogHeader>
           <div className="journal-filter-body">
             <FilterFields value={draft} onChange={setDraft} />
-          </div>
-          <div className="journal-filter-footer flex items-center justify-between gap-3">
-            <Button
-              variant="ghost"
-              className="text-muted-foreground hover:text-foreground"
-              onClick={() => setDraft({})}
-            >
-              Clear filters
-            </Button>
-            <Button className="min-w-28" onClick={apply}>
-              Apply filters
-            </Button>
           </div>
         </DialogContent>
       </Dialog>
