@@ -12,7 +12,7 @@ import type {
 import { dayKeyOf, relativeDrawdownCurve } from "@luxalgo/journal-core";
 import { CurrencyNotice } from "@/components/currency-notice";
 import type { CurrencyScope } from "@/lib/currencies";
-import { CalendarPnl } from "@/components/calendar-pnl";
+import { TradeCalendar } from "@/components/calendar/trade-calendar";
 import { DailyBars } from "@/components/charts/daily-bars";
 import { EdgeRadar } from "@/components/charts/edge-radar";
 import { EquityArea } from "@/components/charts/equity-area";
@@ -489,12 +489,9 @@ function DashboardContent({
             layoutGroup: "detail",
             content: (
               <Card className="h-full">
-                <CardHeader className="flex-row items-center justify-between">
-                  <CardTitle>
-                    {new Date(Date.UTC(data.calendar.year, data.calendar.month - 1)).toLocaleString(
-                      "en-US",
-                      { month: "long", year: "numeric", timeZone: "UTC" },
-                    )}
+                <CardHeader className="flex-row items-center justify-between pb-2">
+                  <CardTitle className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    Calendar
                   </CardTitle>
                   <Link
                     href={`/calendar?${query}`}
@@ -503,12 +500,11 @@ function DashboardContent({
                     Full calendar
                   </Link>
                 </CardHeader>
-                <CardContent>
-                  <CalendarPnl
+                <CardContent className="pt-0">
+                  <TradeCalendar
                     calendar={data.calendar}
-                    runningPnl={data.runningPnl}
                     currency={data.calendarCurrencies[0] ?? "USD"}
-                    monetary={data.calendarCurrencies.length <= 1}
+                    compact
                   />
                 </CardContent>
               </Card>

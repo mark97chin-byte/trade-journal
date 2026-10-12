@@ -4,7 +4,7 @@ import { Suspense, useState } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { dayKeyOf } from "@luxalgo/journal-core";
 import { CurrencyNotice } from "@/components/currency-notice";
-import { CalendarPnl } from "@/components/calendar-pnl";
+import { TradeCalendar } from "@/components/calendar/trade-calendar";
 import { FilterBar, useFilters } from "@/components/filter-bar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -29,12 +29,18 @@ function CalendarView() {
     `/api/calendar?${query}${selection ? `&calYear=${selection.year}&calMonth=${selection.month}` : ""}`,
   );
   const today = dayKeyOf(new Date().toISOString(), timeZone);
-  const month = selection ??
+  const month =
+    selection ??
     data?.calendar ?? { year: Number(today.slice(0, 4)), month: Number(today.slice(5, 7)) };
 
   const shift = (delta: number) => {
     const next = new Date(Date.UTC(month.year, month.month - 1 + delta, 1));
     setMonth({ year: next.getUTCFullYear(), month: next.getUTCMonth() + 1 });
+  };
+
+  const handleThisMonth = () => {
+    // Resetting selection reverts query back to current month
+    setMonth(null);
   };
 
   return (
@@ -50,7 +56,7 @@ function CalendarView() {
               onClick={() => shift(-1)}
               aria-label="Previous month"
             >
-              <ChevronLeft />
+              <ChevronLeft className="h-4 w-4" />
             </Button>
             <span className="w-36 text-center text-sm font-medium">
               {new Date(Date.UTC(month.year, month.month - 1)).toLocaleString("en-US", {
@@ -66,7 +72,15 @@ function CalendarView() {
               onClick={() => shift(1)}
               aria-label="Next month"
             >
-              <ChevronRight />
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8 text-xs font-medium ml-1"
+              onClick={handleThisMonth}
+            >
+              This month
             </Button>
           </div>
         }
@@ -87,16 +101,14 @@ function CalendarView() {
                 {data.currencyGroups?.map((group) => (
                   <div key={group.currency}>
                     <p className="mb-3 text-sm font-medium">{group.currency} accounts</p>
-                    <CalendarPnl calendar={group.calendar} currency={group.currency} />
+                    <TradeCalendar calendar={group.calendar} currency={group.currency} />
                   </div>
                 ))}
               </div>
             ) : data ? (
-              <CalendarPnl
+              <TradeCalendar
                 calendar={data.calendar}
                 currency={data.currencies[0] ?? "USD"}
-                monetary={data.currencies.length <= 1}
-                runningPnl={data.runningPnl}
               />
             ) : (
               <div role="status" aria-label="Loading calendar">
