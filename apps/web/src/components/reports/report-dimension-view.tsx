@@ -1,11 +1,14 @@
 "use client";
 
 import React, { useState } from "react";
-import { TrendingUp, TrendingDown, Zap, Trophy, Settings } from "lucide-react";
+import { TrendingUp, TrendingDown, Zap, Trophy, Settings, Tag as TagIcon } from "lucide-react";
 import { ReportMetricChart } from "./report-metric-chart";
 
 interface SummaryRow {
+  id?: string;
   label: string;
+  categoryName?: string;
+  categoryColor?: string;
   trades: any[];
   stats: {
     tradesCount: number;
@@ -28,6 +31,7 @@ interface DimensionData {
   cross: {
     columns: string[];
     rows: {
+      rowId?: string;
       rowLabel: string;
       cells: Record<string, { netPnl: number; trades: number; winRate: number }>;
     }[];
@@ -46,29 +50,33 @@ export function ReportDimensionView({
   unitLabel,
   data,
   currency = "USD",
+  extraSection,
 }: {
   title: string;
   unitLabel: string;
   data: DimensionData;
   currency?: string;
+  extraSection?: React.ReactNode;
 }) {
   const { rows, highlights, cross } = data;
   const [crossMetric, setCrossMetric] = useState<"pnl" | "winrate" | "trades">("pnl");
 
-  // Custom buckets for the dual charts
-  const chartBuckets = rows.map((r) => ({ label: r.label, trades: r.trades }));
+  const chartBuckets = rows.map((r, idx) => ({
+    label: rows.filter((x) => x.label === r.label).length > 1 ? `${r.label} (#${idx + 1})` : r.label,
+    trades: r.trades,
+  }));
+  const showCategoryCol = rows.some((r) => Boolean(r.categoryName));
 
   return (
     <div className="space-y-6">
       {/* 1. TOP 4 HIGHLIGHT CARDS */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        {/* Best Performing */}
         <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
           <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
             <TrendingUp className="h-4 w-4" />
             <span>Best performing {unitLabel}</span>
           </div>
-          <div className="mt-2 text-xl font-bold text-foreground">{highlights.best.label}</div>
+          <div className="mt-2 text-xl font-bold text-foreground truncate">{highlights.best.label}</div>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
             <span>{highlights.best.count} trades</span>
             <span className="font-semibold text-emerald-400">
@@ -77,13 +85,12 @@ export function ReportDimensionView({
           </div>
         </div>
 
-        {/* Least Performing */}
         <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
           <div className="flex items-center gap-1.5 text-xs text-rose-400 font-medium">
             <TrendingDown className="h-4 w-4" />
             <span>Least performing {unitLabel}</span>
           </div>
-          <div className="mt-2 text-xl font-bold text-foreground">{highlights.least.label}</div>
+          <div className="mt-2 text-xl font-bold text-foreground truncate">{highlights.least.label}</div>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
             <span>{highlights.least.count} trades</span>
             <span className="font-semibold text-rose-400">
@@ -92,25 +99,23 @@ export function ReportDimensionView({
           </div>
         </div>
 
-        {/* Most Active */}
         <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
           <div className="flex items-center gap-1.5 text-xs text-amber-400 font-medium">
             <Zap className="h-4 w-4" />
             <span>Most active {unitLabel}</span>
           </div>
-          <div className="mt-2 text-xl font-bold text-foreground">{highlights.mostActive.label}</div>
+          <div className="mt-2 text-xl font-bold text-foreground truncate">{highlights.mostActive.label}</div>
           <div className="mt-1 text-xs text-muted-foreground">
             {highlights.mostActive.count} trades
           </div>
         </div>
 
-        {/* Best Win Rate */}
         <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
           <div className="flex items-center gap-1.5 text-xs text-indigo-400 font-medium">
             <Trophy className="h-4 w-4" />
             <span>Best win rate</span>
           </div>
-          <div className="mt-2 text-xl font-bold text-foreground">{highlights.bestWinRate.label}</div>
+          <div className="mt-2 text-xl font-bold text-foreground truncate">{highlights.bestWinRate.label}</div>
           <div className="mt-1 text-xs text-muted-foreground">
             {highlights.bestWinRate.winRate.toFixed(0)}% / {highlights.bestWinRate.count} trades
           </div>
@@ -132,6 +137,9 @@ export function ReportDimensionView({
         />
       </div>
 
+      {/* OPTIONAL EXTRA SECTION (e.g., Strategy Rules Winrate Analyzer) */}
+      {extraSection}
+
       {/* 3. SUMMARY TABLE */}
       <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 shadow-sm">
         <div className="flex items-center justify-between pb-3">
@@ -146,6 +154,7 @@ export function ReportDimensionView({
             <thead className="border-b border-border/40 text-muted-foreground">
               <tr>
                 <th className="py-2.5 font-medium">{title}</th>
+                {showCategoryCol && <th className="py-2.5 font-medium">Category</th>}
                 <th className="py-2.5 text-right font-medium">Win %</th>
                 <th className="py-2.5 text-right font-medium">Net P&L</th>
                 <th className="py-2.5 text-right font-medium">Trade count</th>
@@ -155,11 +164,36 @@ export function ReportDimensionView({
               </tr>
             </thead>
             <tbody className="divide-y divide-border/20">
-              {rows.map((r) => {
+              {rows.map((r, idx) => {
                 const s = r.stats;
+                const rowKey = r.id ? `${r.id}-${idx}` : `${r.label}-${idx}`;
                 return (
-                  <tr key={r.label} className="hover:bg-secondary/20 transition-colors">
-                    <td className="py-2.5 font-medium text-foreground">{r.label}</td>
+                  <tr key={rowKey} className="hover:bg-secondary/20 transition-colors">
+                    <td className="py-2.5 font-medium text-foreground">
+                      <div className="flex items-center gap-2">
+                        {r.categoryColor && !showCategoryCol && (
+                          <span
+                            className="h-2.5 w-2.5 rounded-full shrink-0"
+                            style={{ backgroundColor: r.categoryColor }}
+                          />
+                        )}
+                        <span>{r.label}</span>
+                      </div>
+                    </td>
+                    {showCategoryCol && (
+                      <td className="py-2.5">
+                        <span className="inline-flex items-center gap-1.5 text-muted-foreground">
+                          <TagIcon
+                            className="h-3 w-3"
+                            style={{
+                              color: r.categoryColor ?? "#94a3b8",
+                              fill: r.categoryColor ?? "#94a3b8",
+                            }}
+                          />
+                          <span>{r.categoryName}</span>
+                        </span>
+                      </td>
+                    )}
                     <td className="py-2.5 text-right tabular-nums">
                       {s.tradesCount > 0 ? `${s.winRate % 1 === 0 ? s.winRate.toFixed(0) : s.winRate.toFixed(1)}%` : "0%"}
                     </td>
@@ -192,7 +226,6 @@ export function ReportDimensionView({
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
             <h3 className="text-sm font-semibold text-foreground">Cross analysis</h3>
 
-            {/* Metric Mode Switcher */}
             <div className="flex items-center rounded-lg border border-border/50 bg-[#161822] p-0.5 text-xs">
               <button
                 type="button"
@@ -243,8 +276,8 @@ export function ReportDimensionView({
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/20">
-                {cross.rows.map((r) => (
-                  <tr key={r.rowLabel} className="hover:bg-secondary/10">
+                {cross.rows.map((r, rowIdx) => (
+                  <tr key={r.rowId ? `${r.rowId}-${rowIdx}` : `${r.rowLabel}-${rowIdx}`} className="hover:bg-secondary/10">
                     <td className="py-2.5 text-left font-medium text-foreground whitespace-nowrap pr-4">
                       {r.rowLabel}
                     </td>

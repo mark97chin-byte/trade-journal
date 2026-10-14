@@ -1,7 +1,10 @@
 "use client";
 
 import React, { useState } from "react";
-import { MultiSelectDropdown } from "@/components/ui/multi-select-dropdown";
+import {
+  MultiSelectDropdown,
+  type CategorizedOption,
+} from "@/components/ui/multi-select-dropdown";
 import { OptionSelect } from "@/components/ui/option-select";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -11,6 +14,7 @@ import { SlidersHorizontal } from "lucide-react";
 interface FilterOptionsResponse {
   symbols: string[];
   tags: string[];
+  managedTags?: CategorizedOption[];
 }
 
 interface PlaybooksResponse {
@@ -80,7 +84,16 @@ function fmtMoney(val: number | null | undefined): string {
   if (val === null || val === undefined || isNaN(val)) return "N/A";
   const abs = Math.abs(val);
   const sign = val < 0 ? "-$" : "$";
-  return `${sign}${abs.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 2 })}`;
+  return `${sign}${abs.toLocaleString(undefined, {
+    minimumFractionDigits: 1,
+    maximumFractionDigits: 2,
+  })}`;
+}
+
+function fmtAxisMoney(val: number): string {
+  const abs = Math.abs(val);
+  const sign = val < 0 ? "-$" : "$";
+  return `${sign}${Math.round(abs).toLocaleString()}`;
 }
 
 function fmtDuration(ms: number | null | undefined): string {
@@ -153,7 +166,8 @@ export function CompareView({
     return (
       <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 text-foreground shadow-sm">
         <h3 className="text-xs font-semibold text-foreground pb-3">
-          Group #{groupNum} {hasGenerated && count !== undefined ? `(${count} Trades Matched)` : ""}
+          Group #{groupNum}{" "}
+          {hasGenerated && count !== undefined ? `(${count} Trades Matched)` : ""}
         </h3>
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
@@ -176,6 +190,7 @@ export function CompareView({
               placeholder="Select tags"
               searchPlaceholder="Search tags..."
               options={filterOpts?.tags ?? []}
+              categorizedOptions={filterOpts?.managedTags}
               selected={state.tags}
               onChange={(t) => setState((prev) => ({ ...prev, tags: t }))}
             />
@@ -228,7 +243,9 @@ export function CompareView({
             <input
               type="date"
               value={state.startDate}
-              onChange={(e) => setState((prev) => ({ ...prev, startDate: e.target.value }))}
+              onChange={(e) =>
+                setState((prev) => ({ ...prev, startDate: e.target.value }))
+              }
               className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none"
             />
           </div>
@@ -239,7 +256,9 @@ export function CompareView({
             <input
               type="date"
               value={state.endDate}
-              onChange={(e) => setState((prev) => ({ ...prev, endDate: e.target.value }))}
+              onChange={(e) =>
+                setState((prev) => ({ ...prev, endDate: e.target.value }))
+              }
               className="h-9 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground outline-none"
             />
           </div>
@@ -261,21 +280,35 @@ export function CompareView({
         <div className="divide-y divide-border/20 text-xs pt-1">
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Total P&L</span>
-            <span className={`font-semibold tabular-nums ${group.totalPnl > 0 ? "text-emerald-400" : group.totalPnl < 0 ? "text-rose-400" : ""}`}>
+            <span
+              className={`font-semibold tabular-nums ${
+                group.totalPnl > 0
+                  ? "text-emerald-400"
+                  : group.totalPnl < 0
+                  ? "text-rose-400"
+                  : ""
+              }`}
+            >
               {fmtMoney(group.totalPnl)}
             </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Average daily volume</span>
-            <span className="font-semibold tabular-nums">{group.avgDailyVolume.toFixed(2)}</span>
+            <span className="font-semibold tabular-nums">
+              {group.avgDailyVolume.toFixed(2)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Average winning trade</span>
-            <span className="font-semibold tabular-nums text-emerald-400">{fmtMoney(group.avgWinningTrade)}</span>
+            <span className="font-semibold tabular-nums text-emerald-400">
+              {fmtMoney(group.avgWinningTrade)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Average losing trade</span>
-            <span className="font-semibold tabular-nums text-rose-400">{fmtMoney(group.avgLosingTrade)}</span>
+            <span className="font-semibold tabular-nums text-rose-400">
+              {fmtMoney(group.avgLosingTrade)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Number of winning trades</span>
@@ -287,35 +320,51 @@ export function CompareView({
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Total commissions</span>
-            <span className="font-semibold tabular-nums">{fmtMoney(group.totalCommissions)}</span>
+            <span className="font-semibold tabular-nums">
+              {fmtMoney(group.totalCommissions)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Max consecutive wins</span>
-            <span className="font-semibold tabular-nums">{group.maxConsecutiveWins}</span>
+            <span className="font-semibold tabular-nums">
+              {group.maxConsecutiveWins}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Max consecutive losses</span>
-            <span className="font-semibold tabular-nums">{group.maxConsecutiveLosses}</span>
+            <span className="font-semibold tabular-nums">
+              {group.maxConsecutiveLosses}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Average hold time (all)</span>
-            <span className="font-semibold">{fmtDuration(group.avgHoldTimeAllMs)}</span>
+            <span className="font-semibold">
+              {fmtDuration(group.avgHoldTimeAllMs)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Avg win trade duration</span>
-            <span className="font-semibold text-emerald-400">{fmtDuration(group.avgHoldTimeWinMs)}</span>
+            <span className="font-semibold text-emerald-400">
+              {fmtDuration(group.avgHoldTimeWinMs)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Avg loss trade duration</span>
-            <span className="font-semibold text-rose-400">{fmtDuration(group.avgHoldTimeLossMs)}</span>
+            <span className="font-semibold text-rose-400">
+              {fmtDuration(group.avgHoldTimeLossMs)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Profit factor</span>
-            <span className="font-semibold tabular-nums">{group.profitFactor.toFixed(2)}</span>
+            <span className="font-semibold tabular-nums">
+              {group.profitFactor.toFixed(2)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Trade expectancy</span>
-            <span className="font-semibold tabular-nums">{fmtMoney(group.tradeExpectancy)}</span>
+            <span className="font-semibold tabular-nums">
+              {fmtMoney(group.tradeExpectancy)}
+            </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Avg planned R / Realized R</span>
@@ -327,13 +376,21 @@ export function CompareView({
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Best performing asset</span>
             <span className="font-semibold text-emerald-400">
-              {group.assetStats.best ? `${group.assetStats.best.name} (${fmtMoney(group.assetStats.best.pnl)})` : "N/A"}
+              {group.assetStats.best
+                ? `${group.assetStats.best.name} (${fmtMoney(
+                    group.assetStats.best.pnl
+                  )})`
+                : "N/A"}
             </span>
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Worst performing asset</span>
             <span className="font-semibold text-rose-400">
-              {group.assetStats.worst ? `${group.assetStats.worst.name} (${fmtMoney(group.assetStats.worst.pnl)})` : "N/A"}
+              {group.assetStats.worst
+                ? `${group.assetStats.worst.name} (${fmtMoney(
+                    group.assetStats.worst.pnl
+                  )})`
+                : "N/A"}
             </span>
           </div>
           <div className="flex justify-between py-2">
@@ -345,7 +402,11 @@ export function CompareView({
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Best strategy</span>
             <span className="font-semibold text-emerald-400">
-              {group.strategyStats.best ? `${group.strategyStats.best.name} (${fmtMoney(group.strategyStats.best.pnl)})` : "N/A"}
+              {group.strategyStats.best
+                ? `${group.strategyStats.best.name} (${fmtMoney(
+                    group.strategyStats.best.pnl
+                  )})`
+                : "N/A"}
             </span>
           </div>
           <div className="flex justify-between py-2">
@@ -362,11 +423,11 @@ export function CompareView({
   function renderEvaluationRing(title: string, group?: GroupAnalysis) {
     if (!group) return null;
 
+    const total = group.winningTrades + group.losingTrades;
     const winRate = Math.round(group.winRate);
-    const radius = 42;
+    const radius = 44;
     const circ = 2 * Math.PI * radius;
     const strokeDash = (winRate / 100) * circ;
-    const ringColor = winRate >= 50 ? "#10b981" : "#ef4444";
 
     return (
       <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 text-foreground shadow-sm">
@@ -375,48 +436,65 @@ export function CompareView({
           <span className="text-[11px] text-muted-foreground">({dateLabel})</span>
         </div>
 
-        <div className="flex items-center justify-center gap-12 py-5">
+        <div className="flex items-center justify-center gap-12 py-6">
           <div className="relative flex items-center justify-center">
-            <svg width="120" height="120" viewBox="0 0 120 120" className="-rotate-90">
+            <svg width="124" height="124" viewBox="0 0 124 124" className="rotate-90">
+              {/* Base Circle (Losers in Red when trades exist, neutral grey when empty) */}
               <circle
-                cx="60"
-                cy="60"
+                cx="62"
+                cy="62"
                 r={radius}
                 fill="none"
-                stroke="rgba(255,255,255,0.08)"
-                strokeWidth="8"
+                stroke={total > 0 ? "#ef4444" : "rgba(255,255,255,0.08)"}
+                strokeWidth="9"
               />
-              <circle
-                cx="60"
-                cy="60"
-                r={radius}
-                fill="none"
-                stroke={ringColor}
-                strokeWidth="8"
-                strokeDasharray={`${strokeDash} ${circ}`}
-                strokeLinecap="round"
-              />
+              {/* Foreground Arc (Winners in Green) */}
+              {total > 0 && winRate > 0 && (
+                <circle
+                  cx="62"
+                  cy="62"
+                  r={radius}
+                  fill="none"
+                  stroke="#10b981"
+                  strokeWidth="9"
+                  strokeDasharray={`${strokeDash} ${circ}`}
+                  strokeLinecap="butt"
+                />
+              )}
             </svg>
             <div className="absolute flex flex-col items-center justify-center text-center">
-              <span className="text-xl font-bold tracking-tight text-foreground">{winRate}%</span>
-              <span className="text-[9px] uppercase tracking-wider text-muted-foreground">WINRATE</span>
+              <div className="flex items-baseline gap-0.5 text-[#34d399]">
+                <span className="text-2xl font-bold tracking-tight">{winRate}</span>
+                <span className="text-xs font-semibold">%</span>
+              </div>
+              <span className="text-[9px] font-semibold uppercase tracking-wider text-[#34d399]/80">
+                WINRATE
+              </span>
             </div>
           </div>
 
-          <div className="space-y-3 text-xs">
+          <div className="space-y-3.5 text-xs">
             <div className="flex items-center gap-2.5">
-              <span className="h-3.5 w-3.5 rounded bg-emerald-500" />
+              <span className="h-3.5 w-3.5 rounded-xs bg-[#10b981]" />
               <div>
-                <span className="font-bold text-foreground text-sm">{group.winningTrades}</span>
-                <span className="text-[11px] text-muted-foreground block">winners</span>
+                <span className="font-bold text-foreground text-sm leading-none block">
+                  {group.winningTrades}
+                </span>
+                <span className="text-[11px] text-muted-foreground block mt-0.5">
+                  winners
+                </span>
               </div>
             </div>
 
             <div className="flex items-center gap-2.5">
-              <span className="h-3.5 w-3.5 rounded bg-rose-500" />
+              <span className="h-3.5 w-3.5 rounded-xs bg-[#ef4444]" />
               <div>
-                <span className="font-bold text-foreground text-sm">{group.losingTrades}</span>
-                <span className="text-[11px] text-muted-foreground block">losers</span>
+                <span className="font-bold text-foreground text-sm leading-none block">
+                  {group.losingTrades}
+                </span>
+                <span className="text-[11px] text-muted-foreground block mt-0.5">
+                  losers
+                </span>
               </div>
             </div>
           </div>
@@ -425,44 +503,69 @@ export function CompareView({
     );
   }
 
-  function renderCumulativeCurve(title: string, group?: GroupAnalysis) {
+  function renderCumulativeCurve(
+    safeId: string,
+    title: string,
+    group?: GroupAnalysis
+  ) {
     if (!group) return null;
-    const pts = group.curve;
+    const rawPts = group.curve;
 
-    if (pts.length === 0) {
+    if (rawPts.length === 0) {
       return (
         <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 text-foreground shadow-sm">
           <div className="pb-3 border-b border-border/20">
             <h3 className="text-xs font-semibold text-foreground">{title}</h3>
             <span className="text-[11px] text-muted-foreground">({dateLabel})</span>
           </div>
-          <div className="flex h-44 items-center justify-center text-xs text-muted-foreground">
+          <div className="flex h-52 items-center justify-center text-xs text-muted-foreground">
             No trades in this selection
           </div>
         </div>
       );
     }
 
-    const width = 600;
-    const height = 200;
-    const padX = 45;
-    const padY = 20;
+    // Prepend a $0 starting anchor point so the curve starts from $0 like TradeZella
+    const pts =
+      rawPts[0] && rawPts[0].cumPnl !== 0
+        ? [{ date: rawPts[0].date, cumPnl: 0 }, ...rawPts]
+        : rawPts;
+
+    const width = 620;
+    const height = 230;
+    const padLeft = 58;
+    const padRight = 24;
+    const padTop = 18;
+    const padBottom = 28;
+    const plotW = width - padLeft - padRight;
+    const plotH = height - padTop - padBottom;
 
     const values = pts.map((p) => p.cumPnl);
     const minVal = Math.min(...values, 0);
     const maxVal = Math.max(...values, 0);
-    const span = maxVal - minVal || 1;
+    const rawSpan = maxVal - minVal || 100;
 
-    const getX = (i: number) => padX + (i / Math.max(pts.length - 1, 1)) * (width - padX * 2);
-    const getY = (v: number) => height - padY - ((v - minVal) / span) * (height - padY * 2);
+    // Nice 6-step Y-axis ticks
+    const step = rawSpan / 5;
+    const ticks = Array.from({ length: 6 }, (_, i) => minVal + step * i);
+    if (!ticks.some((t) => Math.abs(t) < 0.01)) {
+      ticks.push(0);
+      ticks.sort((a, b) => a - b);
+    }
+
+    const getX = (i: number) =>
+      padLeft + (i / Math.max(pts.length - 1, 1)) * plotW;
+    const getY = (v: number) =>
+      padTop + plotH - ((v - minVal) / rawSpan) * plotH;
     const zeroY = getY(0);
 
-    const pathPts = pts.map((p, i) => `${getX(i).toFixed(1)} ${getY(p.cumPnl).toFixed(1)}`);
+    const pathPts = pts.map(
+      (p, i) => `${getX(i).toFixed(1)} ${getY(p.cumPnl).toFixed(1)}`
+    );
     const linePath = `M ${pathPts.join(" L ")}`;
-    const areaPath = `${linePath} L ${getX(pts.length - 1)} ${zeroY} L ${getX(0)} ${zeroY} Z`;
-
-    const isNetPositive = group.totalPnl >= 0;
-    const strokeColor = isNetPositive ? "#10b981" : "#ef4444";
+    const areaPath = `${linePath} L ${getX(pts.length - 1).toFixed(1)} ${zeroY.toFixed(
+      1
+    )} L ${getX(0).toFixed(1)} ${zeroY.toFixed(1)} Z`;
 
     return (
       <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 text-foreground shadow-sm">
@@ -471,39 +574,142 @@ export function CompareView({
           <span className="text-[11px] text-muted-foreground">({dateLabel})</span>
         </div>
 
-        <div className="pt-2">
-          <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible select-none">
+        <div className="pt-3">
+          <svg
+            viewBox={`0 0 ${width} ${height}`}
+            className="w-full h-auto overflow-visible select-none"
+          >
             <defs>
-              <linearGradient id={`grad-${title}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#10b981" stopOpacity="0.3" />
-                <stop offset="100%" stopColor="#ef4444" stopOpacity="0.3" />
+              {/* Positive Area Gradient (Above $0) */}
+              <linearGradient
+                id={`posGrad-${safeId}`}
+                x1="0"
+                y1={padTop}
+                x2="0"
+                y2={Math.max(zeroY, padTop + 1)}
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop offset="0%" stopColor="#10b981" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="#10b981" stopOpacity="0.03" />
               </linearGradient>
+
+              {/* Negative Area Gradient (Below $0) */}
+              <linearGradient
+                id={`negGrad-${safeId}`}
+                x1="0"
+                y1={zeroY}
+                x2="0"
+                y2={ Math.max(height - padBottom, zeroY + 1)}
+                gradientUnits="userSpaceOnUse"
+              >
+                <stop offset="0%" stopColor="#ef4444" stopOpacity="0.03" />
+                <stop offset="100%" stopColor="#ef4444" stopOpacity="0.5" />
+              </linearGradient>
+
+              {/* Clip paths split at $0 */}
+              <clipPath id={`clipPos-${safeId}`}>
+                <rect x="0" y="0" width={width} height={Math.max(0, zeroY)} />
+              </clipPath>
+              <clipPath id={`clipNeg-${safeId}`}>
+                <rect
+                  x="0"
+                  y={zeroY}
+                  width={width}
+                  height={Math.max(0, height - zeroY)}
+                />
+              </clipPath>
             </defs>
 
-            <line
-              x1={padX}
-              y1={zeroY}
-              x2={width - padX}
-              y2={zeroY}
-              stroke="rgba(255,255,255,0.15)"
-              strokeDasharray="3 3"
+            {/* Horizontal Grid Lines + Y-Axis Labels */}
+            {ticks.map((tk, idx) => {
+              const y = getY(tk);
+              const isZero = Math.abs(tk) < 0.01;
+              return (
+                <g key={idx}>
+                  <line
+                    x1={padLeft}
+                    y1={y}
+                    x2={width - padRight}
+                    y2={y}
+                    stroke={
+                      isZero
+                        ? "rgba(255,255,255,0.22)"
+                        : "rgba(255,255,255,0.07)"
+                    }
+                    strokeDasharray={isZero ? undefined : "2 3"}
+                  />
+                  <text
+                    x={padLeft - 8}
+                    y={y + 3}
+                    textAnchor="end"
+                    fontSize="10"
+                    fill="#94a3b8"
+                  >
+                    {fmtAxisMoney(tk)}
+                  </text>
+                </g>
+              );
+            })}
+
+            {/* Green Area Above $0 */}
+            <path
+              d={areaPath}
+              fill={`url(#posGrad-${safeId})`}
+              clipPath={`url(#clipPos-${safeId})`}
             />
 
-            <path d={areaPath} fill={`url(#grad-${title})`} />
+            {/* Red Area Below $0 */}
+            <path
+              d={areaPath}
+              fill={`url(#negGrad-${safeId})`}
+              clipPath={`url(#clipNeg-${safeId})`}
+            />
+
+            {/* Curve Line Above $0 */}
             <path
               d={linePath}
               fill="none"
-              stroke={strokeColor}
-              strokeWidth="2.5"
+              stroke="#34d399"
+              strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"
+              clipPath={`url(#clipPos-${safeId})`}
             />
 
-            <text x={padX} y={height - 2} fontSize="10" fill="#71717a">
-              {pts[0]?.date.slice(5)}
+            {/* Curve Line Below $0 */}
+            <path
+              d={linePath}
+              fill="none"
+              stroke="#f87171"
+              strokeWidth="2"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              clipPath={`url(#clipNeg-${safeId})`}
+            />
+
+            {/* X-Axis Date Labels */}
+            <text x={padLeft} y={height - 6} fontSize="10" fill="#94a3b8">
+              {rawPts[0]?.date.slice(5)}
             </text>
-            <text x={width - padX} y={height - 2} textAnchor="end" fontSize="10" fill="#71717a">
-              {pts[pts.length - 1]?.date.slice(5)}
+            {rawPts.length > 2 && (
+              <text
+                x={padLeft + plotW / 2}
+                y={height - 6}
+                textAnchor="middle"
+                fontSize="10"
+                fill="#94a3b8"
+              >
+                {rawPts[Math.floor(rawPts.length / 2)]?.date.slice(5)}
+              </text>
+            )}
+            <text
+              x={width - padRight}
+              y={height - 6}
+              textAnchor="end"
+              fontSize="10"
+              fill="#94a3b8"
+            >
+              {rawPts[rawPts.length - 1]?.date.slice(5)}
             </text>
           </svg>
         </div>
@@ -548,14 +754,17 @@ export function CompareView({
       {!hasGenerated && !loading && (
         <div className="rounded-xl border border-dashed border-border/60 bg-[#12141a]/40 p-8 text-center text-muted-foreground">
           <SlidersHorizontal className="mx-auto h-8 w-8 opacity-40 mb-2" />
-          <p className="text-xs font-medium text-foreground">No comparison generated yet</p>
+          <p className="text-xs font-medium text-foreground">
+            No comparison generated yet
+          </p>
           <p className="text-[11px] text-muted-foreground mt-0.5">
-            Select the criteria for Group #1 and Group #2 above, then click <strong>Generate Report</strong>.
+            Select the criteria for Group #1 and Group #2 above, then click{" "}
+            <strong>Generate Report</strong>.
           </p>
         </div>
       )}
 
-      {/* 4. COMPARISON STATS & CHARTS (Only visible after clicking Generate Report) */}
+      {/* 4. COMPARISON STATS & CHARTS */}
       {hasGenerated && !loading && data && (
         <>
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
@@ -569,8 +778,16 @@ export function CompareView({
           </div>
 
           <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
-            {renderCumulativeCurve("Daily net cumulative P&L (Group #1)", data.group1)}
-            {renderCumulativeCurve("Daily net cumulative P&L (Group #2)", data.group2)}
+            {renderCumulativeCurve(
+              "group1",
+              "Daily net cumulative P&L (Group #1)",
+              data.group1
+            )}
+            {renderCumulativeCurve(
+              "group2",
+              "Daily net cumulative P&L (Group #2)",
+              data.group2
+            )}
           </div>
         </>
       )}

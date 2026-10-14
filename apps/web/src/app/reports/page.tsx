@@ -1,5 +1,6 @@
 "use client";
 
+import { StrategyRulesCard } from "@/components/reports/strategy-rules-card";
 import React, { Suspense, useState, useRef, useEffect, useMemo } from "react";
 import { FilterBar, useFilters } from "@/components/filter-bar";
 import { ReportOverview } from "@/components/report-overview";
@@ -7,9 +8,10 @@ import { ReportDimensionView } from "@/components/reports/report-dimension-view"
 import { WinsVsLossesView } from "@/components/reports/wins-vs-losses-view";
 import { PerformanceView } from "@/components/reports/performance-view";
 import { CompareView } from "@/components/reports/compare-view";
+import { ContentManagementView } from "@/components/tags/content-management-view";
 import { useApi } from "@/lib/use-api";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ChevronDown, Check } from "lucide-react";
+import { ChevronDown, Check, Tags } from "lucide-react";
 
 type MainTab =
   | "overview"
@@ -19,7 +21,8 @@ type MainTab =
   | "tags"
   | "wins_vs_losses"
   | "performance"
-  | "compare";
+  | "compare"
+  | "content_management";
 
 type DayTimeSubTab = "days" | "months" | "trade_time" | "trade_duration";
 
@@ -61,19 +64,25 @@ function ReportsContent() {
 
   const [mainTab, setMainTab] = useState<MainTab>("overview");
   const [dayTimeSubTab, setDayTimeSubTab] = useState<DayTimeSubTab>("days");
+  const [selectedTagCategory, setSelectedTagCategory] = useState<string>("all");
   const [dropdownOpen, setDropdownOpen] = useState(false);
+  const [catDropdownOpen, setCatDropdownOpen] = useState(false);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const catDropdownRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setDropdownOpen(false);
       }
+      if (catDropdownRef.current && !catDropdownRef.current.contains(e.target as Node)) {
+        setCatDropdownOpen(false);
+      }
     }
-    if (dropdownOpen) document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [dropdownOpen]);
+  }, []);
 
   const isReportsTabActive = [
     "day_time",
@@ -84,7 +93,9 @@ function ReportsContent() {
   ].includes(mainTab);
 
   const activeDropdownLabel =
-    REPORT_DROPDOWN_OPTIONS.find((o) => o.key === mainTab)?.label ?? "Day & Time";
+    mainTab === "content_management"
+      ? "Tags"
+      : REPORT_DROPDOWN_OPTIONS.find((o) => o.key === mainTab)?.label ?? "Day & Time";
 
   const dateLabel = useMemo(() => {
     if (range && range !== "custom" && range !== "all" && PRESET_LABELS[range]) {
@@ -96,90 +107,135 @@ function ReportsContent() {
     return "All dates";
   }, [range, from, to]);
 
+  const activeTagsData = useMemo(() => {
+    if (!data?.tags) return null;
+    if (selectedTagCategory === "all") return data.tags;
+    if (selectedTagCategory === "by_category") return data.tags.categoryRollup;
+    return data.tags.byCategory?.[selectedTagCategory] ?? data.tags;
+  }, [data, selectedTagCategory]);
+
+  const activeCategoryObj = useMemo(() => {
+    if (!data?.tagCategories) return null;
+    return (
+      data.tagCategories.find(
+        (c: { id: string; name: string; color: string }) => c.id === selectedTagCategory
+      ) ?? null
+    );
+  }, [data, selectedTagCategory]);
+
   return (
     <>
       <FilterBar title="Reports" />
 
       <main className="mx-auto max-w-7xl px-4 py-5 space-y-5">
-        {/* TOP TAB BAR: Overview -> Reports -> Performance -> Compare */}
-        <div className="flex flex-wrap items-center gap-2 border-b border-border/40 pb-3">
-          {/* 1. Overview */}
-          <button
-            type="button"
-            onClick={() => setMainTab("overview")}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-              mainTab === "overview"
-                ? "bg-[#4f46e5] text-white shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
-            }`}
-          >
-            Overview
-          </button>
-
-          {/* 2. Reports Dropdown */}
-          <div ref={dropdownRef} className="relative">
+        {/* TOP TAB BAR */}
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
+          <div className="flex flex-wrap items-center gap-2">
+            {/* 1. Overview */}
             <button
               type="button"
-              onClick={() => setDropdownOpen(!dropdownOpen)}
-              className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-                isReportsTabActive
+              onClick={() => setMainTab("overview")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                mainTab === "overview"
                   ? "bg-[#4f46e5] text-white shadow-sm"
                   : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
               }`}
             >
-              <span>Reports{isReportsTabActive ? `: ${activeDropdownLabel}` : ""}</span>
-              <ChevronDown className="h-3.5 w-3.5 ml-0.5" />
+              Overview
             </button>
 
-            {dropdownOpen && (
-              <div className="absolute left-0 top-full z-50 mt-1.5 w-48 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95">
-                {REPORT_DROPDOWN_OPTIONS.map((opt) => (
-                  <button
-                    key={opt.key}
-                    type="button"
-                    onClick={() => {
-                      setMainTab(opt.key);
-                      setDropdownOpen(false);
-                    }}
-                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium text-left transition-colors ${
-                      mainTab === opt.key
-                        ? "bg-[#4f46e5]/20 text-[#a5b4fc]"
-                        : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
-                    }`}
-                  >
-                    <span>{opt.label}</span>
-                    {mainTab === opt.key && <Check className="h-3.5 w-3.5 text-indigo-400" />}
-                  </button>
-                ))}
-              </div>
-            )}
+            {/* 2. Reports Dropdown */}
+            <div ref={dropdownRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setDropdownOpen(!dropdownOpen)}
+                className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                  isReportsTabActive || mainTab === "content_management"
+                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                }`}
+              >
+                <span>
+                  Reports
+                  {isReportsTabActive || mainTab === "content_management"
+                    ? `: ${activeDropdownLabel}`
+                    : ""}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 ml-0.5" />
+              </button>
+
+              {dropdownOpen && (
+                <div className="absolute left-0 top-full z-50 mt-1.5 w-48 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95">
+                  {REPORT_DROPDOWN_OPTIONS.map((opt) => (
+                    <button
+                      key={opt.key}
+                      type="button"
+                      onClick={() => {
+                        setMainTab(opt.key);
+                        setDropdownOpen(false);
+                      }}
+                      className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium text-left transition-colors ${
+                        mainTab === opt.key ||
+                        (mainTab === "content_management" && opt.key === "tags")
+                          ? "bg-[#4f46e5]/20 text-[#a5b4fc]"
+                          : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                      }`}
+                    >
+                      <span>{opt.label}</span>
+                      {(mainTab === opt.key ||
+                        (mainTab === "content_management" && opt.key === "tags")) && (
+                        <Check className="h-3.5 w-3.5 text-indigo-400" />
+                      )}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* 3. Performance */}
+            <button
+              type="button"
+              onClick={() => setMainTab("performance")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                mainTab === "performance"
+                  ? "bg-[#4f46e5] text-white shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+              }`}
+            >
+              Performance
+            </button>
+
+            {/* 4. Compare */}
+            <button
+              type="button"
+              onClick={() => setMainTab("compare")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                mainTab === "compare"
+                  ? "bg-[#4f46e5] text-white shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+              }`}
+            >
+              Compare
+            </button>
           </div>
 
-          {/* 3. Performance */}
-          <button
-            type="button"
-            onClick={() => setMainTab("performance")}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-              mainTab === "performance"
-                ? "bg-[#4f46e5] text-white shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
-            }`}
-          >
-            Performance
-          </button>
-
-          {/* 4. Compare */}
-          <button
-            type="button"
-            onClick={() => setMainTab("compare")}
-            className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
-              mainTab === "compare"
-                ? "bg-[#4f46e5] text-white shadow-sm"
-                : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
-            }`}
-          >
-            Compare
-          </button>
+          {/* Right: Categories & Tags button — ONLY visible when in Reports: Tags */}
+          {(mainTab === "tags" || mainTab === "content_management") && (
+            <button
+              type="button"
+              onClick={() =>
+                setMainTab(mainTab === "content_management" ? "tags" : "content_management")
+              }
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                mainTab === "content_management"
+                  ? "border-indigo-500 bg-[#4f46e5] text-white shadow-sm"
+                  : "border-border/60 bg-[#161822] text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+              }`}
+            >
+              <Tags className="h-3.5 w-3.5" />
+              <span>Categories & Tags</span>
+            </button>
+          )}
         </div>
 
         {/* SUB-PILLS FOR DAY & TIME */}
@@ -209,16 +265,133 @@ function ReportsContent() {
           </div>
         )}
 
+        {/* COMPACT CONTROLS FOR TAGS REPORT (Pills + Category Dropdown Menu) */}
+        {mainTab === "tags" && data?.tagCategories && (
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-[#161822] p-1">
+              <button
+                type="button"
+                onClick={() => setSelectedTagCategory("all")}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
+                  selectedTagCategory === "all"
+                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                All tags
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setSelectedTagCategory("by_category")}
+                className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
+                  selectedTagCategory === "by_category"
+                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Compare categories
+              </button>
+            </div>
+
+            {/* Category Dropdown Menu */}
+            <div ref={catDropdownRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setCatDropdownOpen(!catDropdownOpen)}
+                className={`flex h-8 items-center gap-2 rounded-lg border px-3 text-xs font-medium transition-colors ${
+                  activeCategoryObj
+                    ? "border-indigo-500/60 bg-[#4f46e5]/20 text-foreground"
+                    : "border-border/50 bg-[#161822] text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {activeCategoryObj ? (
+                  <>
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: activeCategoryObj.color }}
+                    />
+                    <span>{activeCategoryObj.name}</span>
+                  </>
+                ) : (
+                  <span>Filter by category</span>
+                )}
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+
+              {catDropdownOpen && (
+                <div className="absolute left-0 top-full z-50 mt-1.5 w-56 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedTagCategory("all");
+                      setCatDropdownOpen(false);
+                    }}
+                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
+                      selectedTagCategory === "all"
+                        ? "bg-[#4f46e5]/20 text-[#a5b4fc]"
+                        : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                    }`}
+                  >
+                    <span>All categories</span>
+                    {selectedTagCategory === "all" && (
+                      <Check className="h-3.5 w-3.5 text-indigo-400" />
+                    )}
+                  </button>
+
+                  <div className="my-1 border-t border-border/30" />
+
+                  <div className="max-h-64 overflow-y-auto space-y-0.5">
+                    {data.tagCategories.map(
+                      (cat: { id: string; name: string; color: string }) => (
+                        <button
+                          key={cat.id}
+                          type="button"
+                          onClick={() => {
+                            setSelectedTagCategory(cat.id);
+                            setCatDropdownOpen(false);
+                          }}
+                          className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
+                            selectedTagCategory === cat.id
+                              ? "bg-[#4f46e5]/20 text-[#a5b4fc]"
+                              : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <span
+                              className="h-2 w-2 rounded-full shrink-0"
+                              style={{ backgroundColor: cat.color }}
+                            />
+                            <span className="truncate">{cat.name}</span>
+                          </div>
+                          {selectedTagCategory === cat.id && (
+                            <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                          )}
+                        </button>
+                      )
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* CONTENT MANAGEMENT TAB */}
+        {mainTab === "content_management" && <ContentManagementView />}
+
         {/* LOADING & ERROR STATES */}
-        {loading && <Skeleton className="h-96 w-full rounded-xl" />}
-        {error && (
+        {mainTab !== "content_management" && loading && (
+          <Skeleton className="h-96 w-full rounded-xl" />
+        )}
+        {mainTab !== "content_management" && error && (
           <p role="alert" className="text-sm text-destructive">
             {error}
           </p>
         )}
 
-        {/* CONTENT VIEWS */}
-        {!loading && data && (
+        {/* REPORT CONTENT VIEWS */}
+        {mainTab !== "content_management" && !loading && data && (
           <div>
             {mainTab === "overview" && <ReportOverview query={query} dateLabel={dateLabel} />}
 
@@ -274,14 +447,20 @@ function ReportsContent() {
                 unitLabel="strategy"
                 data={data.strategies}
                 currency={data.currency}
+                extraSection={
+                  <StrategyRulesCard
+                    trades={data.trades}
+                    ruleAnalysis={data.strategyRules}
+                  />
+                }
               />
             )}
 
-            {mainTab === "tags" && (
+            {mainTab === "tags" && activeTagsData && (
               <ReportDimensionView
-                title="Tags"
-                unitLabel="tag"
-                data={data.tags}
+                title={selectedTagCategory === "by_category" ? "Categories" : "Tags"}
+                unitLabel={selectedTagCategory === "by_category" ? "category" : "tag"}
+                data={activeTagsData}
                 currency={data.currency}
               />
             )}

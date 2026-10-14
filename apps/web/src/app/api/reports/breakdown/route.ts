@@ -1,9 +1,11 @@
 import { dailyStats, dayKeyOf, readFilters } from "@luxalgo/journal-core";
-import { accounts, db, playbooks as playbooksTable } from "@/db";
+import { accounts, db, playbooks as playbooksTable, tradeRuleChecks } from "@/db";
+import { ensurePlaybookTables, getMetaRow, normalizeRuleGroups } from "@/server/playbooks-store";
 import { handler, ok } from "@/server/api";
 import { getTimeZone, getCurrencyConversion } from "@/server/settings";
 import { currencyProjection } from "@/server/currency-conversion";
 import { queryTrades } from "@/server/trades-query";
+import { extractTradeTokens, getTagsWithUsage } from "@/server/tags-store";
 
 const DURATION_BUCKETS = [
   { key: "<1m", label: "<1m", min: 0, max: 60_000 },
@@ -25,20 +27,6 @@ const MONTH_NAMES = [
 const DAY_NAMES = [
   "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"
 ];
-
-function extractTokens(val: unknown): string[] {
-  if (!val) return [];
-  if (Array.isArray(val)) return val.flatMap(extractTokens);
-  if (typeof val === "string") {
-    const trimmed = val.trim();
-    if (!trimmed) return [];
-    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
-      try { return extractTokens(JSON.parse(trimmed)); } catch {}
-    }
-    return trimmed.split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
 
 function getTradeDuration(t: any): number | null {
   const openTime = t.openedAt ? new Date(t.openedAt).getTime() : null;
@@ -67,6 +55,7 @@ export const GET = handler(async (request: Request) => {
     .filter((account) => !selectedIds || selectedIds.includes(account.id));
 
   const allPlaybooks = db.select().from(playbooksTable).all();
+  const { categories: tagCategoriesList, tags: managedTagsList } = getTagsWithUsage();
 
   const { trades, scope: currencyScope } = currencyProjection(
     originalTrades,
@@ -152,11 +141,7 @@ export const GET = handler(async (request: Request) => {
       const d = new Date(t.closedAt ?? t.closeTime ?? t.openedAt);
       return d.getUTCDay() === idx;
     });
-    return {
-      label: name,
-      trades: dayTrades,
-      stats: buildSummaryStats(dayTrades),
-    };
+    return { label: name, trades: dayTrades, stats: buildSummaryStats(dayTrades) };
   });
 
   // 2. Months
@@ -166,11 +151,7 @@ export const GET = handler(async (request: Request) => {
       const dStr = typeof rawDate === "string" ? rawDate.slice(0, 10) : dayKeyOf(new Date(rawDate).toISOString(), timeZone);
       return Number(dStr.slice(5, 7)) === idx + 1;
     });
-    return {
-      label: name,
-      trades: monthTrades,
-      stats: buildSummaryStats(monthTrades),
-    };
+    return { label: name, trades: monthTrades, stats: buildSummaryStats(monthTrades) };
   });
 
   // 3. Trade Time
@@ -180,11 +161,7 @@ export const GET = handler(async (request: Request) => {
       const d = new Date(t.openedAt ?? t.closedAt);
       return d.getUTCHours() === i;
     });
-    return {
-      label: hourLabel,
-      trades: hourTrades,
-      stats: buildSummaryStats(hourTrades),
-    };
+    return { label: hourLabel, trades: hourTrades, stats: buildSummaryStats(hourTrades) };
   });
 
   // 4. Trade Duration
@@ -194,11 +171,7 @@ export const GET = handler(async (request: Request) => {
       if (dur === null) return false;
       return dur >= b.min && dur < b.max;
     });
-    return {
-      label: b.label,
-      trades: bTrades,
-      stats: buildSummaryStats(bTrades),
-    };
+    return { label: b.label, trades: bTrades, stats: buildSummaryStats(bTrades) };
   });
 
   // 5. Symbols
@@ -208,36 +181,13 @@ export const GET = handler(async (request: Request) => {
 
   const symbolsRows = symbolsList.map((sym) => {
     const symTrades = closedTrades.filter((t) => t.symbol === sym);
-    return {
-      label: sym,
-      trades: symTrades,
-      stats: buildSummaryStats(symTrades),
-    };
+    return { label: sym, trades: symTrades, stats: buildSummaryStats(symTrades) };
   });
 
   // 6. Strategies
   const playbookRows = (allPlaybooks.length > 0 ? allPlaybooks : [{ id: "none", name: "None" }]).map((pb) => {
     const pbTrades = closedTrades.filter((t) => (t.playbookId === pb.id) || (!t.playbookId && pb.id === "none"));
-    return {
-      label: pb.name,
-      trades: pbTrades,
-      stats: buildSummaryStats(pbTrades),
-    };
-  });
-
-  // 7. Tags
-  const tagSet = new Set<string>();
-  closedTrades.forEach((t) => {
-    extractTokens(t.tags ?? t.tag).forEach((tag) => tagSet.add(tag));
-  });
-  const tagList = Array.from(tagSet).sort();
-  const tagsRows = (tagList.length > 0 ? tagList : ["No tags"]).map((tg) => {
-    const tgTrades = closedTrades.filter((t) => extractTokens(t.tags ?? t.tag).includes(tg));
-    return {
-      label: tg,
-      trades: tgTrades,
-      stats: buildSummaryStats(tgTrades),
-    };
+    return { id: pb.id, label: pb.name, trades: pbTrades, stats: buildSummaryStats(pbTrades) };
   });
 
   function buildCrossAnalysis(primary: typeof daysRows, secondaryColKeys: string[], getSecKey: (t: any) => string) {
@@ -247,16 +197,9 @@ export const GET = handler(async (request: Request) => {
       for (const col of cols) {
         const matchingTrades = r.trades.filter((t) => getSecKey(t) === col);
         const st = buildSummaryStats(matchingTrades);
-        rowCells[col] = {
-          netPnl: st.netPnl,
-          trades: st.tradesCount,
-          winRate: st.winRate,
-        };
+        rowCells[col] = { netPnl: st.netPnl, trades: st.tradesCount, winRate: st.winRate };
       }
-      return {
-        rowLabel: r.label,
-        cells: rowCells,
-      };
+      return { rowLabel: r.label, cells: rowCells };
     });
     return { columns: cols, rows: matrix };
   }
@@ -268,6 +211,54 @@ export const GET = handler(async (request: Request) => {
     const dStr = typeof rawDate === "string" ? rawDate.slice(0, 10) : dayKeyOf(new Date(rawDate).toISOString(), timeZone);
     const mIdx = Number(dStr.slice(5, 7)) - 1;
     return MONTH_NAMES[mIdx] ?? "";
+  });
+
+  // 7. Categorized Tags & Group Breakdowns
+  function getTradeAllTagTokensLower(t: any): string[] {
+    return [
+      ...extractTradeTokens(t.tags ?? t.tag).map((s) => s.toLowerCase()),
+      ...extractTradeTokens(t.mistakes ?? t.mistake).map((s) => s.toLowerCase()),
+    ];
+  }
+
+  const tagsRows = managedTagsList.map((mt) => {
+    const targetLower = mt.name.toLowerCase();
+    const tgTrades = closedTrades.filter((t) => getTradeAllTagTokensLower(t).includes(targetLower));
+    return {
+      label: mt.name,
+      categoryId: mt.categoryId,
+      categoryName: mt.categoryName,
+      categoryColor: mt.categoryColor,
+      trades: tgTrades,
+      stats: buildSummaryStats(tgTrades),
+    };
+  });
+
+  // Breakdown per category ID
+  const tagsByCategory: Record<string, any> = {};
+  for (const cat of tagCategoriesList) {
+    const catRows = tagsRows.filter((r) => r.categoryId === cat.id);
+    tagsByCategory[cat.id] = {
+      rows: catRows,
+      highlights: getHighlightCards(catRows),
+      cross: crossSymbols(catRows),
+    };
+  }
+
+  // Group rollup: comparing Categories themselves as rows
+  const categoryRollupRows = tagCategoriesList.map((cat) => {
+    const catTagNamesLower = new Set(
+      managedTagsList.filter((mt) => mt.categoryId === cat.id).map((mt) => mt.name.toLowerCase())
+    );
+    const catTrades = closedTrades.filter((t) =>
+      getTradeAllTagTokensLower(t).some((tok) => catTagNamesLower.has(tok))
+    );
+    return {
+      label: cat.name,
+      categoryColor: cat.color,
+      trades: catTrades,
+      stats: buildSummaryStats(catTrades),
+    };
   });
 
   // 8. Wins vs Losses Breakdown
@@ -551,9 +542,72 @@ export const GET = handler(async (request: Request) => {
     },
   };
 
+  
+  ensurePlaybookTables();
+  const allRuleChecks = db.select().from(tradeRuleChecks).all();
+  const strategyRulesList: {
+    playbookId: string;
+    playbookName: string;
+    playbookIcon: string;
+    groupName: string;
+    ruleText: string;
+    frequency: string;
+  }[] = [];
+
+  const playbooksBrief = allPlaybooks.map((pb) => {
+    const meta = getMetaRow(pb.id);
+    const icon = meta?.icon ?? "🚀";
+    const ruleGroups = normalizeRuleGroups(meta?.rule_groups_json, pb.rulesJson);
+    const seenRules = new Set<string>();
+
+    for (const g of ruleGroups) {
+      for (const r of g.rules) {
+        const txt = r.text.trim();
+        if (txt && !seenRules.has(txt)) {
+          seenRules.add(txt);
+          strategyRulesList.push({
+            playbookId: pb.id,
+            playbookName: pb.name,
+            playbookIcon: icon,
+            groupName: g.name,
+            ruleText: txt,
+            frequency: r.frequency ?? "Always",
+          });
+        }
+      }
+    }
+
+    // Also include any legacy rules from pb.rulesJson or tradeRuleChecks
+    try {
+      const legacy = JSON.parse(pb.rulesJson || "[]") as string[];
+      for (const txt of legacy) {
+        const trimmed = String(txt).trim();
+        if (trimmed && !seenRules.has(trimmed)) {
+          seenRules.add(trimmed);
+          strategyRulesList.push({
+            playbookId: pb.id,
+            playbookName: pb.name,
+            playbookIcon: icon,
+            groupName: "Strategy rules",
+            ruleText: trimmed,
+            frequency: "Always",
+          });
+        }
+      }
+    } catch {}
+
+    return { id: pb.id, name: pb.name, icon };
+  });
+
   return ok({
+    strategyRules: {
+      playbooks: playbooksBrief,
+      rules: strategyRulesList,
+      checks: allRuleChecks,
+    },
     currency,
     trades: closedTrades,
+    tagCategories: tagCategoriesList,
     days: {
       rows: daysRows,
       highlights: getHighlightCards(daysRows),
@@ -588,6 +642,12 @@ export const GET = handler(async (request: Request) => {
       rows: tagsRows,
       highlights: getHighlightCards(tagsRows),
       cross: crossSymbols(tagsRows),
+      byCategory: tagsByCategory,
+      categoryRollup: {
+        rows: categoryRollupRows,
+        highlights: getHighlightCards(categoryRollupRows),
+        cross: crossSymbols(categoryRollupRows),
+      },
     },
     winsVsLosses: {
       winsStats: buildDetailedTradeStats(winTrades, true),

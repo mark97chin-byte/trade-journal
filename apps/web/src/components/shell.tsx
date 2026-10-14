@@ -5,8 +5,7 @@ import { useEffect, useState } from "react";
 import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { FILTER_KEYS } from "@luxalgo/journal-core";
 import { usePathname, useSearchParams } from "next/navigation";
-import {
-  BarChart3,
+import { BarChart3,
   BookOpen,
   BookText,
   CalendarDays,
@@ -22,8 +21,7 @@ import {
   Menu,
   PanelLeftClose,
   PanelLeftOpen,
-  X,
-} from "lucide-react";
+  X, Tags } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { LuxAlgoMark } from "@/components/luxalgo-mark";
 import { PrivacyToggle } from "./privacy";
@@ -43,6 +41,7 @@ const NAV = [
   { href: "/prop-firms", label: "Prop firms", icon: Landmark },
   { href: "/notebook", label: "Notebook", icon: BookText },
   { href: "/playbooks", label: "Playbooks", icon: BookOpen },
+  { href: "/tags", label: "Tags", icon: Tags },
   { href: "/progress", label: "Progress", icon: ListChecks },
   { href: "/missed", label: "Missed trades", icon: BookmarkPlus },
 ] as const;

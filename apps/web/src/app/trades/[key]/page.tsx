@@ -1,4 +1,5 @@
 "use client";
+import { TradeTagsEditor } from "@/components/tags/trade-tags-editor";
 import { AiNotice } from "@/components/ai-notice";
 import { Checkbox } from "@/components/ui/checkbox";
 
@@ -413,28 +414,15 @@ function AnnotationsCard({
           </Select>
         </div>
 
-        <div>
-          <label className="text-xs text-muted-foreground">Tags (comma-separated)</label>
-          <Input
-            value={tags}
-            onChange={(event) => {
-              setTags(event.target.value);
-              debounced({ tags: parseList(event.target.value) });
-            }}
-            placeholder="breakout, A+ setup"
-          />
-        </div>
-        <div>
-          <label className="text-xs text-muted-foreground">Mistakes</label>
-          <Input
-            value={mistakes}
-            onChange={(event) => {
-              setMistakes(event.target.value);
-              debounced({ mistakes: parseList(event.target.value) });
-            }}
-            placeholder="chased entry, moved stop"
-          />
-        </div>
+        <TradeTagsEditor
+          selectedTags={parseList(tags)}
+          selectedMistakes={parseList(mistakes)}
+          onChange={(nextTags, nextMistakes) => {
+            setTags(nextTags.join(", "));
+            setMistakes(nextMistakes.join(", "));
+            debounced({ tags: nextTags, mistakes: nextMistakes });
+          }}
+        />
 
         <div>
           <div className="mb-1 flex items-center justify-between">

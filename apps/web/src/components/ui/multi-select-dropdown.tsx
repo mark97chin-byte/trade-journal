@@ -2,10 +2,17 @@
 
 import React, { useState, useRef, useEffect, useMemo } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
-import { ChevronDown, Search, X } from "lucide-react";
+import { ChevronDown, Search, X, Tag as TagIcon } from "lucide-react";
+
+export interface CategorizedOption {
+  name: string;
+  categoryName?: string;
+  categoryColor?: string;
+}
 
 interface MultiSelectDropdownProps {
   options: string[];
+  categorizedOptions?: CategorizedOption[];
   selected: string[];
   onChange: (selected: string[]) => void;
   placeholder?: string;
@@ -14,6 +21,7 @@ interface MultiSelectDropdownProps {
 
 export function MultiSelectDropdown({
   options,
+  categorizedOptions,
   selected,
   onChange,
   placeholder = "Select...",
@@ -23,7 +31,6 @@ export function MultiSelectDropdown({
   const [search, setSearch] = useState("");
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Close when clicking outside
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
@@ -43,6 +50,33 @@ export function MultiSelectDropdown({
     if (!q) return options;
     return options.filter((opt) => opt.toLowerCase().includes(q));
   }, [options, search]);
+
+  const groupedCategorized = useMemo(() => {
+    if (!categorizedOptions || categorizedOptions.length === 0) return null;
+    const q = search.trim().toLowerCase();
+    const groups = new Map<string, { color: string; items: string[] }>();
+
+    for (const item of categorizedOptions) {
+      if (
+        q &&
+        !item.name.toLowerCase().includes(q) &&
+        !(item.categoryName ?? "").toLowerCase().includes(q)
+      ) {
+        continue;
+      }
+      const catName = item.categoryName || "Uncategorized";
+      const curr = groups.get(catName) ?? {
+        color: item.categoryColor || "#64748b",
+        items: [],
+      };
+      if (!curr.items.includes(item.name)) {
+        curr.items.push(item.name);
+      }
+      groups.set(catName, curr);
+    }
+
+    return Array.from(groups.entries());
+  }, [categorizedOptions, search]);
 
   const toggleOption = (opt: string) => {
     if (selected.includes(opt)) {
@@ -65,7 +99,6 @@ export function MultiSelectDropdown({
 
   return (
     <div ref={containerRef} className="relative w-full">
-      {/* Trigger Button */}
       <button
         type="button"
         onClick={() => setOpen(!open)}
@@ -109,10 +142,8 @@ export function MultiSelectDropdown({
         </div>
       </button>
 
-      {/* Popover Menu */}
       {open && (
-        <div className="absolute left-0 top-full z-50 mt-1 w-full min-w-[220px] rounded-md border border-border bg-[#161822] p-2 shadow-xl animate-in fade-in-50 zoom-in-95">
-          {/* Search Box */}
+        <div className="absolute left-0 top-full z-50 mt-1 w-full min-w-[240px] rounded-md border border-border bg-[#161822] p-2 shadow-xl animate-in fade-in-50 zoom-in-95">
           <div className="relative mb-2">
             <Search className="absolute left-2 top-2 h-3.5 w-3.5 text-muted-foreground" />
             <input
@@ -125,7 +156,6 @@ export function MultiSelectDropdown({
             />
           </div>
 
-          {/* Quick Header */}
           {options.length > 0 && (
             <div className="mb-1 flex items-center justify-between px-1 text-[11px] text-muted-foreground">
               <span>{selected.length} selected</span>
@@ -141,9 +171,41 @@ export function MultiSelectDropdown({
             </div>
           )}
 
-          {/* Options List */}
-          <div className="max-h-48 overflow-y-auto space-y-0.5 pr-0.5">
-            {filteredOptions.length === 0 ? (
+          <div className="max-h-56 overflow-y-auto space-y-1 pr-0.5">
+            {groupedCategorized ? (
+              groupedCategorized.length === 0 ? (
+                <div className="py-2.5 text-center text-xs text-muted-foreground">
+                  No matches found
+                </div>
+              ) : (
+                groupedCategorized.map(([catName, group]) => (
+                  <div key={catName} className="space-y-0.5 pb-1">
+                    <div className="flex items-center gap-1.5 px-1.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                      <TagIcon
+                        className="h-2.5 w-2.5"
+                        style={{ color: group.color, fill: group.color }}
+                      />
+                      <span>{catName}</span>
+                    </div>
+                    {group.items.map((opt) => {
+                      const isChecked = selected.includes(opt);
+                      return (
+                        <label
+                          key={opt}
+                          className="flex cursor-pointer items-center gap-2 rounded px-2 py-1 text-xs text-foreground hover:bg-secondary/60 transition-colors select-none"
+                        >
+                          <Checkbox
+                            checked={isChecked}
+                            onCheckedChange={() => toggleOption(opt)}
+                          />
+                          <span className="truncate">{opt}</span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                ))
+              )
+            ) : filteredOptions.length === 0 ? (
               <div className="py-2.5 text-center text-xs text-muted-foreground">
                 {options.length === 0 ? "No records in database" : "No matches found"}
               </div>
@@ -165,7 +227,6 @@ export function MultiSelectDropdown({
               })
             )}
 
-            {/* Allow adding custom token if typed value does not exist */}
             {search.trim() && !options.includes(search.trim()) && (
               <button
                 type="button"
