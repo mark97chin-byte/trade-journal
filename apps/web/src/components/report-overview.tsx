@@ -2,14 +2,12 @@
 
 import type { AnalysisFilters, BucketStats } from "@luxalgo/journal-core";
 import { TimeHeatmap } from "./charts/time-heatmap";
-import { ReviewExport } from "./review-export";
 import { MonetaryValue } from "./privacy";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Skeleton } from "./ui/skeleton";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui/table";
 import { useApi } from "@/lib/use-api";
 import { fmtMoney, fmtPercent, pnlClass } from "@/lib/utils";
-import { describeFilters } from "@/lib/filter-description";
 import { YourStatsOverview } from "./reports/your-stats-overview";
 import { ReportMetricChart } from "./reports/report-metric-chart";
 
@@ -34,7 +32,14 @@ const SECTIONS = [
   { key: "playbook", title: "By playbook" },
 ] as const;
 
-export function ReportOverview({ query, filters }: { query: string; filters: AnalysisFilters }) {
+export function ReportOverview({
+  query,
+  dateLabel = "All dates",
+}: {
+  query: string;
+  filters?: AnalysisFilters;
+  dateLabel?: string;
+}) {
   const { data, error, loading } = useApi<OverviewData>(`/api/stats?${query}`);
 
   if (error)
@@ -58,8 +63,8 @@ export function ReportOverview({ query, filters }: { query: string; filters: Ana
 
   return (
     <div className="space-y-6">
-      {/* 1. TradeZella Your stats overview card */}
-      <YourStatsOverview query={query} />
+      {/* 1. TradeZella Your stats overview card with dynamic date */}
+      <YourStatsOverview query={query} dateLabel={dateLabel} />
 
       {/* 2. Side-by-side Metric Charts */}
       <div className="grid grid-cols-1 gap-4 xl:grid-cols-2">
@@ -72,9 +77,7 @@ export function ReportOverview({ query, filters }: { query: string; filters: Ana
         />
         <ReportMetricChart
           dimension="weekday"
-          defaultMetrics={[
-            { key: "winRate", chartType: "bar", color: "#10b981" },
-          ]}
+          defaultMetrics={[{ key: "winRate", chartType: "bar", color: "#10b981" }]}
         />
       </div>
 

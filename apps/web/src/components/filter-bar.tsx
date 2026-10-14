@@ -1,5 +1,5 @@
 "use client";
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, useEffect } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { dayKeyOf, FILTER_KEYS, readFilters, type AnalysisFilters } from "@luxalgo/journal-core";
 import { useApi } from "@/lib/use-api";
@@ -12,7 +12,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { FilterFields } from "./filter-fields";
-import { SlidersHorizontal } from "lucide-react";
+import { SlidersHorizontal, RotateCcw } from "lucide-react";
 import { AccountSelector } from "./account-selector";
 import { DateRangeSelect } from "./date-range-select";
 
@@ -105,7 +105,6 @@ export const useFilters = () => {
       }
       case "all":
       default: {
-        // retain custom or empty bounds
         break;
       }
     }
@@ -129,13 +128,70 @@ export function FilterBar({ title, actions }: { title: string; actions?: React.R
   const pathname = usePathname();
   const params = useSearchParams();
   const filters = useFilters();
+
   const showFilters =
     ["/", "/reports", "/trades", "/calendar", "/journal", "/playbooks"].includes(pathname) ||
     pathname.startsWith("/journal/");
+
   const [open, setOpen] = useState(false);
   const [draft, setDraft] = useState<AnalysisFilters>({});
   const filterTitle = useRef<HTMLHeadingElement>(null);
-  const count = Object.keys(filters.values).filter((k) => !["from", "to"].includes(k)).length;
+
+  const isCancelledRef = useRef(false);
+  const draftRef = useRef(draft);
+  draftRef.current = draft;
+
+  const count = Object.entries(filters.values).filter(
+    ([k, v]) => !["from", "to"].includes(k) && Boolean(v)
+  ).length;
+
+  const draftCount = Object.entries(draft).filter(
+    ([k, v]) => !["from", "to"].includes(k) && Boolean(v)
+  ).length;
+
+  const apply = (targetDraft: AnalysisFilters = draft) => {
+    const next = new URLSearchParams(params.toString());
+    FILTER_KEYS.forEach((k) => next.delete(k));
+
+    if (targetDraft.from || targetDraft.to) {
+      next.set("range", "custom");
+    } else if (filters.range === "custom") {
+      next.set("range", "all");
+    }
+
+    for (const [k, v] of Object.entries(targetDraft)) {
+      if (v !== undefined && v !== null && String(v).trim() !== "") {
+        next.set(k, String(v).trim());
+      }
+    }
+
+    router.replace(`${pathname}?${next.toString()}`);
+    setOpen(false);
+  };
+
+  const handleOpenChange = (nextOpen: boolean) => {
+    if (!nextOpen) {
+      if (!isCancelledRef.current) {
+        apply(draftRef.current);
+      }
+      isCancelledRef.current = false;
+    } else {
+      setDraft(filters.values);
+    }
+    setOpen(nextOpen);
+  };
+
+  const handleCancel = () => {
+    isCancelledRef.current = true;
+    setDraft(filters.values);
+    setOpen(false);
+  };
+
+  const handleReset = () => {
+    isCancelledRef.current = true;
+    setDraft({});
+    apply({});
+  };
 
   return (
     <>
@@ -166,9 +222,16 @@ export function FilterBar({ title, actions }: { title: string; actions?: React.R
         )}
       </div>
 
-      <Dialog open={open} onOpenChange={setOpen}>
-        <DialogContent className="journal-filter-dialog sm:max-w-3xl">
-          <DialogHeader className="journal-filter-heading">
+      <Dialog open={open} onOpenChange={handleOpenChange}>
+        <DialogContent
+          className="journal-filter-dialog sm:max-w-3xl max-h-[90vh] flex flex-col p-0 overflow-hidden"
+          onOpenAutoFocus={(event) => {
+            event.preventDefault();
+            filterTitle.current?.focus();
+          }}
+        >
+          {/* Header */}
+          <DialogHeader className="journal-filter-heading px-6 pt-5 pb-4 border-b border-border/40 shrink-0">
             <DialogTitle ref={filterTitle} tabIndex={-1} className="outline-none">
               Filter your journal
             </DialogTitle>
@@ -176,9 +239,52 @@ export function FilterBar({ title, actions }: { title: string; actions?: React.R
               Times use {filters.timeZone}. Dates use the closing day, or opening day for open trades.
             </DialogDescription>
           </DialogHeader>
-          <div className="journal-filter-body">
-            <FilterFields value={draft} onChange={setDraft} />
-          </div>
+
+          {/* Scrollable Form Body */}
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              apply(draft);
+            }}
+            className="flex flex-col flex-1 overflow-hidden"
+          >
+            <div className="journal-filter-body flex-1 overflow-y-auto px-6 py-5">
+              <FilterFields value={draft} onChange={setDraft} />
+            </div>
+
+            {/* Sticky Action Footer */}
+            <div className="journal-filter-footer flex items-center justify-between gap-3 border-t border-border/40 bg-[#161822]/90 px-6 py-3.5 shrink-0">
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={handleReset}
+                className="gap-1.5 text-xs text-muted-foreground hover:text-foreground"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Reset all</span>
+              </Button>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCancel}
+                  className="text-xs"
+                >
+                  Cancel
+                </Button>
+                <Button
+                  type="submit"
+                  size="sm"
+                  className="bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 shadow-sm"
+                >
+                  Apply filters{draftCount > 0 ? ` (${draftCount})` : ""}
+                </Button>
+              </div>
+            </div>
+          </form>
         </DialogContent>
       </Dialog>
     </>
