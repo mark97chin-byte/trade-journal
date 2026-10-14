@@ -21,6 +21,7 @@ import {
 } from "lucide-react";
 import { useSearchParams } from "next/navigation";
 import { useApi } from "@/lib/use-api";
+import { dayKeyOf } from "@luxalgo/journal-core";
 
 export interface ActiveMetricConfig {
   id: string;
@@ -29,8 +30,19 @@ export interface ActiveMetricConfig {
   color: string;
 }
 
+export interface DimensionBucket {
+  label: string;
+  fullDate?: string;
+  trades: any[];
+}
+
+export type TimeframeMode = "day" | "week" | "month";
+
 interface ReportMetricChartProps {
   dimension?: "weekday" | "hour" | "symbol";
+  customBuckets?: DimensionBucket[];
+  enableTimeframeControl?: boolean;
+  initialTimeframe?: TimeframeMode;
   defaultMetrics?: { key: string; chartType: "bar" | "line" | "area"; color: string }[];
   trades?: any[];
 }
@@ -38,7 +50,26 @@ interface ReportMetricChartProps {
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const PRESET_COLORS = ["#10b981", "#ef4444", "#3b82f6", "#8b5cf6", "#f59e0b", "#06b6d4"];
 
-/** Calculate clean, round Y-axis tick intervals (e.g., -1000, -500, 0, 500, 1000) */
+function formatDayLabel(dateStr: string) {
+  const [y, m, d] = dateStr.split("-");
+  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+  return dt.toLocaleDateString("en-GB", { day: "2-digit", month: "short", timeZone: "UTC" });
+}
+
+function getWeekStart(dateStr: string) {
+  const [y, m, d] = dateStr.split("-");
+  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, Number(d)));
+  const day = dt.getUTCDay(); // 0 is Sunday
+  dt.setUTCDate(dt.getUTCDate() - day);
+  return dt.toISOString().slice(0, 10);
+}
+
+function formatMonthLabel(mKey: string) {
+  const [y, m] = mKey.split("-");
+  const dt = new Date(Date.UTC(Number(y), Number(m) - 1, 1));
+  return dt.toLocaleDateString("en-GB", { month: "short", year: "2-digit", timeZone: "UTC" });
+}
+
 function calculateNiceScale(minVal: number, maxVal: number, isPercent = false) {
   if (isPercent) {
     const top = Math.min(100, Math.max(30, Math.ceil(maxVal / 10) * 10));
@@ -78,7 +109,6 @@ function calculateNiceScale(minVal: number, maxVal: number, isPercent = false) {
   return { min: niceMin, max: niceMax, ticks };
 }
 
-/** Smooth cubic Bézier spline generator for TradeZella-style curves */
 function buildSplinePath(pts: { x: number; y: number }[]): string {
   if (pts.length === 0) return "";
   if (pts.length === 1) return `M ${pts[0]!.x} ${pts[0]!.y}`;
@@ -96,23 +126,34 @@ function buildSplinePath(pts: { x: number; y: number }[]): string {
     const cp2x = p2.x - (p3.x - p1.x) / 6;
     const cp2y = p2.y - (p3.y - p1.y) / 6;
 
-    path.push(`C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`);
+    path.push(
+      `C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`
+    );
   }
   return path.join(" ");
 }
 
 export function ReportMetricChart({
   dimension = "weekday",
+  customBuckets,
+  enableTimeframeControl = false,
+  initialTimeframe = "day",
   defaultMetrics = [{ key: "winRate", chartType: "bar", color: "#10b981" }],
   trades: passedTrades,
 }: ReportMetricChartProps) {
   const searchParams = useSearchParams();
   const search = searchParams.toString();
 
-  const { data } = useApi<any>(`/api/stats?${search}`);
-  const trades = useMemo(() => passedTrades ?? data?.recentTrades ?? [], [passedTrades, data]);
+  const { data } = useApi<any>(`/api/reports/breakdown?${search}`);
+  const trades = useMemo(
+    () => passedTrades ?? data?.trades ?? data?.recentTrades ?? [],
+    [passedTrades, data]
+  );
+  const timeZone = data?.timeZone ?? "UTC";
 
-  // Unique metric state tracking
+  const [timeframe, setTimeframe] = useState<TimeframeMode>(initialTimeframe);
+  const [timeframeMenuOpen, setTimeframeMenuOpen] = useState(false);
+
   const [activeMetrics, setActiveMetrics] = useState<ActiveMetricConfig[]>(() =>
     defaultMetrics.map((m, idx) => ({
       ...m,
@@ -125,44 +166,87 @@ export function ReportMetricChart({
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [openCategories, setOpenCategories] = useState<Record<string, boolean>>({
+    "Time Analysis": true,
     Profitability: true,
-    "Streaks & Consistency": true,
   });
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+  const timeframeRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
       if (dropdownRef.current && !dropdownRef.current.contains(e.target as Node)) {
         setIsDropdownOpen(false);
       }
+      if (timeframeRef.current && !timeframeRef.current.contains(e.target as Node)) {
+        setTimeframeMenuOpen(false);
+      }
     }
-    if (isDropdownOpen) document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("mousedown", handleClickOutside);
     return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [isDropdownOpen]);
+  }, []);
 
-  // Aggregate trades into buckets
-  const buckets = useMemo(() => {
+  // Compute dimension buckets
+  const buckets = useMemo<DimensionBucket[]>(() => {
+    if (customBuckets && customBuckets.length > 0) {
+      return customBuckets;
+    }
+
+    if (enableTimeframeControl) {
+      const map = new Map<string, { label: string; fullDate: string; trades: any[] }>();
+
+      for (const t of trades) {
+        const rawDate = t.closedAt ?? t.closeTime ?? t.exitTime ?? t.openedAt;
+        if (!rawDate) continue;
+        const dStr =
+          typeof rawDate === "string"
+            ? rawDate.slice(0, 10)
+            : dayKeyOf(new Date(rawDate).toISOString(), timeZone);
+
+        let groupKey = dStr;
+        let label = formatDayLabel(dStr);
+
+        if (timeframe === "week") {
+          groupKey = getWeekStart(dStr);
+          label = formatDayLabel(groupKey);
+        } else if (timeframe === "month") {
+          groupKey = dStr.slice(0, 7);
+          label = formatMonthLabel(groupKey);
+        }
+
+        const curr = map.get(groupKey) ?? { label, fullDate: dStr, trades: [] };
+        curr.trades.push(t);
+        map.set(groupKey, curr);
+      }
+
+      const sorted = Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+      return sorted.map(([, v]) => v);
+    }
+
     if (dimension === "weekday") {
       return WEEKDAYS.map((label, i) => {
         const bucketTrades = (trades as any[]).filter((t) => {
           const dateStr = t.closedAt ?? t.closeTime ?? t.openedAt;
           if (!dateStr) return false;
-          const d = new Date(dateStr);
-          return d.getUTCDay() === i;
+          return new Date(dateStr).getUTCDay() === i;
         });
         return { label, trades: bucketTrades };
       });
     }
-    return WEEKDAYS.map((label) => ({ label, trades: [] }));
-  }, [trades, dimension]);
 
-  // Calculate series data
+    return WEEKDAYS.map((label) => ({ label, trades: [] }));
+  }, [customBuckets, enableTimeframeControl, timeframe, trades, dimension, timeZone]);
+
+  // Compute metric values per bucket
   const seriesData = useMemo(() => {
     return activeMetrics.map((am) => {
       const def = METRIC_DEFINITIONS.find((d) => d.key === am.key) ?? METRIC_DEFINITIONS[0]!;
-      const values = buckets.map((b) => computeBucketValue(am.key, b.trades));
+      const cumulativeTradesSoFar: any[] = [];
+      const values = buckets.map((b) => {
+        cumulativeTradesSoFar.push(...b.trades);
+        return computeBucketValue(am.key, b.trades, [...cumulativeTradesSoFar]);
+      });
       return { config: am, def, values };
     });
   }, [activeMetrics, buckets]);
@@ -170,7 +254,6 @@ export function ReportMetricChart({
   const primarySeries = seriesData[0];
   const secondarySeries = seriesData[1];
 
-  // Primary Y-Axis calculations
   const primaryScale = useMemo(() => {
     if (!primarySeries) return { min: 0, max: 100, ticks: [0, 25, 50, 75, 100] };
     const minVal = Math.min(...primarySeries.values);
@@ -178,7 +261,6 @@ export function ReportMetricChart({
     return calculateNiceScale(minVal, maxVal, primarySeries.def.format === "percent");
   }, [primarySeries]);
 
-  // Secondary Y-Axis calculations
   const secondaryScale = useMemo(() => {
     if (!secondarySeries) return { min: 0, max: 10, ticks: [0, 2.5, 5, 7.5, 10] };
     const minVal = Math.min(...secondarySeries.values);
@@ -186,12 +268,11 @@ export function ReportMetricChart({
     return calculateNiceScale(minVal, maxVal, secondarySeries.def.format === "percent");
   }, [secondarySeries]);
 
-  // Layout bounds
   const width = 800;
-  const height = 300;
-  const padLeft = 60;
-  const padRight = secondarySeries ? 60 : 20;
-  const padTop = 25;
+  const height = 280;
+  const padLeft = 65;
+  const padRight = secondarySeries ? 65 : 25;
+  const padTop = 20;
   const padBottom = 35;
   const plotW = width - padLeft - padRight;
   const plotH = height - padTop - padBottom;
@@ -206,7 +287,7 @@ export function ReportMetricChart({
     return padTop + plotH - ((val - secondaryScale.min) / span) * plotH;
   };
 
-  const getX = (idx: number) => padLeft + (idx + 0.5) * (plotW / buckets.length);
+  const getX = (idx: number) => padLeft + (idx + 0.5) * (plotW / (buckets.length || 1));
   const zeroYPrimary = getYPrimary(0);
   const zeroYSecondary = getYSecondary(0);
 
@@ -259,6 +340,7 @@ export function ReportMetricChart({
     <div className="relative w-full rounded-xl border border-border/40 bg-[#12141a] p-4 text-foreground shadow-sm">
       {/* HEADER CONTROLS */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/20 pb-3">
+        {/* Left: Metric pills */}
         <div className="flex flex-wrap items-center gap-2">
           <button
             type="button"
@@ -316,16 +398,55 @@ export function ReportMetricChart({
           )}
         </div>
 
-        <button
-          type="button"
-          onClick={() => setIsSettingsOpen(!isSettingsOpen)}
-          className="rounded p-1 text-muted-foreground/60 hover:text-foreground"
-        >
-          <MoreVertical className="h-4 w-4" />
-        </button>
+        {/* Right: Timeframe dropdown + settings */}
+        <div className="flex items-center gap-2">
+          {enableTimeframeControl && (
+            <div ref={timeframeRef} className="relative">
+              <button
+                type="button"
+                onClick={() => setTimeframeMenuOpen(!timeframeMenuOpen)}
+                className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-[#161822] px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary/40"
+              >
+                <span className="capitalize">{timeframe}</span>
+                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+              </button>
+
+              {timeframeMenuOpen && (
+                <div className="absolute right-0 top-full z-50 mt-1 w-28 rounded-lg border border-border/80 bg-[#161822] p-1 shadow-xl">
+                  {(["day", "week", "month"] as const).map((mode) => (
+                    <button
+                      key={mode}
+                      type="button"
+                      onClick={() => {
+                        setTimeframe(mode);
+                        setTimeframeMenuOpen(false);
+                      }}
+                      className={`flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs font-medium capitalize text-left transition-colors ${
+                        timeframe === mode
+                          ? "bg-indigo-600/30 text-indigo-300"
+                          : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                      }`}
+                    >
+                      <span>{mode}</span>
+                      {timeframe === mode && <Check className="h-3 w-3 text-indigo-400" />}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          <button
+            type="button"
+            onClick={() => setIsSettingsOpen(!isSettingsOpen)}
+            className="rounded p-1 text-muted-foreground/60 hover:text-foreground"
+          >
+            <MoreVertical className="h-4 w-4" />
+          </button>
+        </div>
       </div>
 
-      {/* DROPDOWN MENU */}
+      {/* METRIC SELECTION MODAL */}
       {isDropdownOpen && (
         <div
           ref={dropdownRef}
@@ -389,7 +510,6 @@ export function ReportMetricChart({
       {/* SVG CHART */}
       <div className="relative mt-4 w-full select-none">
         <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible">
-          {/* Horizontal Grid lines aligned to Primary Scale */}
           {primaryScale.ticks.map((tickVal) => {
             const y = getYPrimary(tickVal);
             return (
@@ -410,7 +530,6 @@ export function ReportMetricChart({
             );
           })}
 
-          {/* Secondary Y Axis Ticks (Right Side) */}
           {secondarySeries &&
             secondaryScale.ticks.map((tickVal) => {
               const y = getYSecondary(tickVal);
@@ -428,14 +547,14 @@ export function ReportMetricChart({
               );
             })}
 
-          {/* PRIMARY METRIC */}
+          {/* Primary Metric */}
           {primarySeries && (
             <g>
-              {/* Bars */}
               {primarySeries.config.chartType === "bar" &&
                 primarySeries.values.map((val, idx) => {
-                  const x = getX(idx) - 22;
-                  const barW = 44;
+                  const barCount = buckets.length || 1;
+                  const barW = Math.max(14, Math.min(52, (plotW / barCount) * 0.7));
+                  const x = getX(idx) - barW / 2;
                   const topY = getYPrimary(Math.max(val, 0));
                   const botY = getYPrimary(Math.min(val, 0));
                   const barH = Math.max(Math.abs(botY - topY), val !== 0 ? 3 : 0);
@@ -458,7 +577,6 @@ export function ReportMetricChart({
                   );
                 })}
 
-              {/* Area */}
               {primarySeries.config.chartType === "area" && (
                 <path
                   d={`${buildSplinePath(
@@ -469,7 +587,6 @@ export function ReportMetricChart({
                 />
               )}
 
-              {/* Smooth Line Curve */}
               {primarySeries.config.chartType !== "bar" && (
                 <path
                   d={buildSplinePath(
@@ -485,7 +602,6 @@ export function ReportMetricChart({
                 />
               )}
 
-              {/* Data Point Circles */}
               {primarySeries.config.chartType !== "bar" &&
                 primarySeries.values.map((val, idx) => (
                   <circle
@@ -502,14 +618,14 @@ export function ReportMetricChart({
             </g>
           )}
 
-          {/* SECONDARY METRIC */}
+          {/* Secondary Metric */}
           {secondarySeries && (
             <g>
-              {/* Secondary Bars */}
               {secondarySeries.config.chartType === "bar" &&
                 secondarySeries.values.map((val, idx) => {
-                  const x = getX(idx) - 18;
-                  const barW = 36;
+                  const barCount = buckets.length || 1;
+                  const barW = Math.max(10, Math.min(40, (plotW / barCount) * 0.5));
+                  const x = getX(idx) - barW / 2;
                   const topY = getYSecondary(Math.max(val, 0));
                   const botY = getYSecondary(Math.min(val, 0));
                   const barH = Math.max(Math.abs(botY - topY), val !== 0 ? 3 : 0);
@@ -532,7 +648,6 @@ export function ReportMetricChart({
                   );
                 })}
 
-              {/* Secondary Area */}
               {secondarySeries.config.chartType === "area" && (
                 <path
                   d={`${buildSplinePath(
@@ -543,7 +658,6 @@ export function ReportMetricChart({
                 />
               )}
 
-              {/* Secondary Smooth Line Curve */}
               {secondarySeries.config.chartType !== "bar" && (
                 <path
                   d={buildSplinePath(
@@ -559,7 +673,6 @@ export function ReportMetricChart({
                 />
               )}
 
-              {/* Secondary Data Point Circles */}
               {secondarySeries.values.map((val, idx) => (
                 <circle
                   key={`dot-s-${idx}`}
@@ -577,23 +690,31 @@ export function ReportMetricChart({
 
           {/* X Axis Labels */}
           {buckets.map((b, idx) => (
-            <text key={`x-${b.label}`} x={getX(idx)} y={height - 10} textAnchor="middle" fontSize="11" fill="#a1a1aa">
+            <text
+              key={`x-${b.label}-${idx}`}
+              x={getX(idx)}
+              y={height - 10}
+              textAnchor="middle"
+              fontSize="10"
+              fill="#a1a1aa"
+            >
               {b.label}
             </text>
           ))}
         </svg>
 
-        {/* Hover Tooltip Overlay */}
         {hoveredIdx !== null && (
           <div
             className="pointer-events-none absolute rounded-md border border-border/80 bg-[#161822] p-2 text-xs shadow-xl"
             style={{
               left: `${(getX(hoveredIdx) / width) * 100}%`,
-              top: "20%",
+              top: "15%",
               transform: "translateX(-50%)",
             }}
           >
-            <div className="font-semibold text-foreground mb-1">{buckets[hoveredIdx]?.label}</div>
+            <div className="font-semibold text-foreground mb-1">
+              {buckets[hoveredIdx]?.fullDate || buckets[hoveredIdx]?.label}
+            </div>
             {seriesData.map((s) => (
               <div key={s.config.id} className="flex items-center gap-1.5 text-muted-foreground">
                 <span className="h-2 w-2 rounded-full" style={{ backgroundColor: s.config.color }} />
@@ -607,7 +728,7 @@ export function ReportMetricChart({
         )}
       </div>
 
-      {/* FOOTER: UNIQUE LEGEND & SETTINGS BUTTON */}
+      {/* FOOTER */}
       <div className="mt-3 flex items-center justify-between border-t border-border/20 pt-3">
         <div className="flex flex-wrap items-center gap-4 text-xs">
           {activeMetrics.map((m) => {

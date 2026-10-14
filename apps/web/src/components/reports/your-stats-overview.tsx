@@ -72,12 +72,8 @@ function fmtHoldTime(ms: number | null): string {
   const hours = Math.floor((totalMinutes % (24 * 60)) / 60);
   const minutes = totalMinutes % 60;
 
-  if (days > 0) {
-    return `${days} ${days === 1 ? "day" : "days"}, ${hours} ${hours === 1 ? "hour" : "hours"}`;
-  }
-  if (hours > 0) {
-    return `${hours} ${hours === 1 ? "hours" : "hours"}, ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
-  }
+  if (days > 0) return `${days} ${days === 1 ? "day" : "days"}, ${hours} ${hours === 1 ? "hour" : "hours"}`;
+  if (hours > 0) return `${hours} ${hours === 1 ? "hours" : "hours"}, ${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
   return `${minutes} ${minutes === 1 ? "minute" : "minutes"}`;
 }
 
@@ -87,7 +83,13 @@ function formatMonthLabel(mKey: string): string {
   return date.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
 }
 
-export function YourStatsOverview({ query }: { query: string }) {
+export function YourStatsOverview({
+  query,
+  dateLabel = "All dates",
+}: {
+  query: string;
+  dateLabel?: string;
+}) {
   const { data, loading, error } = useApi<YourStatsResponse>(`/api/reports/your-stats?${query}`);
 
   if (loading || !data) return <Skeleton className="h-96 w-full rounded-xl" />;
@@ -97,11 +99,11 @@ export function YourStatsOverview({ query }: { query: string }) {
 
   return (
     <div className="w-full rounded-xl border border-border/50 bg-[#12141a] p-5 text-foreground shadow-sm mb-6">
-      {/* Header */}
+      {/* Header with dynamic date */}
       <div className="flex items-center justify-between pb-4">
         <div>
           <h2 className="text-base font-semibold text-foreground">Your stats</h2>
-          <span className="text-xs text-muted-foreground">(All dates)</span>
+          <span className="text-xs text-muted-foreground">({dateLabel})</span>
         </div>
         <Tooltip>
           <TooltipTrigger asChild>
@@ -113,7 +115,7 @@ export function YourStatsOverview({ query }: { query: string }) {
         </Tooltip>
       </div>
 
-      {/* Top 3 Summary Items */}
+      {/* Top 3 Highlights */}
       <div className="flex flex-wrap items-center justify-between gap-6 pb-4">
         <div className="flex flex-wrap items-center gap-8 sm:gap-14">
           <div>
