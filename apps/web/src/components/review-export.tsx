@@ -3,13 +3,20 @@ import { useEffect, useRef, useState } from "react";
 import { Download, ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { exportPdf, exportPng, type ReviewDocument } from "@/lib/export-review";
+import {
+  exportPdf,
+  exportPng,
+  parseRichNoteForExport,
+  type ReviewDocument,
+} from "@/lib/export-review";
 import { usePrivacy } from "./privacy";
+
 interface Preview {
   url: string;
   filename: string;
   type: string;
 }
+
 export function ReviewExport({
   document,
   containsFinancialData = false,
@@ -25,12 +32,14 @@ export function ReviewExport({
     [open, setOpen] = useState(false);
   const urls = useRef<string[]>([]);
   const [previewDocument, setPreviewDocument] = useState<ReviewDocument | null>(null);
+
   useEffect(
     () => () => {
       urls.current.forEach(URL.revokeObjectURL);
     },
-    [],
+    []
   );
+
   async function run(image: boolean) {
     setBusy(true);
     setError("");
@@ -52,6 +61,11 @@ export function ReviewExport({
       setBusy(false);
     }
   }
+
+  const parsedPreview = previewDocument
+    ? parseRichNoteForExport(previewDocument.lines)
+    : { cleanLines: [], imageUrls: [] };
+
   return (
     <div className="space-y-2">
       <div className="flex flex-wrap gap-2">
@@ -104,14 +118,22 @@ export function ReviewExport({
                   <p className="mb-4 text-xs text-slate-500">
                     Review text · download the PDF for the paginated document.
                   </p>
-                  <h3 className="mb-2 text-xl font-semibold">{previewDocument?.title}</h3>
-                  <p className="mb-6 text-xs text-slate-500">{previewDocument?.subtitle}</p>
+                  <h3 className="mb-2 text-xl font-semibold">
+                    {previewDocument?.title}
+                  </h3>
+                  <p className="mb-6 text-xs text-slate-500">
+                    {previewDocument?.subtitle}
+                  </p>
                   <div className="whitespace-pre-wrap break-words text-sm leading-relaxed">
-                    {previewDocument?.lines.join("\n")}
+                    {parsedPreview.cleanLines.join("\n")}
                   </div>
                 </div>
               ) : (
-                <img src={f.url} alt="Exported journal review" className="w-full rounded border" />
+                <img
+                  src={f.url}
+                  alt="Exported journal review"
+                  className="w-full rounded border"
+                />
               )}
             </div>
           ))}

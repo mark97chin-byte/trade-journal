@@ -1,9 +1,13 @@
 import { and, eq } from "drizzle-orm";
-import { db, attachments, trades, notes, missedTrades, propAccounts, propEntries } from "@/db";
+import { db, attachments, trades, notes, missedTrades, propAccounts, propEntries, playbooks } from "@/db";
 import { handler, ok, requireValue } from "@/server/api";
 import { newId, nowIso } from "@/server/ids";
 import { attachmentMime, MAX_ATTACHMENT_SIZE } from "@/lib/attachment-validation";
+
 function owner(type: string, id: string) {
+  if (type === "editor") return Boolean(id);
+  if (type === "playbook")
+    return !!db.select({ id: playbooks.id }).from(playbooks).where(eq(playbooks.id, id)).get();
   if (type === "prop-account")
     return !!db
       .select({ id: propAccounts.id })
@@ -33,6 +37,7 @@ function owner(type: string, id: string) {
     new Date(id).toISOString().slice(0, 10) === id
   );
 }
+
 export const GET = handler((request: Request) => {
   const p = new URL(request.url).searchParams;
   const type = p.get("type") ?? "",
@@ -51,6 +56,7 @@ export const GET = handler((request: Request) => {
       .all(),
   });
 });
+
 export const POST = handler(async (request: Request) => {
   requireValue(
     Number(request.headers.get("content-length") ?? 0) <= MAX_ATTACHMENT_SIZE + 10000,
