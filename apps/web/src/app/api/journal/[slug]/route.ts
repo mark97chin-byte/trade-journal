@@ -9,6 +9,15 @@ import {
   getJournalEntryWithTrades,
   saveJournalEntry,
 } from "@/server/journal-service";
+import {
+  getNotionConfig,
+  fetchNotionBlocksRecursive,
+  clearNotionPageBlocks,
+  notionBlocksToHtml,
+  editorHtmlToNotionTree,
+  appendBlocksTreeRecursive,
+  findNotionPageInDb,
+} from "@/server/notion-sync";
 
 type Params = { params: Promise<{ slug?: string; date?: string }> };
 
@@ -58,263 +67,174 @@ export const GET = handler(async (request: Request, { params }: Params) => {
   });
 });
 
-function htmlToNotionBlocks(html: string): any[] {
-  if (!html || !html.trim()) return [];
-
-  const blocks: any[] = [];
-  const clean = html
-    .replace(/<style[\s\S]*?<\/style>/gi, "")
-    .replace(/<script[\s\S]*?<\/script>/gi, "");
-
-  // Simple parser to extract Notion blocks based on data-notion-type and HTML tags
-  const blockMatches = clean.match(
-    /<(div|p|h1|h2|h3|blockquote|hr|figure|table)[\s\S]*?<\/\1>|<hr[^>]*\/?>|<(div|figure)[^>]*\/>/gi
-  );
-
-  const stripTags = (s: string) =>
-    s
-      .replace(/<[^>]+>/g, " ")
-      .replace(/&nbsp;/g, " ")
-      .replace(/&amp;/g, "&")
-      .replace(/&lt;/g, "<")
-      .replace(/&gt;/g, ">")
-      .replace(/\s+/g, " ")
-      .trim();
-
-  if (blockMatches) {
-    for (const rawBlock of blockMatches) {
-      const text = stripTags(rawBlock);
-      if (!text && !rawBlock.includes("<hr") && !rawBlock.includes("img")) continue;
-
-      if (rawBlock.includes('data-notion-type="heading_1"') || rawBlock.startsWith("<h1")) {
-        blocks.push({
-          object: "block",
-          type: "heading_1",
-          heading_1: { rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }] },
-        });
-      } else if (rawBlock.includes('data-notion-type="heading_2"') || rawBlock.startsWith("<h2")) {
-        blocks.push({
-          object: "block",
-          type: "heading_2",
-          heading_2: { rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }] },
-        });
-      } else if (rawBlock.includes('data-notion-type="heading_3"') || rawBlock.startsWith("<h3")) {
-        blocks.push({
-          object: "block",
-          type: "heading_3",
-          heading_3: { rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }] },
-        });
-      } else if (rawBlock.includes('data-notion-type="callout"') || rawBlock.includes("tz-callout")) {
-        const iconMatch = rawBlock.match(/data-icon="([^"]+)"/);
-        const icon = iconMatch ? iconMatch[1] : "💡";
-        blocks.push({
-          object: "block",
-          type: "callout",
-          callout: {
-            icon: { emoji: icon },
-            rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }],
-          },
-        });
-      } else if (rawBlock.includes('data-notion-type="quote"') || rawBlock.startsWith("<blockquote")) {
-        blocks.push({
-          object: "block",
-          type: "quote",
-          quote: { rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }] },
-        });
-      } else if (rawBlock.includes('data-notion-type="divider"') || rawBlock.includes("<hr")) {
-        blocks.push({
-          object: "block",
-          type: "divider",
-          divider: {},
-        });
-      } else if (rawBlock.includes('data-notion-type="to_do"') || rawBlock.includes("tz-check-row")) {
-        const isChecked = rawBlock.includes('checked="checked"') || rawBlock.includes("checked");
-        blocks.push({
-          object: "block",
-          type: "to_do",
-          to_do: {
-            rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }],
-            checked: isChecked,
-          },
-        });
-      } else if (rawBlock.includes('data-notion-type="toggle"') || rawBlock.includes("tz-toggle")) {
-        blocks.push({
-          object: "block",
-          type: "toggle",
-          toggle: { rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }] },
-        });
-      } else {
-        blocks.push({
-          object: "block",
-          type: "paragraph",
-          paragraph: { rich_text: [{ type: "text", text: { content: text.slice(0, 1900) } }] },
-        });
-      }
-    }
-  }
-
-  if (blocks.length === 0) {
-    const fallbackText = stripTags(html);
-    blocks.push({
-      object: "block",
-      type: "paragraph",
-      paragraph: {
-        rich_text: [
-          { type: "text", text: { content: (fallbackText || "Empty journal entry.").slice(0, 1900) } },
-        ],
-      },
-    });
-  }
-
-  return blocks;
-}
-
-export async function PUT(
-  req: NextRequest,
-  { params }: Params
-) {
+export async function PUT(req: NextRequest, { params }: Params) {
   try {
     const resolved = await params;
     const slug = resolved.slug || resolved.date || "";
     const body = await req.json();
 
+    const { trades, range } = await getJournalEntryWithTrades(slug);
+    const { token, databaseId } = getNotionConfig(range.periodType);
+
+    // 1. PULL FROM NOTION
+    if (body.pullFromNotion) {
+      if (!token || !databaseId) {
+        return NextResponse.json({
+          notionSynced: false,
+          notionError: `Missing NOTION_TOKEN or database ID for ${range.periodType} in .env.local`,
+        });
+      }
+
+      let pageId = body.notionPageId;
+      let pageUrl = body.notionUrl;
+      let pageTitle = body.title || range.defaultTitle;
+
+      if (!pageId) {
+        const found = await findNotionPageInDb(databaseId, token, slug, pageTitle);
+        if (!found.page) {
+          return NextResponse.json({
+            notionSynced: false,
+            notionError: `No matching page found in Notion for "${slug}". Push to Notion first to create it.`,
+          });
+        }
+        pageId = found.page.id;
+        pageUrl = found.page.url;
+        const titleArr = found.page.properties?.[found.titleProp]?.title;
+        if (titleArr && titleArr.length) {
+          pageTitle = titleArr.map((t: any) => t.plain_text).join("");
+        }
+      }
+
+      const blocks = await fetchNotionBlocksRecursive(pageId, token);
+      const htmlContent = notionBlocksToHtml(blocks);
+
+      const entry = await saveJournalEntry(slug, {
+        title: pageTitle,
+        content: htmlContent,
+        notionPageId: pageId,
+        notionUrl: pageUrl,
+      });
+
+      return NextResponse.json({ entry, notionPulled: true });
+    }
+
+    // 2. SAVE LOCALLY
     let entry = await saveJournalEntry(slug, body);
 
+    // 3. PUSH TO NOTION
     if (body.syncNotion) {
-      const notionToken = process.env.NOTION_TOKEN;
-      const notionDbId =
-        process.env.NOTION_JOURNAL_DATABASE_ID || process.env.NOTION_DATABASE_ID;
-
-      if (!notionToken || !notionDbId) {
-        return NextResponse.json(
-          {
-            entry,
-            notionSynced: false,
-            notionError:
-              "Missing NOTION_TOKEN or NOTION_JOURNAL_DATABASE_ID in environment.",
-          },
-          { status: 200 }
-        );
+      if (!token || !databaseId) {
+        return NextResponse.json({
+          entry,
+          notionSynced: false,
+          notionError: `Missing NOTION_TOKEN or Database ID for ${range.periodType} in .env.local`,
+        });
       }
 
-      const { trades, range } = await getJournalEntryWithTrades(slug);
-      const netPnl = trades.reduce((acc, t) => acc + t.netPnl, 0);
+      try {
+        const netPnl = trades.reduce((acc, t) => acc + t.netPnl, 0);
+        const found = await findNotionPageInDb(databaseId, token, slug, entry.title || slug);
+        const availableProps = found.availableProps;
+        const titlePropName = found.titleProp;
 
-      const summaryLines = [
-        `Period: ${range.periodType.toUpperCase()} (${range.startDate} to ${range.endDate})`,
-        `Net P&L: $${netPnl.toFixed(2)} | Trades: ${trades.length}`,
-        entry.marketBias ? `HTF Bias: ${entry.marketBias}` : "",
-        entry.dayProfile ? `Day Profile: ${entry.dayProfile}` : "",
-        entry.keyLevels ? `Key Levels / DOL: ${entry.keyLevels}` : "",
-        entry.lessonsLearned ? `Key Takeaway: ${entry.lessonsLearned}` : "",
-      ]
-        .filter(Boolean)
-        .join("\n");
-
-      const bodyBlocks = htmlToNotionBlocks(entry.content);
-
-      const childrenBlocks = [
-        {
-          object: "block",
-          type: "callout",
-          callout: {
-            rich_text: [{ type: "text", text: { content: summaryLines } }],
-            icon: { emoji: "📊" },
+        const properties: Record<string, any> = {
+          [titlePropName]: {
+            title: [{ text: { content: entry.title || slug } }],
           },
-        },
-        ...bodyBlocks,
-      ];
+        };
 
-      const schemaRes = await fetch(
-        `https://api.notion.com/v1/databases/${notionDbId}`,
-        {
-          headers: {
-            Authorization: `Bearer ${notionToken}`,
-            "Notion-Version": "2022-06-28",
-          },
+        if ("Slug" in availableProps && availableProps["Slug"].type === "rich_text") {
+          properties["Slug"] = { rich_text: [{ text: { content: slug } }] };
         }
-      );
-
-      let titlePropName = "Name";
-      let availableProps: Record<string, any> = {};
-      if (schemaRes.ok) {
-        const dbMeta = await schemaRes.json();
-        availableProps = dbMeta.properties || {};
-        for (const [k, v] of Object.entries(availableProps)) {
-          if ((v as any).type === "title") {
-            titlePropName = k;
-            break;
+        if ("Period" in availableProps && availableProps["Period"].type === "select") {
+          properties["Period"] = { select: { name: range.periodType.toUpperCase() } };
+        }
+        if ("HTF Bias" in availableProps && entry.marketBias) {
+          if (availableProps["HTF Bias"].type === "select") {
+            properties["HTF Bias"] = { select: { name: entry.marketBias } };
+          } else if (availableProps["HTF Bias"].type === "rich_text") {
+            properties["HTF Bias"] = { rich_text: [{ text: { content: entry.marketBias } }] };
           }
         }
-      }
+        if ("Net P&L" in availableProps && availableProps["Net P&L"].type === "number") {
+          properties["Net P&L"] = { number: Number(netPnl.toFixed(2)) };
+        }
+        if ("Date" in availableProps && availableProps["Date"].type === "date") {
+          properties["Date"] = { date: { start: range.startDate } };
+        }
+        if ("Open Date" in availableProps && availableProps["Open Date"].type === "date") {
+          properties["Open Date"] = { date: { start: range.startDate } };
+        }
 
-      const properties: Record<string, any> = {
-        [titlePropName]: {
-          title: [{ text: { content: entry.title || slug } }],
-        },
-      };
+        const blockTree = await editorHtmlToNotionTree(entry.content);
+        let targetPageId = entry.notionPageId || found.page?.id;
+        let targetPageUrl = found.page?.url || entry.notionUrl;
 
-      if ("Net P&L" in availableProps && availableProps["Net P&L"].type === "number") {
-        properties["Net P&L"] = { number: Number(netPnl.toFixed(2)) };
-      }
-      if ("Open Date" in availableProps && availableProps["Open Date"].type === "date") {
-        properties["Open Date"] = { date: { start: range.startDate } };
-      }
-      if ("Date" in availableProps && availableProps["Date"].type === "date") {
-        properties["Date"] = { date: { start: range.startDate } };
-      }
-
-      if (entry.notionPageId) {
-        const updateRes = await fetch(
-          `https://api.notion.com/v1/pages/${entry.notionPageId}`,
-          {
+        if (targetPageId) {
+          const patchRes = await fetch(`https://api.notion.com/v1/pages/${targetPageId}`, {
             method: "PATCH",
             headers: {
-              Authorization: `Bearer ${notionToken}`,
+              Authorization: `Bearer ${token}`,
               "Notion-Version": "2022-06-28",
               "Content-Type": "application/json",
             },
             body: JSON.stringify({ properties }),
-          }
-        );
-
-        if (updateRes.ok) {
-          const data = await updateRes.json();
-          entry = await saveJournalEntry(slug, {
-            notionPageId: data.id,
-            notionUrl: data.url,
           });
-          return NextResponse.json({ entry, notionSynced: true });
+
+          if (!patchRes.ok) {
+            targetPageId = null;
+          } else {
+            const patchData = await patchRes.json();
+            targetPageUrl = patchData.url || targetPageUrl;
+            await clearNotionPageBlocks(targetPageId, token);
+            await appendBlocksTreeRecursive(targetPageId, blockTree, token);
+          }
         }
-      }
 
-      const createRes = await fetch("https://api.notion.com/v1/pages", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${notionToken}`,
-          "Notion-Version": "2022-06-28",
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          parent: { database_id: notionDbId },
-          properties,
-          children: childrenBlocks.slice(0, 100),
-        }),
-      });
+        if (!targetPageId) {
+          const createRes = await fetch("https://api.notion.com/v1/pages", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${token}`,
+              "Notion-Version": "2022-06-28",
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              parent: { database_id: databaseId },
+              properties,
+            }),
+          });
 
-      if (createRes.ok) {
-        const data = await createRes.json();
+          if (!createRes.ok) {
+            const errText = await createRes.text();
+            return NextResponse.json({
+              entry,
+              notionSynced: false,
+              notionError: `Notion Page Error (${createRes.status}): ${errText.slice(0, 180)}`,
+            });
+          }
+
+          const createdData = await createRes.json();
+          targetPageId = createdData.id;
+          targetPageUrl = createdData.url;
+
+          if (targetPageId && blockTree.length > 0) {
+            await appendBlocksTreeRecursive(targetPageId, blockTree, token);
+          }
+        }
+
         entry = await saveJournalEntry(slug, {
-          notionPageId: data.id,
-          notionUrl: data.url,
+          notionPageId: targetPageId,
+          notionUrl: targetPageUrl,
         });
+
         return NextResponse.json({ entry, notionSynced: true });
-      } else {
-        const errText = await createRes.text();
+      } catch (syncErr: any) {
+        console.error("Notion sync error:", syncErr);
         return NextResponse.json({
           entry,
           notionSynced: false,
-          notionError: `Notion API (${createRes.status}): ${errText.slice(0, 180)}`,
+          notionError: syncErr?.message || "Failed to push blocks to Notion",
         });
       }
     }
@@ -322,7 +242,7 @@ export async function PUT(
     return NextResponse.json({ entry, notionSynced: false });
   } catch (err: any) {
     return NextResponse.json(
-      { error: err?.message || "Failed to save journal entry" },
+      { error: err?.message || "Failed to sync journal entry" },
       { status: 500 }
     );
   }

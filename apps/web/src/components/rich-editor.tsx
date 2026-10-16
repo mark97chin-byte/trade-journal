@@ -41,7 +41,9 @@ import {
   Sigma,
   Table as TableIcon,
   Trash2,
+  Copy,
   FolderPlus,
+  GripVertical,
   X,
 } from "lucide-react";
 import {
@@ -73,6 +75,94 @@ export interface RichEditorProps {
 const CALLOUT_ICONS = ["💡", "🎯", "⚠️", "🔥", "✅", "❌", "📌", "📈", "🧠", "📝", "🛡️", "⚡"];
 
 const EDITOR_CSS = `
+
+/* Notion Line-by-Line Block Gutter & Column Styling */
+.tz-rich-content {
+  position: relative;
+  padding-left: 3rem !important;
+  padding-right: 1rem !important;
+}
+.tz-rich-content p,
+.tz-rich-content h1,
+.tz-rich-content h2,
+.tz-rich-content h3,
+.tz-rich-content ul,
+.tz-rich-content ol,
+.tz-rich-content blockquote,
+.tz-rich-content .tz-toggle,
+.tz-rich-content .tz-callout,
+.tz-rich-content .tz-banner,
+.tz-rich-content .tz-check-row,
+.tz-rich-content .tz-figure,
+.tz-rich-content .tz-code-block {
+  position: relative;
+  min-height: 1.65em;
+  margin-top: 2px;
+  margin-bottom: 2px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background-color 0.1s ease;
+}
+.tz-block-hovered {
+  background-color: rgba(255, 255, 255, 0.025);
+}
+.tz-block-dragging {
+  opacity: 0.35;
+}
+.tz-column-list {
+  display: flex;
+  flex-direction: row;
+  gap: 1.25rem;
+  margin: 0.65rem 0;
+  width: 100%;
+  align-items: stretch;
+}
+.tz-column {
+  flex: 1;
+  min-width: 0;
+  border: 1px dashed rgba(255, 255, 255, 0.09) !important;
+  background: rgba(255, 255, 255, 0.01) !important;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.65rem 0.45rem 2.2rem !important;
+  position: relative;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tz-column:hover,
+.tz-column:focus-within {
+  border-color: rgba(99, 102, 241, 0.35) !important;
+  background: rgba(255, 255, 255, 0.02) !important;
+}
+
+.tz-rich-content {
+  position: relative;
+  padding-left: 2.6rem !important;
+}
+.tz-rich-content > *,
+.tz-column > *,
+.tz-toggle-body > * {
+  position: relative;
+  transition: background-color 0.12s ease;
+  border-radius: 0.25rem;
+}
+.tz-block-dragging {
+  opacity: 0.35;
+}
+/* Subtle hover outline on columns only when hovered or focused (clean like Notion) */
+.tz-column {
+  flex: 1;
+  min-width: 0;
+  border: 1px solid transparent !important;
+  background: transparent !important;
+  border-radius: 0.45rem;
+  padding: 0.35rem 0.65rem;
+  transition: border-color 0.15s, background 0.15s;
+}
+.tz-column-list:hover > .tz-column,
+.tz-column:focus-within {
+  border-color: rgba(255, 255, 255, 0.1) !important;
+  background: rgba(255, 255, 255, 0.015) !important;
+}
+
 .tz-rich-content {
   outline: none;
   line-height: 1.65;
@@ -529,6 +619,12 @@ function repairCorruptedHtml(input: string): string {
   return s;
 }
 
+
+function escapeHtml(input: string): string {
+  return input.replace(/&/g, "&amp;").replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function normalizeIncomingValue(raw: string): string {
   if (!raw || !raw.trim()) return "";
   const healed = repairCorruptedHtml(raw);
@@ -587,578 +683,600 @@ export function RichEditor({
   }>({ open: false, x: 0, y: 0, filter: "" });
 
   const [selectedImg, setSelectedImg] = useState<HTMLImageElement | null>(null);
+  // Notion Line-by-Line Block Engine (Vertical Reorder + Clickable Block Menu)
+  const [hoveredBlock, setHoveredBlock] = useState<{
+    el: HTMLElement;
+    top: number;
+    left: number;
+  } | null>(null);
 
+  const [blockMenuOpen, setBlockMenuOpen] = useState(false);
+  const draggedBlockRef = useRef<HTMLElement | null>(null);
+
+  const [dropIndicator, setDropIndicator] = useState<{
+    targetEl: HTMLElement;
+    zone: "top" | "bottom";
+    rect: { top: number; left: number; width: number; height: number };
+  } | null>(null);
+
+
+  // Restored editor state and commands (missing from the supplied component).
+  const [templates, setTemplates] = useState<SavedTemplate[]>(DEFAULT_TEMPLATES);
+  const [newTemplateModal, setNewTemplateModal] = useState(false);
+  const [newTemplateName, setNewTemplateName] = useState("");
   const [lightbox, setLightbox] = useState<{
-    open: boolean;
-    images: string[];
-    currentIndex: number;
+    open: boolean; images: string[]; currentIndex: number;
   }>({ open: false, images: [], currentIndex: 0 });
+  const didInitializeRef = useRef(false);
+  const lastSelectionRef = useRef<Range | null>(null);
 
-  const openLightboxForImage = (clickedSrc: string) => {
-    if (!contentRef.current) return;
-    const imgs = Array.from(contentRef.current.querySelectorAll("img")).map((img) => img.src);
-    const index = Math.max(0, imgs.indexOf(clickedSrc));
-    setLightbox({ open: true, images: imgs, currentIndex: index });
+  useEffect(() => {
+    try {
+      const stored = JSON.parse(localStorage.getItem("tz_custom_note_templates") || "[]");
+      if (Array.isArray(stored)) {
+        const valid = stored.filter((x): x is SavedTemplate =>
+          x && typeof x.id === "string" && typeof x.name === "string" &&
+          typeof x.html === "string" && !["tpl-prep", "tpl-review"].includes(x.id)
+        );
+        setTemplates([...DEFAULT_TEMPLATES, ...valid]);
+      }
+    } catch { /* Invalid saved templates must not prevent editor loading. */ }
+  }, []);
+
+  useEffect(() => {
+    const editor = contentRef.current;
+    if (!editor) return;
+    // Never replace live content when onChange echoes it back from the parent.
+    if (!didInitializeRef.current || value !== lastEmittedRef.current) {
+      editor.innerHTML = normalizeIncomingValue(value || "") ||
+        (readOnly ? "" : '<p data-placeholder="Type / for commands..."><br/></p>');
+      lastEmittedRef.current = value;
+      didInitializeRef.current = true;
+    }
+  }, [value, readOnly]);
+
+  const rememberSelection = () => {
+    const sel = window.getSelection();
+    if (sel?.rangeCount && contentRef.current?.contains(sel.anchorNode)) {
+      lastSelectionRef.current = sel.getRangeAt(0).cloneRange();
+    }
   };
 
+  const restoreSelection = () => {
+    const sel = window.getSelection();
+    const editor = contentRef.current;
+    if (!editor || !sel) return;
+    let range: Range | null = null;
+    if (sel.rangeCount && editor.contains(sel.anchorNode)) {
+      range = sel.getRangeAt(0);
+    } else if (lastSelectionRef.current && editor.contains(lastSelectionRef.current.startContainer)) {
+      range = lastSelectionRef.current.cloneRange();
+    }
+    editor.focus();
+    if (!range) {
+      range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+    }
+    sel.removeAllRanges();
+    sel.addRange(range);
+  };
+
+  const emitChange = () => {
+    const html = contentRef.current?.innerHTML;
+    if (html === undefined || readOnly) return;
+    if (html !== lastEmittedRef.current) {
+      lastEmittedRef.current = html;
+      onChange(html);
+    }
+  };
+
+  const insertHtmlAtCursor = (html: string) => {
+    if (readOnly || !contentRef.current) return;
+    const editor = contentRef.current;
+    restoreSelection();
+    const sel = window.getSelection();
+    let block: HTMLElement | null = null;
+    if (sel?.rangeCount) {
+      const node = sel.getRangeAt(0).startContainer;
+      const parent = node.nodeType === Node.ELEMENT_NODE ? node as HTMLElement : node.parentElement;
+      const nearest = parent?.closest("p,h1,h2,h3,blockquote,li,.tz-check-row,.tz-toggle,.tz-callout,.tz-figure,.tz-code-block,.tz-banner");
+      if (nearest && editor.contains(nearest)) block = nearest as HTMLElement;
+    }
+    const temp = document.createElement("template");
+    temp.innerHTML = html;
+    const fragment = temp.content;
+    const first = fragment.firstElementChild as HTMLElement | null;
+    const last = fragment.lastElementChild as HTMLElement | null;
+    if (block && block !== editor) {
+      const currentText = (block.textContent || "").trim();
+      if (!currentText || /^\/[\w\s-]*$/.test(currentText)) block.replaceWith(fragment);
+      else block.after(fragment);
+    } else {
+      editor.appendChild(fragment);
+    }
+    // Keep the cursor inside the newly inserted block when possible.
+    const editable = (first?.querySelector(".tz-toggle-title,.tz-callout-content,.tz-check-text,p,div,code,td") || first || last) as HTMLElement | null;
+    if (editable) {
+      const range = document.createRange();
+      range.selectNodeContents(editable);
+      range.collapse(false);
+      sel?.removeAllRanges();
+      sel?.addRange(range);
+      rememberSelection();
+    }
+    setSlashMenu(s => ({ ...s, open: false, filter: "" }));
+    setOpenPopover(null);
+    emitChange();
+  };
+
+  useImperativeHandle(editorRef, () => ({
+    focus: () => restoreSelection(),
+    insertText: (text: string) => {
+      restoreSelection();
+      document.execCommand("insertText", false, text);
+      emitChange();
+    },
+    insertHtml: (html: string) => insertHtmlAtCursor(html),
+  }));
+
+  const exec = (command: string, arg?: string) => {
+    if (readOnly) return;
+    restoreSelection();
+    document.execCommand(command, false, arg);
+    rememberSelection();
+    emitChange();
+  };
+  const applyBlockType = (tag: string, label: string) => {
+    if (tag.startsWith("toggle")) {
+      insertToggleBlock(tag === "toggle" ? "toggle" : tag.replace("toggle_", "heading_"));
+    } else if (tag === "blockquote") insertQuoteBlock();
+    else exec("formatBlock", tag);
+    setBlockType(label);
+    setOpenPopover(null);
+  };
+  const applyFontFamily = (label: string, cssValue: string) => {
+    exec("fontName", cssValue);
+    setFontFamily(label);
+    setOpenPopover(null);
+  };
+  const applyFontSize = (size: number) => setFontSize(Math.min(72, Math.max(9, size)));
+  const toggleInlineCode = () => {
+    const sel = window.getSelection();
+    const chosen = sel?.toString() || "code";
+    exec("insertHTML", `<code class="tz-inline-code">${escapeHtml(chosen)}</code>`);
+  };
+  const applyNotionColor = (id: string, color: string, mode: string) => {
+    if (mode === "inline-text") exec("foreColor", color);
+    else if (mode === "inline-bg") exec("hiliteColor", color);
+    else {
+      restoreSelection();
+      const anchor = window.getSelection()?.anchorNode;
+      const el = anchor?.nodeType === Node.ELEMENT_NODE ? anchor as HTMLElement : anchor?.parentElement;
+      const block = el?.closest("p,h1,h2,h3,blockquote,.tz-toggle,.tz-callout,.tz-banner") as HTMLElement | null;
+      if (block) {
+        for (const name of Array.from(block.classList)) {
+          if (name.startsWith("tz-color-") && name.endsWith("_background")) block.classList.remove(name);
+        }
+        block.classList.add(`tz-color-${id}`);
+        block.setAttribute("data-notion-color", id);
+        emitChange();
+      }
+    }
+    setOpenPopover(null);
+  };
+
+  const insertToggleBlock = (kind: string) => {
+    const heading = kind === "toggle" ? "Toggle" : `Toggle heading ${kind.slice(-1)}`;
+    const klass = kind === "toggle" ? "tz-toggle" : `tz-toggle tz-toggle-h${kind.slice(-1)}`;
+    insertHtmlAtCursor(`<div class="${klass}" data-notion-type="${kind}" data-toggle-type="${kind}" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title">${heading}</div></div><div class="tz-toggle-body"><p><br/></p></div></div>`);
+  };
+  const insertColumnsBlock = (n: number) => insertHtmlAtCursor(
+    `<div class="tz-column-list" data-notion-type="column_list" data-columns="${n}">${Array.from({ length: n }, (_, i) => `<div class="tz-column" data-notion-type="column"><p data-placeholder="Column ${i + 1}..."><br/></p></div>`).join("")}</div>`
+  );
+  const insertCallout = (icon: string, bg: string) => insertHtmlAtCursor(
+    `<div class="tz-callout tz-color-${bg}" data-notion-type="callout" data-notion-color="${bg}" data-icon="${icon}"><span class="tz-callout-icon" contenteditable="false">${icon}</span><div class="tz-callout-content"><p>Callout note...</p></div></div>`
+  );
+  const insertQuoteBlock = () => insertHtmlAtCursor('<blockquote class="tz-quote" data-notion-type="quote"><div>Quote...</div></blockquote>');
+  const insertDivider = () => insertHtmlAtCursor('<hr class="tz-divider" data-notion-type="divider"/>');
+  const insertChecklistItem = () => insertHtmlAtCursor('<div class="tz-check-row" data-notion-type="to_do"><input type="checkbox" class="tz-inline-checkbox" contenteditable="false"/><div class="tz-check-text">To-do item</div></div>');
+  const insertCodeBlock = (lang: string) => insertHtmlAtCursor(`<div class="tz-code-block" data-notion-type="code"><div class="tz-code-header">${escapeHtml(lang)}</div><pre><code>Code...</code></pre></div>`);
+  const insertTable = () => insertHtmlAtCursor('<table class="tz-table" data-notion-type="table"><tbody><tr><th>Column 1</th><th>Column 2</th></tr><tr><td> </td><td> </td></tr></tbody></table>');
+  const insertBookmarkBlock = () => {
+    const raw = window.prompt("Bookmark URL (https://...):");
+    if (!raw) return;
+    let url: URL;
+    try { url = new URL(raw); } catch { window.alert("Invalid URL"); return; }
+    if (!["https:", "http:"].includes(url.protocol)) { window.alert("Only HTTP(S) URLs are supported"); return; }
+    const safe = escapeHtml(url.toString());
+    insertHtmlAtCursor(`<div class="tz-bookmark" data-notion-type="bookmark"><a class="tz-bookmark-link" href="${safe}" target="_blank" rel="noopener noreferrer">${safe}</a><div class="tz-bookmark-caption">Bookmark</div></div>`);
+  };
+  const insertEquationBlock = () => {
+    const equation = window.prompt("Equation / formula:", "R = reward / risk");
+    if (equation !== null) insertHtmlAtCursor(`<div class="tz-equation" data-notion-type="equation"><span class="tz-equation-symbol">∑</span><span>${escapeHtml(equation)}</span></div>`);
+  };
+
+  const openLightboxForImage = (src: string) => {
+    const images = Array.from(contentRef.current?.querySelectorAll("img") || []).map(img => img.src);
+    const index = images.indexOf(src);
+    setLightbox({ open: true, images: images.length ? images : [src], currentIndex: Math.max(0, index) });
+  };
+  const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
+    const target = e.target as HTMLElement;
+    const toggle = target.closest(".tz-toggle-btn");
+    if (toggle) {
+      e.preventDefault();
+      const block = toggle.closest(".tz-toggle") as HTMLElement | null;
+      const opened = block?.getAttribute("data-open") !== "false";
+      block?.setAttribute("data-open", opened ? "false" : "true");
+      toggle.textContent = opened ? "▸" : "▾";
+      const body = block?.querySelector(":scope > .tz-toggle-body") as HTMLElement | null;
+      if (body) body.style.display = opened ? "none" : "block";
+      emitChange();
+    } else if (target.closest(".tz-callout-icon")) {
+      const icon = target.closest(".tz-callout-icon")!;
+      const value = window.prompt("Callout icon:", icon.textContent || "💡");
+      if (value) {
+        icon.textContent = value;
+        icon.closest(".tz-callout")?.setAttribute("data-icon", value);
+        emitChange();
+      }
+    }
+    if (target instanceof HTMLInputElement && target.type === "checkbox") {
+      if (target.checked) target.setAttribute("checked", "checked");
+      else target.removeAttribute("checked");
+      emitChange();
+    }
+    setSelectedImg(target.tagName === "IMG" ? target as HTMLImageElement : null);
+    rememberSelection();
+  };
+
+  const insertImageFile = async (file: File) => {
+    if (readOnly || !file.type.startsWith("image/")) return;
+    try {
+      const bitmap = await createImageBitmap(file);
+      const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.max(1, Math.round(bitmap.width * scale));
+      canvas.height = Math.max(1, Math.round(bitmap.height * scale));
+      canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      bitmap.close();
+      const data = canvas.toDataURL("image/webp", 0.82);
+      insertHtmlAtCursor(`<figure class="tz-figure" data-notion-type="image"><img src="${data}" alt="${escapeHtml(file.name)}" style="width:100%;height:auto"/><figcaption class="tz-block-caption"></figcaption></figure>`);
+    } catch (error) { console.error("Failed to insert image", error); }
+  };
   useEffect(() => {
     if (!lightbox.open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        setLightbox((s) => ({ ...s, open: false }));
-      } else if (e.key === "ArrowRight") {
-        setLightbox((s) => ({
-          ...s,
-          currentIndex: (s.currentIndex + 1) % s.images.length,
-        }));
-      } else if (e.key === "ArrowLeft") {
-        setLightbox((s) => ({
-          ...s,
-          currentIndex: (s.currentIndex - 1 + s.images.length) % s.images.length,
-        }));
+      if (e.key === "Escape") setLightbox(s => ({ ...s, open: false }));
+      else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
+        setLightbox(s => ({ ...s, currentIndex: (s.currentIndex +
+          (e.key === "ArrowLeft" ? -1 : 1) + s.images.length) % s.images.length }));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [lightbox.open, lightbox.images.length]);
+  }, [lightbox.open]);
 
-  const [templates, setTemplates] = useState<SavedTemplate[]>(DEFAULT_TEMPLATES);
-  const [newTemplateModal, setNewTemplateModal] = useState(false);
-  const [newTemplateName, setNewTemplateName] = useState("");
+  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
+    const images = Array.from(e.clipboardData.files).filter(file => file.type.startsWith("image/"));
+    if (images.length) {
+      e.preventDefault();
+      images.forEach(file => { void insertImageFile(file); });
+    }
+  };
 
-  useEffect(() => {
-    try {
-      const saved = localStorage.getItem("tz_custom_note_templates");
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        if (Array.isArray(parsed)) {
-          setTemplates([...DEFAULT_TEMPLATES, ...parsed]);
-        }
+  // Ensure every bare text node or div is normalized into a discrete movable block
+  const ensureLineBlocks = useCallback(() => {
+    const container = contentRef.current;
+    if (!container) return;
+
+    Array.from(container.childNodes).forEach((node) => {
+      if (node.nodeType === Node.TEXT_NODE && (node.textContent || "").trim()) {
+        const p = document.createElement("p");
+        p.textContent = node.textContent;
+        container.replaceChild(p, node);
+      } else if (
+        node.nodeType === Node.ELEMENT_NODE &&
+        (node as HTMLElement).tagName === "DIV" &&
+        !(node as HTMLElement).className
+      ) {
+        const div = node as HTMLElement;
+        const p = document.createElement("p");
+        p.innerHTML = div.innerHTML || "<br/>";
+        container.replaceChild(p, div);
       }
-    } catch {
-      // ignore
-    }
-  }, []);
+    });
 
-  useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    if (value !== lastEmittedRef.current) {
-      const normalized = normalizeIncomingValue(value);
-      if (el.innerHTML !== normalized) {
-        el.innerHTML = normalized;
+    if (container.children.length === 0 && !readOnly) {
+      const p = document.createElement("p");
+      p.setAttribute("data-placeholder", placeholder);
+      p.innerHTML = "<br/>";
+      container.appendChild(p);
+    }
+  }, [placeholder, readOnly]);
+
+  // Identify the exact line-level block under the cursor (works at root, inside columns, and inside toggles)
+  const findDraggableBlock = (target: HTMLElement | null): HTMLElement | null => {
+    const container = contentRef.current;
+    if (!target || !container || target === container) return null;
+
+    let curr: HTMLElement | null = target;
+    while (curr && curr !== container) {
+      const parent: HTMLElement | null = curr.parentElement;
+      if (!parent) break;
+
+      // Never treat internal structural parts of a toggle or column wrapper as standalone blocks
+      if (
+        curr.classList.contains("tz-toggle-header") ||
+        curr.classList.contains("tz-toggle-title") ||
+        curr.classList.contains("tz-toggle-btn") ||
+        curr.classList.contains("tz-toggle-body") ||
+        curr.classList.contains("tz-column")
+      ) {
+        curr = parent;
+        continue;
       }
-      lastEmittedRef.current = value;
-    }
-  }, [value]);
 
-  useEffect(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const normalized = normalizeIncomingValue(value);
-    if (el.innerHTML !== normalized) {
-      el.innerHTML = normalized;
-    }
-  }, []);
-
-  const emitChange = useCallback(() => {
-    const el = contentRef.current;
-    if (!el) return;
-    const html = el.innerHTML;
-    lastEmittedRef.current = html;
-    onChange(html);
-  }, [onChange]);
-
-  const insertHtmlAtCursor = useCallback(
-    (html: string) => {
-      const el = contentRef.current;
-      if (!el) return;
-      el.focus();
-      const sel = window.getSelection();
-      if (sel && sel.rangeCount > 0 && el.contains(sel.anchorNode)) {
-        document.execCommand("insertHTML", false, html);
-      } else {
-        el.insertAdjacentHTML("beforeend", html);
+      if (
+        parent === container ||
+        parent.classList.contains("tz-column") ||
+        parent.classList.contains("tz-toggle-body")
+      ) {
+        return curr;
       }
-      emitChange();
-    },
-    [emitChange]
-  );
-
-  useImperativeHandle(
-    editorRef,
-    () => ({
-      focus: () => contentRef.current?.focus(),
-      insertText: (text: string) => insertHtmlAtCursor(text),
-      insertHtml: (html: string) => insertHtmlAtCursor(html),
-    }),
-    [insertHtmlAtCursor]
-  );
-
-  const exec = (command: string, arg?: string) => {
-    contentRef.current?.focus();
-    document.execCommand(command, false, arg);
-    emitChange();
-  };
-
-  // Insert Standard Toggle OR Toggle Heading (H1 / H2 / H3)
-  const insertToggleBlock = (
-    toggleKind: "toggle" | "heading_1" | "heading_2" | "heading_3" = "toggle",
-    defaultTitle?: string,
-    defaultBody = "Type inside toggle..."
-  ) => {
-    const levelClass =
-      toggleKind === "heading_1"
-        ? " tz-toggle-h1"
-        : toggleKind === "heading_2"
-        ? " tz-toggle-h2"
-        : toggleKind === "heading_3"
-        ? " tz-toggle-h3"
-        : "";
-    const title =
-      defaultTitle ??
-      (toggleKind === "heading_1"
-        ? "Toggle Heading 1"
-        : toggleKind === "heading_2"
-        ? "Toggle Heading 2"
-        : toggleKind === "heading_3"
-        ? "Toggle Heading 3"
-        : "Toggle header");
-
-    const toggleHtml = `
-      <div class="tz-toggle${levelClass}" data-notion-type="${toggleKind}" data-toggle-type="${toggleKind}" data-open="true">
-        <div class="tz-toggle-header">
-          <span class="tz-toggle-btn" contenteditable="false">▾</span>
-          <div class="tz-toggle-title"><strong>${title}</strong></div>
-        </div>
-        <div class="tz-toggle-body">
-          <p>${defaultBody}</p>
-        </div>
-      </div>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(toggleHtml);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  // Insert Notion Multi-Column Block (`column_list` > `column`)
-  const insertColumnsBlock = (colCount: 2 | 3 = 2) => {
-    const colsHtml = Array.from({ length: colCount })
-      .map(
-        (_, i) => `
-        <div class="tz-column" data-notion-type="column">
-          <p><strong>Column ${i + 1}</strong></p>
-          <p>Add text, toggles, or paste screenshots...</p>
-        </div>`
-      )
-      .join("");
-
-    const html = `
-      <div class="tz-column-list" data-notion-type="column_list" data-columns="${colCount}">
-        ${colsHtml}
-      </div>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(html);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const applyBlockType = (tag: string, label: string) => {
-    if (tag === "toggle_h1") return insertToggleBlock("heading_1");
-    if (tag === "toggle_h2") return insertToggleBlock("heading_2");
-    if (tag === "toggle_h3") return insertToggleBlock("heading_3");
-    if (tag === "toggle") return insertToggleBlock("toggle");
-
-    contentRef.current?.focus();
-    document.execCommand("formatBlock", false, `<${tag.toUpperCase()}>`);
-    setBlockType(label);
-    setOpenPopover(null);
-    emitChange();
-  };
-
-  const applyFontFamily = (label: string, cssValue: string) => {
-    contentRef.current?.focus();
-    document.execCommand("fontName", false, cssValue);
-    setFontFamily(label);
-    setOpenPopover(null);
-    emitChange();
-  };
-
-  const applyFontSize = (nextSize: number) => {
-    const clamped = Math.max(10, Math.min(48, nextSize));
-    setFontSize(clamped);
-    const el = contentRef.current;
-    if (!el) return;
-    el.focus();
-
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && !sel.isCollapsed && el.contains(sel.anchorNode)) {
-      const span = document.createElement("span");
-      span.style.fontSize = `${clamped}px`;
-      try {
-        const range = sel.getRangeAt(0);
-        range.surroundContents(span);
-        emitChange();
-        return;
-      } catch {
-        // fallback
-      }
+      curr = parent;
     }
-    el.style.fontSize = `${clamped}px`;
-    emitChange();
+    return null;
   };
 
-  // Apply Notion Inline Color or Block-Level Background Color
-  const applyNotionColor = (
-    notionColorId: NotionColor,
-    hexOrRgba: string,
-    mode: "inline-text" | "inline-bg" | "block-bg"
-  ) => {
-    const el = contentRef.current;
-    if (!el) return;
-    el.focus();
+  const handleEditorMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (readOnly || draggedBlockRef.current || blockMenuOpen) return;
+    const container = contentRef.current;
+    if (!container) return;
 
-    if (mode === "block-bg") {
-      const targetBlock =
-        activeBlockRef.current?.closest(
-          ".tz-callout, .tz-toggle, .tz-quote, blockquote, .tz-column, p, h1, h2, h3"
-        ) as HTMLElement | null;
+    const target = e.target as HTMLElement;
+    if (target.closest(".tz-gutter-controls")) return;
 
-      if (targetBlock) {
-        // Strip previous tz-color-* classes
-        targetBlock.className = targetBlock.className
-          .replace(/\btz-color-[a-z_]+\b/g, "")
-          .trim();
-        if (notionColorId !== "default") {
-          targetBlock.classList.add(`tz-color-${notionColorId}`);
-          targetBlock.setAttribute("data-notion-color", notionColorId);
-        } else {
-          targetBlock.removeAttribute("data-notion-color");
-        }
-        emitChange();
-      }
-      setOpenPopover(null);
-      return;
-    }
+    const blockEl = findDraggableBlock(target);
+    if (!blockEl) return;
 
-    if (mode === "inline-text") {
-      document.execCommand("foreColor", false, hexOrRgba);
-    } else {
-      document.execCommand("hiliteColor", false, hexOrRgba);
-    }
-    setOpenPopover(null);
-    emitChange();
-  };
+    const wrapper = container.parentElement;
+    if (!wrapper) return;
 
-  const toggleInlineCode = () => {
-    const el = contentRef.current;
-    if (!el) return;
-    el.focus();
-    const sel = window.getSelection();
-    if (sel && sel.rangeCount > 0 && !sel.isCollapsed && el.contains(sel.anchorNode)) {
-      const text = sel.toString();
-      document.execCommand(
-        "insertHTML",
-        false,
-        `<code class="tz-inline-code">${text}</code>`
-      );
-      emitChange();
-    }
-  };
+    const wrapperRect = wrapper.getBoundingClientRect();
+    const blockRect = blockEl.getBoundingClientRect();
 
-  const insertChecklistItem = () => {
-    const checkHtml = `
-      <div class="tz-check-row" data-notion-type="to_do">
-        <input type="checkbox" class="tz-inline-checkbox" />
-        <div class="tz-check-text">To-do item</div>
-      </div>
-    `;
-    insertHtmlAtCursor(checkHtml);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const insertCallout = (
-    icon = "💡",
-    bgColor: NotionColor = "blue_background"
-  ) => {
-    const calloutHtml = `
-      <div class="tz-callout tz-color-${bgColor}" data-notion-type="callout" data-notion-color="${bgColor}" data-icon="${icon}">
-        <span class="tz-callout-icon" contenteditable="false" title="Click to change icon">${icon}</span>
-        <div class="tz-callout-content"><div>Key trading note or reminder...</div></div>
-      </div>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(calloutHtml);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const insertQuoteBlock = () => {
-    const quoteHtml = `
-      <blockquote class="tz-quote" data-notion-type="quote">
-        <div>Quote or key market observation...</div>
-      </blockquote>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(quoteHtml);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const insertCodeBlock = (lang = "plain text") => {
-    const codeHtml = `
-      <div class="tz-code-block" data-notion-type="code" data-language="${lang}">
-        <div class="tz-code-header" contenteditable="false">
-          <span class="tz-code-lang" title="Click to switch language">${lang}</span>
-        </div>
-        <pre><code>// Type or paste code here...</code></pre>
-      </div>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(codeHtml);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const insertDivider = () => {
-    insertHtmlAtCursor(`<hr class="tz-divider" data-notion-type="divider" /><p><br/></p>`);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const insertTable = () => {
-    const tableHtml = `
-      <table class="tz-table" data-notion-type="table">
-        <tbody>
-          <tr><th>Metric / Setup</th><th>Observation</th><th>Result</th></tr>
-          <tr><td>Entry Criteria</td><td></td><td></td></tr>
-          <tr><td>Execution</td><td></td><td></td></tr>
-        </tbody>
-      </table>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(tableHtml);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const insertBookmarkBlock = () => {
-    const url = window.prompt("Enter Bookmark or TradingView Link URL:", "https://");
-    if (!url) return;
-    const html = `
-      <div class="tz-bookmark" data-notion-type="bookmark" data-url="${url}">
-        <a href="${url}" target="_blank" rel="noopener noreferrer" class="tz-bookmark-link" contenteditable="false">
-          🔗 ${url}
-        </a>
-        <div class="tz-bookmark-caption">Bookmark description or chart note</div>
-      </div>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(html);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const insertEquationBlock = () => {
-    const expr = window.prompt(
-      "Enter Math / Expectancy Formula (LaTeX or plain formula):",
-      "E = (W% × AvgWin) - (L% × AvgLoss)"
-    );
-    if (!expr) return;
-    const html = `
-      <div class="tz-equation" data-notion-type="equation" data-expression="${expr}">
-        <span class="tz-equation-symbol" contenteditable="false">∑</span>
-        <code class="tz-equation-code">${expr}</code>
-      </div>
-      <p><br/></p>
-    `;
-    insertHtmlAtCursor(html);
-    setOpenPopover(null);
-    setSlashMenu((s) => ({ ...s, open: false }));
-  };
-
-  const compressImageToWebp = (file: File): Promise<File> => {
-    return new Promise((resolve) => {
-      const img = new window.Image();
-      const objectUrl = URL.createObjectURL(file);
-      img.onload = () => {
-        URL.revokeObjectURL(objectUrl);
-        const maxDim = 1920;
-        let w = img.naturalWidth || img.width;
-        let h = img.naturalHeight || img.height;
-        if (w > maxDim || h > maxDim) {
-          if (w >= h) {
-            h = Math.round((h * maxDim) / w);
-            w = maxDim;
-          } else {
-            w = Math.round((w * maxDim) / h);
-            h = maxDim;
-          }
-        }
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        if (!ctx) return resolve(file);
-        ctx.drawImage(img, 0, 0, w, h);
-        canvas.toBlob(
-          (blob) => {
-            if (!blob) return resolve(file);
-            const baseName = (file.name || "screenshot").replace(/\.[^.]+$/, "");
-            resolve(new File([blob], `${baseName}.webp`, { type: "image/webp" }));
-          },
-          "image/webp",
-          0.85
-        );
-      };
-      img.onerror = () => {
-        URL.revokeObjectURL(objectUrl);
-        resolve(file);
-      };
-      img.src = objectUrl;
+    setHoveredBlock({
+      el: blockEl,
+      top: Math.max(4, blockRect.top - wrapperRect.top + 2),
+      left: Math.max(4, blockRect.left - wrapperRect.left - 42),
     });
   };
 
-  const insertImageFile = async (file: File) => {
-    const optimizedFile = await compressImageToWebp(file);
+  const handleBlockDragStart = (e: React.DragEvent<HTMLButtonElement>) => {
+    if (!hoveredBlock?.el) return;
+    setBlockMenuOpen(false);
+    const block = hoveredBlock.el;
+    draggedBlockRef.current = block;
+    block.classList.add("tz-block-dragging");
+    e.dataTransfer.effectAllowed = "move";
     try {
-      const form = new FormData();
-      form.append("type", ownerType || "editor");
-      form.append("id", ownerId || "inline-note");
-      form.append("file", optimizedFile);
-      const res = await fetch("/api/attachments", { method: "POST", body: form });
-      if (res.ok) {
-        const json = await res.json();
-        const attId = json.data?.id ?? json.id;
-        if (attId) {
-          const imgHtml = `
-            <figure class="tz-figure" data-notion-type="image" data-attachment-id="${attId}">
-              <img src="/api/attachments/${attId}" alt="${optimizedFile.name}" class="tz-editor-img" style="max-width: 100%; width: 100%; border-radius: 8px; margin: 6px 0;" />
-            </figure>
-            <p><br/></p>
-          `;
-          insertHtmlAtCursor(imgHtml);
-          return;
-        }
-      }
-    } catch {
-      // Fallback to data URL if offline
-    }
-
-    const reader = new FileReader();
-    reader.onload = () => {
-      if (typeof reader.result === "string") {
-        const imgHtml = `
-          <figure class="tz-figure" data-notion-type="image">
-            <img src="${reader.result}" alt="${file.name || "Screenshot"}" class="tz-editor-img" style="max-width: 100%; width: 100%; border-radius: 8px; margin: 6px 0;" />
-          </figure>
-          <p><br/></p>
-        `;
-        insertHtmlAtCursor(imgHtml);
-      }
-    };
-    reader.readAsDataURL(optimizedFile);
+      e.dataTransfer.setData("text/plain", "tz-block");
+    } catch {}
   };
 
-  const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handleBlockDragEnd = () => {
+    if (draggedBlockRef.current) {
+      draggedBlockRef.current.classList.remove("tz-block-dragging");
+      draggedBlockRef.current = null;
+    }
+    setDropIndicator(null);
+  };
+
+  // Strict Vertical-Only Drag Over (Never accidentally splits into columns!)
+  const handleEditorDragOver = (e: React.DragEvent<HTMLDivElement>) => {
+    const dragged = draggedBlockRef.current;
+    const container = contentRef.current;
+    if (!dragged || !container) return;
+
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+
     const target = e.target as HTMLElement;
-    activeBlockRef.current = target;
 
-    // 1. Expand / Collapse any Toggle or Toggle Heading
-    if (target.classList.contains("tz-toggle-btn")) {
-      e.preventDefault();
-      e.stopPropagation();
-      const toggleEl = target.closest(".tz-toggle") as HTMLElement | null;
-      if (toggleEl) {
-        const isOpen = toggleEl.getAttribute("data-open") !== "false";
-        const bodyEl = toggleEl.querySelector(
-          ":scope > .tz-toggle-body"
-        ) as HTMLElement | null;
-        if (isOpen) {
-          toggleEl.setAttribute("data-open", "false");
-          target.textContent = "▸";
-          if (bodyEl) bodyEl.style.display = "none";
-        } else {
-          toggleEl.setAttribute("data-open", "true");
-          target.textContent = "▾";
-          if (bodyEl) bodyEl.style.display = "block";
-        }
-        emitChange();
-      }
+    // Allow dropping directly into an empty column
+    const colTarget = target.closest(".tz-column") as HTMLElement | null;
+    const targetBlock = findDraggableBlock(target);
+
+    const wrapper = container.parentElement;
+    if (!wrapper) return;
+    const wrapperRect = wrapper.getBoundingClientRect();
+
+    if (!targetBlock && colTarget) {
+      const colRect = colTarget.getBoundingClientRect();
+      setDropIndicator({
+        targetEl: colTarget,
+        zone: "top",
+        rect: {
+          top: colRect.top - wrapperRect.top + 8,
+          left: colRect.left - wrapperRect.left + 8,
+          width: colRect.width - 16,
+          height: 4,
+        },
+      });
       return;
     }
 
-    // 2. Interactive Callout Icon switcher
-    if (target.classList.contains("tz-callout-icon") && !readOnly) {
-      e.preventDefault();
-      e.stopPropagation();
-      const calloutEl = target.closest(".tz-callout") as HTMLElement | null;
-      if (calloutEl) {
-        const current = target.textContent?.trim() || "💡";
-        const idx = CALLOUT_ICONS.indexOf(current);
-        const nextIcon = CALLOUT_ICONS[(idx + 1) % CALLOUT_ICONS.length]!;
-        target.textContent = nextIcon;
-        calloutEl.setAttribute("data-icon", nextIcon);
-        emitChange();
-      }
+    if (!targetBlock || targetBlock === dragged || dragged.contains(targetBlock)) {
+      setDropIndicator(null);
       return;
     }
 
-    // 3. Code Block Language switcher
-    if (target.classList.contains("tz-code-lang") && !readOnly) {
-      e.preventDefault();
-      e.stopPropagation();
-      const codeBlock = target.closest(".tz-code-block") as HTMLElement | null;
-      if (codeBlock) {
-        const current = target.textContent?.trim() || "plain text";
-        const idx = NOTION_CODE_LANGUAGES.indexOf(current);
-        const nextLang =
-          NOTION_CODE_LANGUAGES[(idx + 1) % NOTION_CODE_LANGUAGES.length]!;
-        target.textContent = nextLang;
-        codeBlock.setAttribute("data-language", nextLang);
-        emitChange();
-      }
-      return;
-    }
+    const rect = targetBlock.getBoundingClientRect();
+    const relY = e.clientY - rect.top;
+    const zone: "top" | "bottom" = relY < rect.height / 2 ? "top" : "bottom";
 
-    // 4. To-Do Checkbox state persistence
-    if (
-      target.tagName === "INPUT" &&
-      (target as HTMLInputElement).type === "checkbox"
-    ) {
-      const input = target as HTMLInputElement;
-      if (input.checked) input.setAttribute("checked", "checked");
-      else input.removeAttribute("checked");
-      emitChange();
-      return;
-    }
-
-    // 5. Image selection for resize / caption bar
-    if (target.tagName === "IMG") {
-      setSelectedImg(target as HTMLImageElement);
-    } else {
-      setSelectedImg(null);
-    }
+    setDropIndicator({
+      targetEl: targetBlock,
+      zone,
+      rect: {
+        top: rect.top - wrapperRect.top,
+        left: rect.left - wrapperRect.left,
+        width: rect.width,
+        height: rect.height,
+      },
+    });
   };
 
-  const handlePaste = (e: React.ClipboardEvent<HTMLDivElement>) => {
-    const items = e.clipboardData?.items;
-    if (items) {
-      for (const item of Array.from(items)) {
-        if (item.type.startsWith("image/")) {
-          e.preventDefault();
-          const file = item.getAsFile();
-          if (file) insertImageFile(file);
-          return;
-        }
+  const executeBlockDrop = () => {
+    const dragged = draggedBlockRef.current;
+    if (!dragged || !dropIndicator) return;
+
+    const { targetEl, zone } = dropIndicator;
+    if (targetEl === dragged || dragged.contains(targetEl)) return;
+
+    // If dropped directly into a column container
+    if (targetEl.classList.contains("tz-column")) {
+      targetEl.appendChild(dragged);
+    } else if (zone === "top") {
+      targetEl.parentNode?.insertBefore(dragged, targetEl);
+    } else {
+      targetEl.parentNode?.insertBefore(dragged, targetEl.nextSibling);
+    }
+
+    dragged.classList.remove("tz-block-dragging");
+    draggedBlockRef.current = null;
+    setDropIndicator(null);
+    emitChange();
+  };
+
+  const handleAddBlockBelowHovered = () => {
+    const refEl = hoveredBlock?.el;
+    const p = document.createElement("p");
+    p.setAttribute("data-placeholder", "Type '/' for commands...");
+    p.innerHTML = "<br/>";
+
+    if (refEl && refEl.parentNode) {
+      refEl.parentNode.insertBefore(p, refEl.nextSibling);
+    } else {
+      contentRef.current?.appendChild(p);
+    }
+
+    const sel = window.getSelection();
+    const range = document.createRange();
+    range.setStart(p, 0);
+    range.collapse(true);
+    sel?.removeAllRanges();
+    sel?.addRange(range);
+    emitChange();
+  };
+
+  // Block Action Menu Operations (Delete, Duplicate, Turn Into)
+  const deleteHoveredBlock = () => {
+    if (!hoveredBlock?.el) return;
+    const el = hoveredBlock.el;
+    const parent = el.parentElement;
+    el.remove();
+    setBlockMenuOpen(false);
+    setHoveredBlock(null);
+    // Ensure a column or editor never becomes completely unclickable
+    if (parent && parent.classList.contains("tz-column") && parent.children.length === 0) {
+      const p = document.createElement("p");
+      p.setAttribute("data-placeholder", "Column...");
+      p.innerHTML = "<br/>";
+      parent.appendChild(p);
+    }
+    ensureLineBlocks();
+    emitChange();
+  };
+
+  const duplicateHoveredBlock = () => {
+    if (!hoveredBlock?.el) return;
+    const clone = hoveredBlock.el.cloneNode(true) as HTMLElement;
+    hoveredBlock.el.parentNode?.insertBefore(clone, hoveredBlock.el.nextSibling);
+    setBlockMenuOpen(false);
+    emitChange();
+  };
+
+  const turnHoveredBlockInto = (kind: string) => {
+    if (!hoveredBlock?.el) return;
+    const el = hoveredBlock.el;
+    const textContent = (el.textContent || "").trim();
+
+    let replacementHtml = "";
+    if (kind === "p") {
+      replacementHtml = `<p data-placeholder="Type '/' for commands...">${textContent || "<br/>"}</p>`;
+    } else if (kind === "h1" || kind === "h2" || kind === "h3") {
+      replacementHtml = `<${kind}>${textContent || `Heading ${kind.slice(1)}`}</${kind}>`;
+    } else if (kind === "toggle") {
+      replacementHtml = `
+        <div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true">
+          <div class="tz-toggle-header">
+            <span class="tz-toggle-btn" contenteditable="false">▾</span>
+            <div class="tz-toggle-title"><strong>${textContent || "Toggle"}</strong></div>
+          </div>
+          <div class="tz-toggle-body"><p data-placeholder="Empty toggle. Type or drop blocks here..."><br/></p></div>
+        </div>`;
+    } else if (kind === "toggle_h2") {
+      replacementHtml = `
+        <div class="tz-toggle tz-toggle-h2" data-notion-type="heading_2" data-toggle-type="heading_2" data-open="true">
+          <div class="tz-toggle-header">
+            <span class="tz-toggle-btn" contenteditable="false">▾</span>
+            <div class="tz-toggle-title"><strong>${textContent || "Toggle Heading 2"}</strong></div>
+          </div>
+          <div class="tz-toggle-body"><p data-placeholder="Empty toggle. Type or drop blocks here..."><br/></p></div>
+        </div>`;
+    } else if (kind === "callout") {
+      replacementHtml = `
+        <div class="tz-callout tz-color-blue_background" data-notion-type="callout" data-notion-color="blue_background" data-icon="💡">
+          <span class="tz-callout-icon" contenteditable="false">💡</span>
+          <div class="tz-callout-content"><div>${textContent || "Callout note..."}</div></div>
+        </div>`;
+    } else if (kind === "quote") {
+      replacementHtml = `<blockquote class="tz-quote" data-notion-type="quote"><div data-placeholder="Empty quote">${textContent || ""}</div></blockquote>`;
+    } else if (kind === "todo") {
+      replacementHtml = `
+        <div class="tz-check-row" data-notion-type="to_do">
+          <input type="checkbox" class="tz-inline-checkbox" />
+          <div class="tz-check-text">${textContent || "To-do item"}</div>
+        </div>`;
+    } else if (kind === "banner_gray" || kind === "banner_brown") {
+      const bg = kind === "banner_brown" ? "brown_background" : "gray_background";
+      replacementHtml = `<div class="tz-banner tz-color-${bg}" data-notion-type="paragraph" data-notion-color="${bg}"><strong>${textContent || "Section Header"}</strong></div>`;
+    } else if (kind === "cols_2" || kind === "cols_3") {
+      const count = kind === "cols_3" ? 3 : 2;
+      const cols = Array.from({ length: count })
+        .map(
+          (_, idx) => `
+          <div class="tz-column" data-notion-type="column">
+            <p data-placeholder="Column ${idx + 1}...">${idx === 0 && textContent ? textContent : "<br/>"}</p>
+          </div>`
+        )
+        .join("");
+      replacementHtml = `<div class="tz-column-list" data-notion-type="column_list" data-columns="${count}">${cols}</div>`;
+    }
+
+    if (replacementHtml) {
+      const temp = document.createElement("div");
+      temp.innerHTML = replacementHtml.trim();
+      const newEl = temp.firstElementChild as HTMLElement | null;
+      if (newEl && el.parentNode) {
+        el.parentNode.replaceChild(newEl, el);
+        setHoveredBlock((prev) => (prev ? { ...prev, el: newEl } : null));
       }
     }
+    setBlockMenuOpen(false);
+    emitChange();
   };
 
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
+    if (draggedBlockRef.current && dropIndicator) {
+      e.preventDefault();
+      e.stopPropagation();
+      executeBlockDrop();
+      return;
+    }
     const files = e.dataTransfer?.files;
     if (files && files.length > 0) {
       const imageFiles = Array.from(files).filter((f) =>
@@ -1175,6 +1293,7 @@ export function RichEditor({
     if (e.key === "Escape") {
       setSlashMenu((s) => ({ ...s, open: false }));
       setOpenPopover(null);
+      setBlockMenuOpen(false);
       return;
     }
 
@@ -1207,6 +1326,7 @@ export function RichEditor({
           if (bodyEl) {
             bodyEl.style.display = "block";
             const p = document.createElement("p");
+            p.setAttribute("data-placeholder", "Type '/' for commands...");
             p.innerHTML = "<br/>";
             bodyEl.prepend(p);
             const range = document.createRange();
@@ -1217,6 +1337,55 @@ export function RichEditor({
           }
           emitChange();
         }
+        return;
+      }
+
+      // Pressing Enter inside a To-Do checklist row creates a new To-Do row below (or exits if empty)
+      const checkRow = anchorEl.closest(".tz-check-row") as HTMLElement | null;
+      if (checkRow) {
+        e.preventDefault();
+        const text = (checkRow.textContent || "").trim();
+        if (!text) {
+          const p = document.createElement("p");
+          p.setAttribute("data-placeholder", "Type '/' for commands...");
+          p.innerHTML = "<br/>";
+          checkRow.parentNode?.replaceChild(p, checkRow);
+          const range = document.createRange();
+          range.setStart(p, 0);
+          range.collapse(true);
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        } else {
+          const nextRow = document.createElement("div");
+          nextRow.className = "tz-check-row";
+          nextRow.setAttribute("data-notion-type", "to_do");
+          nextRow.innerHTML = `<input type="checkbox" class="tz-inline-checkbox" /><div class="tz-check-text"><br/></div>`;
+          checkRow.parentNode?.insertBefore(nextRow, checkRow.nextSibling);
+          const textDiv = nextRow.querySelector(".tz-check-text")!;
+          const range = document.createRange();
+          range.setStart(textDiv, 0);
+          range.collapse(true);
+          sel?.removeAllRanges();
+          sel?.addRange(range);
+        }
+        emitChange();
+        return;
+      }
+
+      // Pressing Enter inside a Banner or Quote exits cleanly into a new paragraph block below
+      const specialBlock = anchorEl.closest(".tz-banner, .tz-quote, blockquote, h1, h2, h3") as HTMLElement | null;
+      if (specialBlock) {
+        e.preventDefault();
+        const p = document.createElement("p");
+        p.setAttribute("data-placeholder", "Type '/' for commands...");
+        p.innerHTML = "<br/>";
+        specialBlock.parentNode?.insertBefore(p, specialBlock.nextSibling);
+        const range = document.createRange();
+        range.setStart(p, 0);
+        range.collapse(true);
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        emitChange();
         return;
       }
     }
@@ -2159,15 +2328,127 @@ export function RichEditor({
           </div>
         )}
 
-        {/* WYSIWYG EDITABLE SURFACE */}
+        {/* WYSIWYG EDITABLE SURFACE WITH NOTION LINE-BY-LINE BLOCK GUTTER & CONTEXT MENU */}
+        <div className="relative">
+          {!readOnly && hoveredBlock && (
+            <div
+              style={{
+                top: hoveredBlock.top,
+                left: hoveredBlock.left,
+              }}
+              className="tz-gutter-controls absolute z-30 flex items-center gap-0.5 rounded-md bg-[#161822]/95 px-1 py-0.5 border border-white/10 shadow-md transition-all duration-75"
+              contentEditable={false}
+            >
+              <button
+                type="button"
+                onClick={handleAddBlockBelowHovered}
+                title="Click to insert a new block below"
+                className="flex h-5 w-4 items-center justify-center rounded text-muted-foreground hover:bg-white/10 hover:text-white"
+              >
+                <Plus className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                draggable
+                onClick={() => setBlockMenuOpen((o) => !o)}
+                onDragStart={handleBlockDragStart}
+                onDragEnd={handleBlockDragEnd}
+                title="Drag to move line up/down • Click to open Block Menu (Turn into, Duplicate, Delete)"
+                className="flex h-5 w-4 cursor-grab active:cursor-grabbing items-center justify-center rounded text-muted-foreground hover:bg-white/10 hover:text-white"
+              >
+                <GripVertical className="h-3.5 w-3.5" />
+              </button>
+
+              {/* NOTION BLOCK ACTION MENU (OPENS ON CLICKING ⋮⋮) */}
+              {blockMenuOpen && (
+                <div className="absolute left-0 top-full mt-1 w-52 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl z-50 text-xs space-y-0.5">
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Block Actions
+                  </div>
+                  <button
+                    type="button"
+                    onClick={duplicateHoveredBlock}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-foreground hover:bg-secondary/60"
+                  >
+                    <Copy className="h-3.5 w-3.5 text-indigo-400" />
+                    <span>Duplicate block</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={deleteHoveredBlock}
+                    className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-rose-400 hover:bg-rose-500/15"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Delete block</span>
+                  </button>
+
+                  <div className="my-1 border-t border-border/40" />
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Turn into
+                  </div>
+                  {[
+                    { id: "p", label: "Text (Paragraph)" },
+                    { id: "h1", label: "Heading 1" },
+                    { id: "h2", label: "Heading 2" },
+                    { id: "h3", label: "Heading 3" },
+                    { id: "toggle", label: "Toggle list" },
+                    { id: "toggle_h2", label: "Toggle Heading 2" },
+                    { id: "todo", label: "To-do checklist" },
+                    { id: "callout", label: "Callout box" },
+                    { id: "quote", label: "Quote block" },
+                    { id: "banner_gray", label: "Gray Section Banner" },
+                    { id: "banner_brown", label: "Brown Perspective Banner" },
+                    { id: "cols_2", label: "2 Columns Layout" },
+                    { id: "cols_3", label: "3 Columns Layout" },
+                  ].map((item) => (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => turnHoveredBlockInto(item.id)}
+                      className="flex w-full items-center justify-between rounded-lg px-2 py-1 text-left text-foreground hover:bg-secondary/60"
+                    >
+                      <span>{item.label}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* HORIZONTAL DROP LINE INDICATOR (TOP OR BOTTOM ONLY) */}
+          {dropIndicator && (
+            <div
+              style={{
+                top:
+                  dropIndicator.zone === "top"
+                    ? dropIndicator.rect.top - 2
+                    : dropIndicator.rect.top + dropIndicator.rect.height - 1,
+                left: dropIndicator.rect.left,
+                width: dropIndicator.rect.width,
+                height: 3,
+              }}
+              className="pointer-events-none absolute z-40 rounded-full bg-indigo-500 shadow-[0_0_10px_#6366f1]"
+            />
+          )}
+
         <div
           ref={contentRef}
+          onMouseMove={handleEditorMouseMove}
+          onDragOver={handleEditorDragOver}
           contentEditable={!readOnly}
           suppressContentEditableWarning
           data-placeholder={placeholder}
-          onInput={emitChange}
-          onBlur={emitChange}
-          onClick={handleEditorClick}
+          onInput={() => {
+            ensureLineBlocks();
+            emitChange();
+          }}
+          onMouseUp={rememberSelection}
+          onKeyUp={rememberSelection}
+          onBlur={() => { rememberSelection(); emitChange(); }}
+          onClick={(e) => {
+            setBlockMenuOpen(false);
+            handleEditorClick(e);
+          }}
           onDoubleClick={(e) => {
             const target = e.target as HTMLElement;
             if (target.tagName === "IMG") {
@@ -2185,6 +2466,7 @@ export function RichEditor({
           }}
           className="tz-rich-content p-4 text-sm overflow-y-auto"
         />
+        </div>
 
         {/* SLASH (`/`) COMMAND MENU */}
         {slashMenu.open && (
