@@ -587,6 +587,41 @@ export function RichEditor({
   }>({ open: false, x: 0, y: 0, filter: "" });
 
   const [selectedImg, setSelectedImg] = useState<HTMLImageElement | null>(null);
+
+  const [lightbox, setLightbox] = useState<{
+    open: boolean;
+    images: string[];
+    currentIndex: number;
+  }>({ open: false, images: [], currentIndex: 0 });
+
+  const openLightboxForImage = (clickedSrc: string) => {
+    if (!contentRef.current) return;
+    const imgs = Array.from(contentRef.current.querySelectorAll("img")).map((img) => img.src);
+    const index = Math.max(0, imgs.indexOf(clickedSrc));
+    setLightbox({ open: true, images: imgs, currentIndex: index });
+  };
+
+  useEffect(() => {
+    if (!lightbox.open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setLightbox((s) => ({ ...s, open: false }));
+      } else if (e.key === "ArrowRight") {
+        setLightbox((s) => ({
+          ...s,
+          currentIndex: (s.currentIndex + 1) % s.images.length,
+        }));
+      } else if (e.key === "ArrowLeft") {
+        setLightbox((s) => ({
+          ...s,
+          currentIndex: (s.currentIndex - 1 + s.images.length) % s.images.length,
+        }));
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightbox.open, lightbox.images.length]);
+
   const [templates, setTemplates] = useState<SavedTemplate[]>(DEFAULT_TEMPLATES);
   const [newTemplateModal, setNewTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState("");
@@ -2133,6 +2168,14 @@ export function RichEditor({
           onInput={emitChange}
           onBlur={emitChange}
           onClick={handleEditorClick}
+          onDoubleClick={(e) => {
+            const target = e.target as HTMLElement;
+            if (target.tagName === "IMG") {
+              e.preventDefault();
+              e.stopPropagation();
+              openLightboxForImage((target as HTMLImageElement).src);
+            }
+          }}
           onPaste={handlePaste}
           onDrop={handleDrop}
           onKeyDown={handleKeyDown}
@@ -2178,6 +2221,57 @@ export function RichEditor({
           </div>
         )}
       </div>
+
+      
+      {/* LIGHTBOX MODAL WITH ARROW NAVIGATION & ESCAPE DISMISSAL */}
+      {lightbox.open && lightbox.images.length > 0 && (
+        <div
+          onClick={() => setLightbox((s) => ({ ...s, open: false }))}
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm animate-in fade-in"
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="relative flex flex-col items-center justify-center max-w-[95vw] max-h-[95vh]"
+          >
+            <img
+              src={lightbox.images[lightbox.currentIndex]}
+              alt={`Fullscreen ${lightbox.currentIndex + 1}`}
+              className="max-w-full max-h-[88vh] object-contain rounded-lg shadow-2xl select-none"
+            />
+            <div className="mt-3 flex items-center gap-4 text-xs font-semibold text-white/80 bg-black/60 px-4 py-1.5 rounded-full border border-white/10">
+              <button
+                type="button"
+                onClick={() =>
+                  setLightbox((s) => ({
+                    ...s,
+                    currentIndex:
+                      (s.currentIndex - 1 + s.images.length) % s.images.length,
+                  }))
+                }
+                className="px-2 py-0.5 hover:text-white rounded hover:bg-white/10"
+              >
+                ◀ Prev (←)
+              </button>
+              <span>
+                {lightbox.currentIndex + 1} / {lightbox.images.length}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setLightbox((s) => ({
+                    ...s,
+                    currentIndex: (s.currentIndex + 1) % s.images.length,
+                  }))
+                }
+                className="px-2 py-0.5 hover:text-white rounded hover:bg-white/10"
+              >
+                Next (→) ▶
+              </button>
+              <span className="text-white/40">| Click outside or Esc to close</span>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* SAVE TEMPLATE MODAL */}
       {newTemplateModal && (

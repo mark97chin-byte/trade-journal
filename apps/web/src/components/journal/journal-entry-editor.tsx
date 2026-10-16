@@ -261,8 +261,56 @@ export function JournalEntryEditor({
     } catch {}
   }, [initialEntry]);
 
+  // Persist and reuse active date anchor across Day / Week / Month / Quarter / Year
+  const [activeAnchor, setActiveAnchor] = useState<string>(range.anchorDate);
+
+  useEffect(() => {
+    // If we are on a day or week page, this is our authoritative active anchor
+    if (range.periodType === "day" || range.periodType === "week") {
+      setActiveAnchor(range.anchorDate);
+      try {
+        localStorage.setItem("tz_active_journal_anchor", range.anchorDate);
+      } catch {}
+      return;
+    }
+
+    // When on month, quarter, or year, check if we have a saved anchor from our previous daily browsing
+    try {
+      const saved = localStorage.getItem("tz_active_journal_anchor");
+      if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved)) {
+        // If the saved anchor belongs to the same year/month as this view, keep it
+        const currentYear = range.anchorDate.slice(0, 4);
+        if (range.periodType === "year") {
+          // If viewing year-2026, keep saved anchor if it's in 2026
+          if (saved.startsWith(currentYear)) {
+            setActiveAnchor(saved);
+            return;
+          }
+        } else if (range.periodType === "month") {
+          // If viewing month-2026-09, keep saved anchor if it's in 2026-09
+          const currentMonth = range.anchorDate.slice(0, 7);
+          if (saved.startsWith(currentMonth)) {
+            setActiveAnchor(saved);
+            return;
+          }
+        } else if (range.periodType === "quarter") {
+          const currentYear = range.anchorDate.slice(0, 4);
+          const qNum = Math.floor((parseInt(range.anchorDate.slice(5, 7), 10) - 1) / 3) + 1;
+          const savedMonth = parseInt(saved.slice(5, 7), 10);
+          const savedQ = Math.floor((savedMonth - 1) / 3) + 1;
+          if (saved.startsWith(currentYear) && savedQ === qNum) {
+            setActiveAnchor(saved);
+            return;
+          }
+        }
+      }
+    } catch {}
+
+    setActiveAnchor(range.anchorDate);
+  }, [range.periodType, range.anchorDate]);
+
   const hierarchyLinks = useMemo(() => {
-    const anchor = range.anchorDate;
+    const anchor = activeAnchor || range.anchorDate;
     const yr = anchor.slice(0, 4);
     const mo = anchor.slice(0, 7);
     const monthNum = parseInt(anchor.slice(5, 7), 10);
@@ -296,7 +344,7 @@ export function JournalEntryEditor({
         href: `/journal/year-${yr}`,
       },
     ];
-  }, [range.anchorDate]);
+  }, [activeAnchor, range.anchorDate]);
 
   const adjacentSlugs = useMemo(() => {
     const d = new Date(`${range.anchorDate}T12:00:00Z`);
@@ -405,6 +453,21 @@ export function JournalEntryEditor({
       scores.mentalState;
     return Math.round((sum / 20) * 100);
   }, [scores]);
+
+  const sectionTitle = useMemo(() => {
+    switch (range.periodType) {
+      case "week":
+        return "Weekly Synthesis & Edge Review";
+      case "month":
+        return "Monthly Performance & Macro Review";
+      case "quarter":
+        return "Quarterly Milestone & Strategy Review";
+      case "year":
+        return "Annual Trading Performance & System Audit";
+      default:
+        return "Daily Session Notes & Execution Review";
+    }
+  }, [range.periodType]);
 
   const handleSave = useCallback(
     async (syncNotion = false) => {
@@ -742,7 +805,7 @@ export function JournalEntryEditor({
               <div className="flex items-center gap-2">
                 <FileText className="w-4 h-4 text-indigo-400" />
                 <h2 className="text-sm font-bold text-foreground">
-                  Session Notes &amp; Narrative Review
+                  {sectionTitle}
                 </h2>
               </div>
 
