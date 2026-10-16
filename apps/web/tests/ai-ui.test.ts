@@ -48,7 +48,7 @@ vi.mock("@/components/voice-note", () => ({ VoiceNote: () => null }));
 vi.mock("@/components/attachments", () => ({ Attachments: () => null }));
 vi.mock("@/components/review-export", () => ({ ReviewExport: () => null }));
 const { AskJournal } = await import("../src/components/ask-journal");
-const { default: JournalDayPage } = await import("../src/app/journal/[date]/page");
+const { default: JournalDayPage } = await import("../src/app/journal/[slug]/page");
 
 let container: HTMLDivElement;
 let root: Root;
@@ -166,7 +166,7 @@ it("prevents duplicate submissions before a rerender", async () => {
   expect(state.post).toHaveBeenCalledTimes(1);
 });
 
-const dateParams = Promise.resolve({ date: "2026-09-15" });
+const dateParams = Promise.resolve({ slug: "2026-09-15" });
 const renderDay = (params = dateParams) =>
   act(async () => root.render(createElement(JournalDayPage, { params })));
 const recapReply = {
@@ -209,7 +209,7 @@ it.each(["account", "date", "unmount"])(
       await renderDay();
       state.filters = { accounts: "a" };
       await renderDay();
-    } else if (change === "date") await renderDay(Promise.resolve({ date: "2026-09-16" }));
+    } else if (change === "date") await renderDay(Promise.resolve({ slug: "2026-09-16" }));
     else await act(async () => root.render(null));
     await act(async () => pending.resolve(recapReply));
     expect(state.save).not.toHaveBeenCalled();

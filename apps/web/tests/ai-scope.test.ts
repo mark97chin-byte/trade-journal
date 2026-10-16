@@ -16,7 +16,7 @@ const { queryTrades } = await import("../src/server/trades-query");
 const { runAi } = await import("../src/server/ai");
 const { POST: ask } = await import("../src/app/api/ai/ask/route");
 const { POST: recap } = await import("../src/app/api/ai/recap/route");
-const { GET: day } = await import("../src/app/api/journal/[date]/route");
+const { GET: day } = await import("../src/app/api/journal/[slug]/route");
 const request = (body: unknown) =>
   new Request("http://localhost/api/ai/test", {
     method: "POST",
@@ -74,7 +74,7 @@ afterAll(() => {
 
 it.each([
   ["ask", ask, { question: "How did I do?" }],
-  ["recap", recap, { date: "2026-09-15" }],
+  ["recap", recap, { slug: "2026-09-15" }],
 ] as const)("%s sends only the selected account's data to the provider", async (_, route, body) => {
   const response = await route(request({ ...body, filters: { accounts: "a" }, timeZone: "UTC" }));
   expect(response.status).toBe(200);
@@ -135,7 +135,7 @@ it.each([
 ])("rejects malformed filter snapshots before any AI call: %j", async (filters) => {
   for (const [route, body] of [
     [ask, { question: "How did I do?" }],
-    [recap, { date: "2026-09-15" }],
+    [recap, { slug: "2026-09-15" }],
   ] as const) {
     expect((await route(request({ ...body, filters }))).status).toBe(400);
   }
@@ -149,7 +149,7 @@ it("does not widen an empty account or empty filter result", async () => {
     { accounts: "a", status: "loss" },
   ]) {
     expect((await ask(request({ question: "Any trades?", filters }))).status).toBe(400);
-    expect((await recap(request({ date: "2026-09-15", filters }))).status).toBe(400);
+    expect((await recap(request({ slug: "2026-09-15", filters }))).status).toBe(400);
   }
   expect(runAi).not.toHaveBeenCalled();
 });
@@ -209,7 +209,7 @@ it("applies every supported journal filter using the same predicate as the visib
     const expectedSymbols = selected.map((t) => t.symbol);
     const visible = await day(
       new Request("http://localhost/api/journal/2026-09-15?" + new URLSearchParams(filters)),
-      { params: Promise.resolve({ date: "2026-09-15" }) },
+      { params: Promise.resolve({ slug: "2026-09-15" }) },
     );
     expect(
       (await visible.json()).trades.map((t: { symbol: string }) => t.symbol),
@@ -217,7 +217,7 @@ it("applies every supported journal filter using the same predicate as the visib
     ).toEqual(expectedSymbols);
     for (const [route, body] of [
       [ask, { question: "How did I do?" }],
-      [recap, { date: "2026-09-15" }],
+      [recap, { slug: "2026-09-15" }],
     ] as const) {
       const response = await route(request({ ...body, filters }));
       expect(response.status, key).toBe(200);
@@ -279,7 +279,7 @@ it("uses the journal timezone at midnight and keeps date filters in recaps", asy
   };
   for (const [route, body] of [
     [ask, { question: "How did I do?" }],
-    [recap, { date: "2026-09-15" }],
+    [recap, { slug: "2026-09-15" }],
   ] as const) {
     expect((await route(request({ ...body, filters, timeZone: "America/New_York" }))).status).toBe(
       200,
@@ -289,7 +289,7 @@ it("uses the journal timezone at midnight and keeps date filters in recaps", asy
     expect(prompt()).not.toContain("ONLY_A");
   }
   vi.mocked(runAi).mockClear();
-  expect((await recap(request({ date: "2026-09-16", filters }))).status).toBe(400);
+  expect((await recap(request({ slug: "2026-09-16", filters }))).status).toBe(400);
   expect((await ask(request({ question: "How?", filters, timeZone: "UTC" }))).status).toBe(400);
   expect(runAi).not.toHaveBeenCalled();
 });
@@ -298,10 +298,10 @@ it("excludes shared notes from any trade subset, and leaves saved notes untouche
   const note = "PRIVATE_OTHER_ACCOUNT_NOTE";
   db.insert(journalDays).values({ date: "2026-09-15", note, updatedAt: "2026-09-15" }).run();
   for (const filters of [{ accounts: "a" }, { symbol: "ONLY_A" }, { status: "win" }]) {
-    await recap(request({ date: "2026-09-15", filters }));
+    await recap(request({ slug: "2026-09-15", filters }));
     expect(prompt()).not.toContain(note);
   }
-  await recap(request({ date: "2026-09-15", filters: { from: "2026-09-15", to: "2026-09-15" } }));
+  await recap(request({ slug: "2026-09-15", filters: { from: "2026-09-15", to: "2026-09-15" } }));
   expect(prompt()).toContain(note);
   expect(db.select().from(journalDays).get()?.note).toBe(note);
 });

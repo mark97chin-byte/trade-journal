@@ -30,6 +30,7 @@ export interface JournalTrade {
   strategy?: string | null;
   notes?: string | null;
   tags?: string[];
+  partialsBreakdown?: string | null;
 }
 
 export type JournalPeriod = "day" | "week" | "month" | "quarter" | "year";
