@@ -34,9 +34,8 @@ import { SyncNotionButton } from "./sync-notion-button";
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
   { href: "/calendar", label: "Calendar", icon: CalendarDays },
-  { href: "/journal", label: "Daily journal", icon: NotebookPen },
-  { href: "/journal-notion", label: "Daily journal (Notion)", icon: NotebookPen },
-  { href: "/trades", label: "Trades", icon: ListOrdered },
+  { href: "/journal", label: "Journal", icon: NotebookPen },
+    { href: "/trades", label: "Trades", icon: ListOrdered },
   { href: "/reports", label: "Reports", icon: BarChart3 },
   { href: "/prop-firms", label: "Prop firms", icon: Landmark },
   { href: "/notebook", label: "Notebook", icon: BookText },
