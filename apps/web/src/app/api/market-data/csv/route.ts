@@ -58,7 +58,7 @@ export const POST = handler(async (request: Request) => {
     return ok({
       count: bars.length,
       from: new Date(bars[0]!.time).toISOString(),
-      to: new Date(bars.at(-1)!.time + RESOLUTIONS[body.resolution as Resolution]).toISOString(),
+      to: new Date(bars.at(-1)!.time + (RESOLUTIONS[body.resolution as keyof typeof RESOLUTIONS] ?? 60_000)).toISOString(),
       sample: bars.slice(0, 3),
     });
   } catch (error) {

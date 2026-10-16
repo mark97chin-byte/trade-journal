@@ -18,7 +18,25 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
   const row = getTradeByKey(key);
   if (!row) return bad("Trade not found", 404);
   const trade = rowToTrade(row);
-  const fills = listExecutions(row.accountId, trade.executionIds);
+  const rawFills = trade.executionIds.length > 0 ? listExecutions(row.accountId, trade.executionIds).filter((f: any) => !f.symbol || f.symbol === row.symbol) : [];
+  const exitsMap = new Map<string, number>(
+    (JSON.parse(row.exitsJson || "[]") as { executionId: string; grossPnl: number }[]).map((e) => [
+      e.executionId,
+      e.grossPnl,
+    ])
+  );
+  const fills = rawFills.map((f: any) => {
+    let meta: { reason?: string; grossPnl?: number } = {};
+    try {
+      if (f.importMetadataJson) meta = JSON.parse(f.importMetadataJson);
+    } catch {}
+    const pnl = meta.grossPnl ?? exitsMap.get(f.id);
+    return {
+      ...f,
+      reason: meta.reason ?? (f.id.endsWith("_entry") ? "Entry" : undefined),
+      pnl: typeof pnl === "number" && pnl !== 0 ? pnl : undefined,
+    };
+  });
   return ok({
     timeZone: getTimeZone(),
             trade: {

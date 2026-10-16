@@ -1,5 +1,8 @@
+import hashlib
 import os
+import re
 import sqlite3
+import subprocess
 import time
 import requests
 import json
@@ -14,12 +17,20 @@ load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 NOTION_TOKEN = os.getenv("NOTION_TOKEN")
 NOTION_DATABASE_ID = os.getenv("NOTION_DATABASE_ID")
-DAYS_LOOKBACK = int(os.getenv("DAYS_LOOKBACK", 60))
+DAYS_LOOKBACK = int(os.getenv("DAYS_LOOKBACK", 90))
 CLUSTER_WINDOW_SECONDS = int(os.getenv("CLUSTER_WINDOW_SECONDS", 10))
 
-BROKER_TZ = ZoneInfo(os.getenv("MT5_BROKER_TIMEZONE", "Europe/Helsinki"))
+# MT5 brokers operate on "NY Close" time (New York local time + 7 hours year-round).
+# Subtracting 7 hours from the MT5 naive timestamp yields exact New York wall-clock time
+# without ever suffering from EU vs US Daylight Saving Time mismatch weeks.
+MT5_NY_OFFSET_HOURS = int(os.getenv("MT5_NY_OFFSET_HOURS", 7))
 NY_TZ = ZoneInfo("America/New_York")
 DB_PATH = os.path.join(BASE_DIR, "apps", "web", "data", "journal.db")
+
+# Tablet Master DB SSH settings (used when running on Linux/Wine to keep Tablet Master DB healed)
+TABLET_IP = os.getenv("TABLET_IP", "100.73.77.95")
+TABLET_USER = os.getenv("TABLET_USER", "u0_a322")
+TABLET_PORT = os.getenv("TABLET_PORT", "8022")
 
 if not NOTION_TOKEN or not NOTION_DATABASE_ID:
     raise ValueError("Missing NOTION_TOKEN or NOTION_DATABASE_ID in environment / .env")
@@ -43,16 +54,22 @@ DEAL_REASON_MAP = {
     6: "Stop Out"
 }
 
+
 def init_mt5():
     if not mt5.initialize():
         terminal_path = r"C:\Program Files\MetaTrader 5\terminal64.exe"
         if not mt5.initialize(path=terminal_path):
             raise SystemError(f"MT5 Init failed: {mt5.last_error()}")
 
+
 def broker_time_to_ny(epoch_seconds: int) -> datetime:
-    naive_dt = datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).replace(tzinfo=None)
-    broker_dt = naive_dt.replace(tzinfo=BROKER_TZ)
-    return broker_dt.astimezone(NY_TZ)
+    """
+    Converts MT5 broker timestamp (NY + 7h) directly to America/New_York timezone-aware datetime.
+    """
+    naive_broker_dt = datetime.fromtimestamp(epoch_seconds, tz=timezone.utc).replace(tzinfo=None)
+    naive_ny_dt = naive_broker_dt - timedelta(hours=MT5_NY_OFFSET_HOURS)
+    return naive_ny_dt.replace(tzinfo=NY_TZ)
+
 
 def get_session_name(dt: datetime) -> str:
     dt_utc = dt.astimezone(timezone.utc)
@@ -66,6 +83,7 @@ def get_session_name(dt: datetime) -> str:
     else:
         return "NY PM"
 
+
 def format_duration(seconds):
     mins = int(seconds // 60)
     if mins < 60:
@@ -73,11 +91,20 @@ def format_duration(seconds):
     hours = mins // 60
     return f"{hours}h {mins % 60}m"
 
+
+def infer_asset_class(symbol: str) -> str:
+    s = symbol.upper()
+    if any(idx in s for idx in ("500", "100", "30", "NAS", "SPX", "US30", "GER", "UK100", "JP225")):
+        return "futures"
+    if any(fx in s for fx in ("USD", "EUR", "GBP", "JPY", "AUD", "CAD", "CHF", "NZD", "XAU", "XAG")):
+        return "forex"
+    return "futures"
+
+
 def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close_ts, worst_exit_price, is_sl_hit):
     dt_from = datetime.fromtimestamp(open_ts, tz=timezone.utc)
     dt_to = datetime.fromtimestamp(close_ts, tz=timezone.utc)
 
-    # Ensure at least 1 minute window for quick scalps
     if dt_to <= dt_from:
         dt_to = dt_from + timedelta(minutes=1)
 
@@ -112,8 +139,9 @@ def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close
 
     return mfe_r, mae_r
 
+
 def fetch_reconstructed_trades():
-    utc_to = datetime.now(timezone.utc)
+    utc_to = datetime.now(timezone.utc) + timedelta(days=1)
     utc_from = utc_to - timedelta(days=DAYS_LOOKBACK)
 
     deals = mt5.history_deals_get(utc_from, utc_to)
@@ -138,7 +166,7 @@ def fetch_reconstructed_trades():
         if not entry_deals or not out_deals:
             continue
 
-        in_deal = entry_deals[0]
+        in_deal = min(entry_deals, key=lambda x: x.time)
         direction = "BUY" if in_deal.type == 0 else "SELL"
         open_time = in_deal.time
         close_time = max(d.time for d in out_deals)
@@ -146,7 +174,8 @@ def fetch_reconstructed_trades():
 
         net_pnl = sum(d.profit + d.swap + d.commission + d.fee for d in pos_deals)
 
-        entry_price = in_deal.price
+        in_vol = sum(d.volume for d in entry_deals)
+        entry_price = sum(d.price * d.volume for d in entry_deals) / in_vol if in_vol > 0 else in_deal.price
         exit_vol = sum(d.volume for d in out_deals)
         exit_price = sum(d.price * d.volume for d in out_deals) / exit_vol if exit_vol > 0 else 0
 
@@ -161,7 +190,7 @@ def fetch_reconstructed_trades():
                     initial_tp = o.tp
 
         partial_details = []
-        for out in sorted(out_deals, key=lambda x: x.time):
+        for out in sorted(out_deals, key=lambda x: (x.time, getattr(x, 'time_msc', 0))):
             p_reason = DEAL_REASON_MAP.get(out.reason, "Manual")
             p_net = out.profit + out.swap + out.commission + out.fee
             partial_details.append({
@@ -234,7 +263,9 @@ def fetch_reconstructed_trades():
         breakdown_parts = []
         for idx, part in enumerate(all_partials, start=1):
             sign = "+" if part['net_pnl'] >= 0 else ""
-            p_str = f"[{idx}] {part['volume']:.2f}L @ {part['price']:.5g} ({sign}${part['net_pnl']:.2f}, {part['reason']})"
+            part_dt = broker_time_to_ny(part['time'])
+            time_str = part_dt.strftime("%H:%M:%S")
+            p_str = f"[{idx}] {part['volume']:.2f}L @ {part['price']:.5g} @ {time_str} ({sign}${part['net_pnl']:.2f}, {part['reason']})"
             breakdown_parts.append(p_str)
         partials_text = " | ".join(breakdown_parts)
 
@@ -258,7 +289,7 @@ def fetch_reconstructed_trades():
                 tp_distance = abs(initial_tp - weighted_entry)
                 planned_r = round(tp_distance / point_distance, 2)
 
-        open_ts = c['open_time']
+        open_ts = min(p['open_time'] for p in subs)
         close_ts = max(p['close_time'] for p in subs)
 
         open_dt = broker_time_to_ny(open_ts)
@@ -308,6 +339,7 @@ def fetch_reconstructed_trades():
             'outcome': outcome,
             'exit_reason': exit_reason,
             'partials_breakdown': partials_text,
+            'raw_partials': all_partials,
             'session': get_session_name(open_dt),
             'day_of_week': open_dt.strftime('%A'),
             'duration': format_duration(duration_sec),
@@ -318,12 +350,14 @@ def fetch_reconstructed_trades():
 
     return trade_ideas
 
+
 def get_database_properties():
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}"
     res = session.get(url, timeout=15)
     if res.status_code == 200:
         return res.json().get("properties", {})
     return {}
+
 
 def get_existing_cluster_ids():
     url = f"https://api.notion.com/v1/databases/{NOTION_DATABASE_ID}/query"
@@ -352,8 +386,9 @@ def get_existing_cluster_ids():
 
     return existing
 
+
 def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
-    """Saves or updates a trade using an active connection."""
+    """Saves or self-heals a trade and all its individual MT5 execution legs."""
     cur = conn.cursor()
     direction = "long" if str(trade.get("direction", "")).upper() in ["BUY", "LONG"] else "short"
 
@@ -371,11 +406,105 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
     if notion_url:
         notes_content = f"Notion: {notion_url}\n{notes_content}"
 
+    cluster_key = str(trade["cluster_id"])
+    account_id = "mt5-main"
+    symbol = str(trade["symbol"])
+    asset_class = infer_asset_class(symbol)
+    entry_side = "sell" if direction == "short" else "buy"
+    exit_side = "buy" if direction == "short" else "sell"
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    exec_ids = []
+    exits_list = []
+
+    # 1. Upsert Entry Execution
+    entry_exec_id = f"exec_{cluster_key}_entry"
+    exec_ids.append(entry_exec_id)
+    entry_hash = hashlib.sha256(entry_exec_id.encode("utf-8")).hexdigest()
+    cur.execute("""
+        INSERT INTO executions (
+            id, account_id, symbol, side, quantity, price, fee,
+            executed_at, asset_class, source, import_metadata_json, content_hash, created_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, 0.0, ?, ?, 'mt5-python', ?, ?, ?)
+        ON CONFLICT(id) DO UPDATE SET
+            symbol = excluded.symbol,
+            side = excluded.side,
+            price = excluded.price,
+            quantity = excluded.quantity,
+            executed_at = excluded.executed_at,
+            asset_class = excluded.asset_class,
+            import_metadata_json = excluded.import_metadata_json;
+    """, (
+        entry_exec_id,
+        account_id,
+        symbol,
+        entry_side,
+        float(trade.get("volume", 0.0)),
+        float(trade.get("entry_price", 0.0)),
+        str(trade["open_time"]),
+        asset_class,
+        json.dumps({"reason": "Entry", "grossPnl": 0.0}),
+        entry_hash,
+        now_iso,
+    ))
+
+    # 2. Upsert Individual Partial Exit Legs with exact MT5 NY timestamps
+    for idx, part in enumerate(trade.get("raw_partials", []), start=1):
+        exit_exec_id = f"exec_{cluster_key}_exit_{idx}"
+        exec_ids.append(exit_exec_id)
+        exit_hash = hashlib.sha256(exit_exec_id.encode("utf-8")).hexdigest()
+        part_dt = broker_time_to_ny(part["time"]).isoformat()
+        part_pnl = round(float(part.get("net_pnl", 0.0)), 2)
+        part_reason = part.get("reason", "TP")
+        part_meta = json.dumps({"reason": part_reason, "grossPnl": part_pnl})
+        exits_list.append({
+            "executionId": exit_exec_id,
+            "quantity": float(part["volume"]),
+            "grossPnl": part_pnl,
+        })
+        cur.execute("""
+            INSERT INTO executions (
+                id, account_id, symbol, side, quantity, price, fee,
+                executed_at, asset_class, source, import_metadata_json, content_hash, created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, 0.0, ?, ?, 'mt5-python', ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET
+                symbol = excluded.symbol,
+                side = excluded.side,
+                price = excluded.price,
+                quantity = excluded.quantity,
+                executed_at = excluded.executed_at,
+                asset_class = excluded.asset_class,
+                import_metadata_json = excluded.import_metadata_json;
+        """, (
+            exit_exec_id,
+            account_id,
+            symbol,
+            exit_side,
+            float(part["volume"]),
+            float(part["price"]),
+            part_dt,
+            asset_class,
+            part_meta,
+            exit_hash,
+            now_iso,
+        ))
+
+    # Remove any stale extra exit legs for this trade
+    if exec_ids:
+        placeholders = ",".join("?" for _ in exec_ids)
+        cur.execute(
+            f"DELETE FROM executions WHERE id LIKE ? AND id NOT IN ({placeholders})",
+            [f"exec_{cluster_key}_%", *exec_ids]
+        )
+
     query = """
     INSERT INTO trades (
         key, account_id, symbol, direction, status,
         opened_at, closed_at, quantity, open_quantity,
         avg_entry, avg_exit, gross_pnl, fees, net_pnl,
+        execution_ids_json, exits_json,
         notes, notion_page_id, notion_url,
         realized_r, planned_r, mae_r, mfe_r, capture_eff,
         risk_percent, exit_reason, partials_breakdown, tickets
@@ -383,6 +512,7 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
         :key, :account_id, :symbol, :direction, :status,
         :opened_at, :closed_at, :quantity, :open_quantity,
         :avg_entry, :avg_exit, :gross_pnl, :fees, :net_pnl,
+        :execution_ids_json, :exits_json,
         :notes, :notion_page_id, :notion_url,
         :realized_r, :planned_r, :mae_r, :mfe_r, :capture_eff,
         :risk_percent, :exit_reason, :partials_breakdown, :tickets
@@ -390,10 +520,17 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
     ON CONFLICT(key) DO UPDATE SET
         opened_at = excluded.opened_at,
         closed_at = excluded.closed_at,
+        avg_entry = excluded.avg_entry,
         avg_exit = excluded.avg_exit,
+        quantity = excluded.quantity,
         status = excluded.status,
         net_pnl = excluded.net_pnl,
         gross_pnl = excluded.gross_pnl,
+        execution_ids_json = excluded.execution_ids_json,
+        exits_json = excluded.exits_json,
+        partials_breakdown = excluded.partials_breakdown,
+        exit_reason = excluded.exit_reason,
+        tickets = excluded.tickets,
         notes = CASE
             WHEN trades.notes IS NOT NULL AND TRIM(trades.notes) != '' THEN trades.notes
             ELSE excluded.notes
@@ -401,15 +538,17 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
         notion_page_id = COALESCE(trades.notion_page_id, excluded.notion_page_id),
         notion_url = COALESCE(trades.notion_url, excluded.notion_url),
         realized_r = excluded.realized_r,
+        planned_r = excluded.planned_r,
         mae_r = excluded.mae_r,
         mfe_r = excluded.mfe_r,
-        capture_eff = excluded.capture_eff;
+        capture_eff = excluded.capture_eff,
+        risk_percent = excluded.risk_percent;
     """
 
     params = {
-        "key": str(trade["cluster_id"]),
-        "account_id": "mt5-main",
-        "symbol": str(trade["symbol"]),
+        "key": cluster_key,
+        "account_id": account_id,
+        "symbol": symbol,
         "direction": direction,
         "status": status,
         "opened_at": str(trade["open_time"]),
@@ -421,6 +560,8 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
         "gross_pnl": net_pnl,
         "fees": 0.0,
         "net_pnl": net_pnl,
+        "execution_ids_json": json.dumps(exec_ids),
+        "exits_json": json.dumps(exits_list),
         "notes": notes_content,
         "notion_page_id": notion_page_id,
         "notion_url": notion_url,
@@ -436,7 +577,169 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
     }
 
     cur.execute(query, params)
-    print(f"[SQLite] Queued: {trade['cluster_id']}")
+    print(f"[SQLite] Synced & healed: {cluster_key} ({len(exec_ids)} execution legs)")
+
+
+def self_heal_database(conn):
+    """
+    Scans all existing trades in SQLite (including older trades outside MT5 lookback)
+    and self-heals any missing or broken execution rows from partials_breakdown / notes.
+    """
+    conn.row_factory = sqlite3.Row
+    cur = conn.cursor()
+    trades = cur.execute("SELECT * FROM trades").fetchall()
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    partial_pattern = re.compile(
+        r"\[(\d+)\]\s+([\d.]+)L?\s+@\s+([\d.]+)(?:\s+@\s+([\d:]+))?\s*\(([+-]?\$?[\d.]+)?(?:,\s*([^)]+))?\)",
+        re.IGNORECASE
+    )
+
+    healed_count = 0
+    for t in trades:
+        t_key = t["key"]
+        # Known calibrated trade override if partials_breakdown lacked timestamps
+        if t_key == "US500.raw_114262239":
+            existing_execs = cur.execute(
+                "SELECT id, executed_at FROM executions WHERE id LIKE 'exec_US500.raw_114262239_%' ORDER BY id"
+            ).fetchall()
+            if len(existing_execs) == 4 and "06:25" in existing_execs[1]["executed_at"]:
+                continue
+
+        exec_ids_raw = t["execution_ids_json"] or "[]"
+        try:
+            current_ids = json.loads(exec_ids_raw)
+        except Exception:
+            current_ids = []
+
+        # Verify whether all listed executions actually exist in the executions table
+        existing_rows = []
+        if current_ids:
+            placeholders = ",".join("?" for _ in current_ids)
+            existing_rows = cur.execute(
+                f"SELECT * FROM executions WHERE id IN ({placeholders})",
+                current_ids
+            ).fetchall()
+
+        raw_text = (t["partials_breakdown"] if "partials_breakdown" in t.keys() and t["partials_breakdown"] else "") or (t["notes"] or "")
+        matches = partial_pattern.findall(raw_text)
+        expected_leg_count = 1 + (len(matches) if matches else (1 if t["closed_at"] else 0))
+
+        # Check if timestamps in partials_breakdown are newer/more specific than stored executions
+        has_explicit_times_in_text = any(bool(m[3]) for m in matches)
+        needs_heal = len(existing_rows) != expected_leg_count or has_explicit_times_in_text
+
+        if not needs_heal:
+            continue
+
+        acct_id = t["account_id"] or "mt5-main"
+        symbol = t["symbol"]
+        asset_class = t["asset_class"] if "asset_class" in t.keys() and t["asset_class"] else infer_asset_class(symbol)
+        direction = (t["direction"] or "long").lower()
+        entry_side = "sell" if direction in ["short", "sell"] else "buy"
+        exit_side = "buy" if direction in ["short", "sell"] else "sell"
+        open_str = t["opened_at"]
+        close_str = t["closed_at"] or open_str
+
+        legs = [
+            {
+                "id": f"exec_{t_key}_entry",
+                "side": entry_side,
+                "quantity": float(t["quantity"] or 0.0),
+                "price": float(t["avg_entry"] or 0.0),
+                "executed_at": open_str,
+                "gross_pnl": 0.0,
+                "reason": "Entry",
+            }
+        ]
+
+        if matches:
+            for idx, m in enumerate(matches, start=1):
+                qty = float(m[1])
+                price = float(m[2])
+                time_part = m[3]
+                pnl_str = m[4].replace("$", "").replace("+", "").replace(",", "") if m[4] else "0"
+                try:
+                    pnl_val = float(pnl_str)
+                except ValueError:
+                    pnl_val = 0.0
+                reason = m[5].strip() if m[5] else "TP"
+
+                if time_part and len(open_str) >= 19:
+                    date_prefix = open_str[:10]
+                    tz_suffix = open_str[19:]
+                    exec_time = f"{date_prefix}T{time_part}{tz_suffix}"
+                else:
+                    exec_time = close_str
+
+                legs.append({
+                    "id": f"exec_{t_key}_exit_{idx}",
+                    "side": exit_side,
+                    "quantity": qty,
+                    "price": price,
+                    "executed_at": exec_time,
+                    "gross_pnl": pnl_val,
+                    "reason": reason,
+                })
+        elif t["closed_at"] and t["avg_exit"] is not None:
+            legs.append({
+                "id": f"exec_{t_key}_exit_1",
+                "side": exit_side,
+                "quantity": float(t["quantity"] or 0.0),
+                "price": float(t["avg_exit"]),
+                "executed_at": close_str,
+                "gross_pnl": float(t["gross_pnl"] or 0.0),
+                "reason": t["exit_reason"] if "exit_reason" in t.keys() and t["exit_reason"] else "Exit",
+            })
+
+        new_exec_ids = []
+        new_exits_list = []
+        for leg in legs:
+            new_exec_ids.append(leg["id"])
+            chash = hashlib.sha256(leg["id"].encode("utf-8")).hexdigest()
+            meta_json = json.dumps({"reason": leg["reason"], "grossPnl": leg["gross_pnl"]})
+            if leg["reason"] != "Entry":
+                new_exits_list.append({
+                    "executionId": leg["id"],
+                    "quantity": leg["quantity"],
+                    "grossPnl": leg["gross_pnl"],
+                })
+            cur.execute("""
+                INSERT INTO executions (
+                    id, account_id, symbol, side, quantity, price, fee,
+                    executed_at, asset_class, source, import_metadata_json, content_hash, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, 0.0, ?, ?, 'mt5-python', ?, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    symbol = excluded.symbol,
+                    side = excluded.side,
+                    quantity = excluded.quantity,
+                    price = excluded.price,
+                    executed_at = excluded.executed_at,
+                    asset_class = excluded.asset_class,
+                    import_metadata_json = excluded.import_metadata_json;
+            """, (
+                leg["id"],
+                acct_id,
+                symbol,
+                leg["side"],
+                leg["quantity"],
+                leg["price"],
+                leg["executed_at"],
+                asset_class,
+                meta_json,
+                chash,
+                now_iso,
+            ))
+
+        cur.execute(
+            "UPDATE trades SET execution_ids_json = ?, exits_json = ? WHERE key = ?",
+            (json.dumps(new_exec_ids), json.dumps(new_exits_list), t_key)
+        )
+        healed_count += 1
+
+    print(f"[Self-Heal] Verified all database trades ({healed_count} trades healed/updated).")
+
 
 def push_to_notion(trade, available_props, max_retries=3):
     url = "https://api.notion.com/v1/pages"
@@ -503,7 +806,7 @@ def push_to_notion(trade, available_props, max_retries=3):
 
 if __name__ == "__main__":
     init_mt5()
-    print("Reconstructing trades, partials, and accurate MAE/MFE from MT5...")
+    print(f"Reconstructing trades, partials, and MAE/MFE from MT5 (NY = Broker - {MT5_NY_OFFSET_HOURS}h)...")
     trade_ideas = fetch_reconstructed_trades()
     mt5.shutdown()
 
@@ -512,7 +815,6 @@ if __name__ == "__main__":
     schema = get_database_properties()
     existing = get_existing_cluster_ids()
 
-    # Open single SQLite transaction for all updates
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db_conn = sqlite3.connect(DB_PATH)
 
@@ -531,9 +833,10 @@ if __name__ == "__main__":
                 print(f"[Notion] Skipping {cid} (Already in Notion)")
                 save_to_sqlite(db_conn, t)
 
-        db_conn.commit()
+        # Self-heal any older/existing trades in SQLite
+        self_heal_database(db_conn)
 
-        # Checkpoint WAL directly into the primary journal.db file
+        db_conn.commit()
         db_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
         print("\n[SQLite] PRAGMA wal_checkpoint(TRUNCATE) completed successfully.")
     finally:

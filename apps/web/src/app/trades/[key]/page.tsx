@@ -1,15 +1,24 @@
 "use client";
-import { TradeTagsEditor } from "@/components/tags/trade-tags-editor";
-import { AiNotice } from "@/components/ai-notice";
-import { Checkbox } from "@/components/ui/checkbox";
 
 import { use, useEffect, useMemo, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import {
+  Sparkles,
+  ChevronLeft,
+  ChevronRight,
+  Maximize2,
+  Minimize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+} from "lucide-react";
 import { netReturnOnEntry } from "@luxalgo/journal-core";
 import { FilterBar } from "@/components/filter-bar";
 import { Pnl } from "@/components/pnl";
 import { MonetaryValue, MonetaryField } from "@/components/privacy";
 import { TradeMarketData } from "@/components/trade-market-data";
+import { RunningPnlChart } from "@/components/charts/running-pnl-chart";
+import type { TradeMarketResult } from "@/lib/market-data";
 import { TradeNavigation } from "@/components/trade-navigation";
 import { TradeRating } from "@/components/trade-rating";
 import { EquityArea } from "@/components/charts/equity-area";
@@ -18,6 +27,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -38,6 +48,8 @@ import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
 import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import { RuleChecklist } from "@/components/rule-checklist";
+import { TradeTagsEditor } from "@/components/tags/trade-tags-editor";
+import { AiNotice } from "@/components/ai-notice";
 import { useAutosave } from "@/lib/use-autosave";
 import { postJson, useApi } from "@/lib/use-api";
 import { fmtDuration, fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
@@ -74,6 +86,7 @@ interface TradeDetail {
   stopLoss: number | null;
   profitTarget: number | null;
   reviewedAt: string | null;
+  partials_breakdown?: string;
 }
 
 interface ExecutionRow {
@@ -83,6 +96,8 @@ interface ExecutionRow {
   price: number;
   fee: number;
   executedAt: string;
+  reason?: string;
+  pnl?: number;
 }
 
 export default function TradePage({ params }: { params: Promise<{ key: string }> }) {
@@ -97,9 +112,108 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
     executions: ExecutionRow[];
     timeZone: string;
   }>(`/api/trades/${encodeURIComponent(tradeKey)}`);
+
   const [aiBusy, setAiBusy] = useState(false);
   const [critique, setCritique] = useState<string | null>(null);
+  const [marketResult, setMarketResult] = useState<TradeMarketResult | null>(null);
   const [aiError, setAiError] = useState<string | null>(null);
+
+  // Dynamic 2-column layout state
+  const [leftWidth, setLeftWidth] = useState<number>(42); // percentage
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
+  const [rightCollapsed, setRightCollapsed] = useState(false);
+  const isDraggingRef = useRef(false);
+
+  useEffect(() => {
+    try {
+      const savedWidth = localStorage.getItem("tz_trade_split_ratio");
+      if (savedWidth) setLeftWidth(Number(savedWidth));
+    } catch {}
+  }, []);
+
+  const handleMouseDown = () => {
+    isDraggingRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDraggingRef.current) return;
+      const totalWidth = window.innerWidth;
+      const newPct = Math.max(20, Math.min(80, (e.clientX / totalWidth) * 100));
+      setLeftWidth(newPct);
+    };
+
+    const onMouseUp = () => {
+      isDraggingRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      localStorage.setItem("tz_trade_split_ratio", String(leftWidth));
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
+  // Reconstruct executions from MT5 partials breakdown if raw executions table is unpopulated
+  const executions: ExecutionRow[] = useMemo(() => {
+    if (!data) return [];
+    const { trade, executions: rawExecutions } = data;
+    if (rawExecutions && rawExecutions.length > 0) return rawExecutions;
+
+    const notes = trade.partials_breakdown || trade.notes || "";
+    const matches = [...notes.matchAll(/\[(\d+)\]\s+([\d.]+)L?\s+@\s+([\d.]+)(?:\s+@\s+([\d:]+))?\s*\(([+-]?\$?[\d.]+)?(?:,\s*([^)]+))?\)/gi)];
+    if (!matches.length) return rawExecutions;
+
+    const isShort = trade.direction === "short";
+    const openMs = Date.parse(trade.openedAt);
+    const closeMs = trade.closedAt ? Date.parse(trade.closedAt) : openMs;
+    const dur = Math.max(0, closeMs - openMs);
+    const step = matches.length > 1 ? dur / matches.length : 0;
+
+    const list: ExecutionRow[] = [
+      {
+        id: "entry-1",
+        side: isShort ? "sell" : "buy",
+        quantity: trade.quantity,
+        price: trade.avgEntry,
+        fee: 0,
+        executedAt: trade.openedAt,
+        reason: "Entry",
+      },
+    ];
+
+    matches.forEach((m, idx) => {
+      const q = parseFloat(m[2]!);
+      const p = parseFloat(m[3]!);
+      const timeStr = m[4]; // optional HH:MM:SS
+      const pnlRaw = m[5] ? parseFloat(m[5].replace(/[+$,]/g, "")) : 0;
+      const reason = m[6] || "TP";
+
+      let legTime: string;
+      if (timeStr && trade.openedAt) {
+        const datePrefix = trade.openedAt.slice(0, 10);
+        const parsed = Date.parse(`${datePrefix}T${timeStr}Z`);
+        legTime = Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date(openMs + step * (idx + 1)).toISOString();
+      } else {
+        legTime = new Date(openMs + step * (idx + 1)).toISOString();
+      }
+
+      list.push({
+        id: `exit-${idx + 1}`,
+        side: isShort ? "buy" : "sell",
+        quantity: q,
+        price: p,
+        fee: 0,
+        executedAt: legTime,
+        reason,
+        pnl: pnlRaw,
+      });
+    });
+
+    return list;
+  }, [data]);
 
   if (!data) {
     return (
@@ -117,7 +231,8 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
       </div>
     );
   }
-  const { trade, executions, timeZone } = data;
+
+  const { trade, timeZone } = data;
 
   const patch = async (body: Record<string, unknown>) => {
     if (Object.keys(body).length)
@@ -126,13 +241,13 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
   };
 
   const runningPnl = (() => {
-    const exits = JSON.parse(trade.exitsJson) as {
+    const exits = JSON.parse(trade.exitsJson || "[]") as {
       executionId: string;
       grossPnl: number;
       quantity: number;
     }[];
     const times = new Map(executions.map((e) => [e.id, e.executedAt]));
-    const totalExitQty = exits.reduce((total, exit) => total + exit.quantity, 0);
+    const totalExitQty = exits.reduce((tot, exit) => tot + exit.quantity, 0);
     let cum = 0;
     return exits
       .map((exit) => ({
@@ -150,40 +265,47 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
     setAiBusy(true);
     setAiError(null);
     try {
-      const result = await postJson<{ critique: string }>("/api/ai/critique", { key: tradeKey });
-      setCritique(result.critique);
-    } catch (error) {
-      setAiError(error instanceof Error ? error.message : "AI critique failed");
+      const res = await postJson<{ critique: string }>("/api/ai/critique", { key: tradeKey });
+      setCritique(res.critique);
+    } catch (e) {
+      setAiError(e instanceof Error ? e.message : "AI critique failed");
     } finally {
       setAiBusy(false);
     }
   };
 
-  const riskAmount = trade.riskAmount;
-
   return (
-    <div>
+    <div className="flex flex-col min-h-screen">
       <FilterBar title={`${trade.symbol} · ${trade.direction.toUpperCase()}`} />
       <TradeNavigation tradeKey={tradeKey} />
-      <div className="grid gap-3 p-4 xl:grid-cols-3">
-        <div className="min-w-0 space-y-3 xl:col-span-2">
-          <Card>
-            <CardContent className="flex flex-wrap items-center gap-x-8 gap-y-3 py-4">
+
+      <div className="p-4 space-y-4">
+        {/* 1. FULL-WIDTH TOP SUMMARY BAR (STRETCHES ACROSS THE PAGE) */}
+        <Card className="border-border/70 bg-[#12141c]">
+          <CardContent className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3 py-4">
+            <div className="flex items-center gap-4">
               <div>
                 <div className="text-xs text-muted-foreground">Net P&L</div>
-                <Pnl value={trade.netPnl} className="text-2xl font-semibold" />
+                <Pnl value={trade.netPnl} className="text-2xl font-bold" />
               </div>
               <Badge
                 variant={
-                  trade.status === "win" ? "profit" : trade.status === "loss" ? "loss" : "secondary"
+                  trade.status === "win"
+                    ? "profit"
+                    : trade.status === "loss"
+                    ? "loss"
+                    : "secondary"
                 }
-                className="text-sm"
+                className="text-xs uppercase font-semibold px-2.5 py-1"
               >
-                {trade.status.toUpperCase()}
+                {trade.status}
               </Badge>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
               <Meta label="Gross" value={fmtMoney(trade.grossPnl)} monetary />
               <Meta label="Fees" value={fmtMoney(trade.fees)} monetary />
-              <Meta label="Volume" value={fmtNumber(trade.quantity, 4)} />
+              <Meta label="Volume" value={fmtNumber(trade.quantity, 2)} />
               <Meta label="Avg entry" value={fmtNumber(trade.avgEntry)} monetary />
               <Meta
                 label="Avg exit"
@@ -191,7 +313,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                 value={trade.avgExit === null ? "open" : fmtNumber(trade.avgExit)}
               />
               <Meta label="Duration" value={fmtDuration(trade.durationMs)} />
-              <Meta label="Net / entry notional" value={fmtPercent(netReturnOnEntry(trade), 2)} />
+              <Meta label="Net / entry" value={fmtPercent(netReturnOnEntry(trade), 2)} />
               <Meta
                 label="Planned R"
                 value={trade.plannedR === null ? "–" : `${fmtNumber(trade.plannedR)}R`}
@@ -200,93 +322,192 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                 label="Realized R"
                 value={trade.realizedR === null ? "–" : `${fmtNumber(trade.realizedR)}R`}
               />
-            </CardContent>
-          </Card>
+            </div>
 
-          <TradeMarketData trade={trade} executions={executions} />
+            {/* Quick Column Collapse Toggles */}
+            <div className="flex items-center gap-1.5 border-l border-border/50 pl-4">
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setLeftCollapsed(!leftCollapsed)}
+                className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+                title={leftCollapsed ? "Expand Journal" : "Collapse Journal"}
+              >
+                {leftCollapsed ? (
+                  <PanelLeftOpen className="h-4 w-4" />
+                ) : (
+                  <PanelLeftClose className="h-4 w-4" />
+                )}
+                <span className="hidden sm:inline ml-1">Journal</span>
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => setRightCollapsed(!rightCollapsed)}
+                className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+                title={rightCollapsed ? "Expand Chart" : "Collapse Chart"}
+              >
+                {rightCollapsed ? (
+                  <PanelRightOpen className="h-4 w-4" />
+                ) : (
+                  <PanelRightClose className="h-4 w-4" />
+                )}
+                <span className="hidden sm:inline ml-1">Chart</span>
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
 
-          {runningPnl.length > 1 && (
-            <Card>
-              <CardHeader>
-                <CardTitle>Running P&L</CardTitle>
-                <p className="text-xs text-muted-foreground">Times in {timeZone}</p>
-              </CardHeader>
-              <CardContent>
-                <EquityArea data={runningPnl} height={180} />
-              </CardContent>
-            </Card>
+        {/* 2. DYNAMIC RESIZABLE 2-COLUMN LAYOUT */}
+        <div className="flex flex-col lg:flex-row gap-0 relative items-stretch min-h-[600px]">
+          {/* LEFT COLUMN: JOURNAL (RICH EDITOR, RULES, TAGS, AI) */}
+          {!leftCollapsed && (
+            <div
+              style={{
+                width: rightCollapsed ? "100%" : `${leftWidth}%`,
+                flexShrink: 0,
+              }}
+              className="space-y-4 pr-0 lg:pr-3 min-w-[280px]"
+            >
+              <AnnotationsCard key={trade.key} trade={trade} onPatch={patch} />
+              <RuleChecklist tradeKey={trade.key} playbookId={trade.playbookId} />
+
+              <Card>
+                <CardHeader className="flex-row items-center justify-between pb-2">
+                  <CardTitle className="text-sm font-bold flex items-center gap-2">
+                    <Sparkles className="h-4 w-4 text-purple-400" />
+                    <span>AI Review</span>
+                  </CardTitle>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={askCritique}
+                    disabled={aiBusy}
+                    className="h-7 text-xs"
+                  >
+                    {aiBusy ? "Thinking…" : "Critique this trade"}
+                  </Button>
+                </CardHeader>
+                {aiError && (
+                  <CardContent>
+                    <AiNotice
+                      error={aiError}
+                      onRetry={() => void askCritique()}
+                      onDismiss={() => setAiError(null)}
+                    />
+                  </CardContent>
+                )}
+                {critique && (
+                  <CardContent>
+                    <p className="whitespace-pre-wrap text-sm leading-relaxed text-foreground/90">
+                      {critique}
+                    </p>
+                  </CardContent>
+                )}
+              </Card>
+            </div>
           )}
 
-          <Card>
-            <CardHeader>
-              <CardTitle>Executions</CardTitle>
-              <p className="text-xs text-muted-foreground">Times in {timeZone}</p>
-            </CardHeader>
-            <CardContent>
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Time</TableHead>
-                    <TableHead>Side</TableHead>
-                    <TableHead>Quantity</TableHead>
-                    <TableHead>Price</TableHead>
-                    <TableHead>Fee</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {executions
-                    .sort((a, b) => a.executedAt.localeCompare(b.executedAt))
-                    .map((execution) => (
-                      <TableRow key={execution.id}>
-                        <TableCell className="text-muted-foreground">
-                          {formatTimestamp(execution.executedAt, timeZone)}
-                        </TableCell>
-                        <TableCell>
-                          <span className={execution.side === "buy" ? "text-profit" : "text-loss"}>
-                            {execution.side === "buy" ? "▲ BUY" : "▼ SELL"}
-                          </span>
-                        </TableCell>
-                        <TableCell className="tnum">{fmtNumber(execution.quantity, 4)}</TableCell>
-                        <TableCell className="tnum">
-                          <MonetaryValue>{fmtNumber(execution.price)}</MonetaryValue>
-                        </TableCell>
-                        <TableCell className="tnum text-muted-foreground">
-                          <MonetaryValue>{fmtMoney(execution.fee)}</MonetaryValue>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                </TableBody>
-              </Table>
-            </CardContent>
-          </Card>
-        </div>
+          {/* DRAGGABLE RESIZER HANDLE */}
+          {!leftCollapsed && !rightCollapsed && (
+            <div
+              onMouseDown={handleMouseDown}
+              className="hidden lg:flex w-2 cursor-col-resize items-center justify-center hover:bg-indigo-500/30 transition-colors group z-10"
+              title="Drag to resize split"
+            >
+              <div className="h-12 w-1 rounded-full bg-border/60 group-hover:bg-indigo-400 transition-colors" />
+            </div>
+          )}
 
-        <div className="min-w-0 space-y-3">
-          <AnnotationsCard key={trade.key} trade={trade} onPatch={patch} />
-          <RuleChecklist tradeKey={trade.key} playbookId={trade.playbookId} />
-          <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>AI review</CardTitle>
-              <Button variant="outline" size="sm" onClick={askCritique} disabled={aiBusy}>
-                <Sparkles />
-                {aiBusy ? "Thinking…" : "Critique this trade"}
-              </Button>
-            </CardHeader>
-            {aiError && (
-              <CardContent>
-                <AiNotice
-                  error={aiError}
-                  onRetry={() => void askCritique()}
-                  onDismiss={() => setAiError(null)}
-                />
-              </CardContent>
-            )}
-            {critique && (
-              <CardContent>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">{critique}</p>
-              </CardContent>
-            )}
-          </Card>
+          {/* RIGHT COLUMN: CHART, REPLAY, COMPACT MARKET DATA & EXECUTIONS */}
+          {!rightCollapsed && (
+            <div
+              style={{
+                width: leftCollapsed ? "100%" : `calc(${100 - leftWidth}% - 8px)`,
+                flexShrink: 0,
+              }}
+              className="space-y-4 pl-0 lg:pl-3 min-w-[340px]"
+            >
+              <TradeMarketData trade={trade} executions={executions} onResultChange={setMarketResult} />
+
+              <RunningPnlChart
+                trade={trade}
+                executions={executions}
+                bars={marketResult?.bars}
+                timeZone={timeZone}
+              />
+
+              {/* EXECUTIONS TABLE: DETAILED PARTIAL TAKE PROFITS & LEGS */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <CardTitle className="text-sm font-bold">Executions &amp; Partials</CardTitle>
+                      <p className="text-xs text-muted-foreground">Times in {timeZone}</p>
+                    </div>
+                    <Badge variant="outline" className="text-[11px] font-mono">
+                      {executions.length} {executions.length === 1 ? "leg" : "legs"}
+                    </Badge>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>Time</TableHead>
+                        <TableHead>Side</TableHead>
+                        <TableHead>Quantity</TableHead>
+                        <TableHead>Price</TableHead>
+                        <TableHead>Leg P&amp;L / Reason</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {executions
+                        .sort((a, b) => a.executedAt.localeCompare(b.executedAt))
+                        .map((execution, idx) => (
+                          <TableRow key={execution.id || `exec-${idx}`}>
+                            <TableCell className="text-xs text-muted-foreground">
+                              {formatTimestamp(execution.executedAt, timeZone)}
+                            </TableCell>
+                            <TableCell>
+                              <span
+                                className={`text-xs font-semibold ${
+                                  execution.side === "buy" ? "text-profit" : "text-loss"
+                                }`}
+                              >
+                                {execution.side === "buy" ? "▲ BUY" : "▼ SELL"}
+                              </span>
+                            </TableCell>
+                            <TableCell className="tnum text-xs font-medium">
+                              {fmtNumber(execution.quantity, 2)}L
+                            </TableCell>
+                            <TableCell className="tnum text-xs font-mono">
+                              <MonetaryValue>{fmtNumber(execution.price, 2)}</MonetaryValue>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              {execution.pnl !== undefined ? (
+                                <span
+                                  className={`font-semibold mr-1.5 ${
+                                    execution.pnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                                  }`}
+                                >
+                                  {execution.pnl >= 0 && !fmtMoney(execution.pnl).startsWith("+") ? "+" : ""}{fmtMoney(execution.pnl)}
+                                </span>
+                              ) : null}
+                              {execution.reason && (
+                                <Badge variant="secondary" className="text-[10px] py-0 px-1.5">
+                                  {execution.reason}
+                                </Badge>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                    </TableBody>
+                  </Table>
+                </CardContent>
+              </Card>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -304,8 +525,8 @@ function Meta({
 }) {
   return (
     <div>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="tnum text-sm font-medium">
+      <div className="text-[11px] text-muted-foreground">{label}</div>
+      <div className="tnum text-sm font-semibold text-foreground">
         {monetary ? <MonetaryValue>{value}</MonetaryValue> : value}
       </div>
     </div>
@@ -323,12 +544,12 @@ function AnnotationsCard({
   const noteEditor = useRef<RichEditorHandle>(null);
   const [tags, setTags] = useState((JSON.parse(trade.tagsJson ?? "[]") as string[]).join(", "));
   const [mistakes, setMistakes] = useState(
-    (JSON.parse(trade.mistakesJson ?? "[]") as string[]).join(", "),
+    (JSON.parse(trade.mistakesJson ?? "[]") as string[]).join(", ")
   );
   const [stopLoss, setStopLoss] = useState(trade.stopLoss?.toString() ?? "");
   const [profitTarget, setProfitTarget] = useState(trade.profitTarget?.toString() ?? "");
   const { data: playbookData } = useApi<{ playbooks: { id: string; name: string }[] }>(
-    "/api/playbooks",
+    "/api/playbooks"
   );
   const {
     save: debounced,
@@ -343,14 +564,14 @@ function AnnotationsCard({
       .filter(Boolean);
 
   return (
-    <Card>
-      <CardHeader>
-        <CardTitle>Journal this trade</CardTitle>
+    <Card className="border-border/70">
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-bold">Journal this trade</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center justify-between">
           <TradeRating value={trade.rating} onChange={(rating) => onPatch({ rating })} />
-          <label className="flex items-center gap-2 text-sm">
+          <label className="flex items-center gap-2 text-xs">
             <Checkbox
               checked={trade.reviewedAt !== null}
               onCheckedChange={(checked) => void onPatch({ reviewed: checked === true })}
@@ -361,53 +582,53 @@ function AnnotationsCard({
 
         <div className="grid grid-cols-2 gap-2">
           <div>
-            <label className="text-xs text-muted-foreground">Stop loss</label>
+            <label className="text-[11px] text-muted-foreground">Stop loss</label>
             <MonetaryField>
               <Input
                 value={stopLoss}
-                onChange={(event) => {
-                  setStopLoss(event.target.value);
-                  debounced({
-                    stopLoss: event.target.value === "" ? null : Number(event.target.value),
-                  });
+                onChange={(e) => {
+                  setStopLoss(e.target.value);
+                  debounced({ stopLoss: e.target.value === "" ? null : Number(e.target.value) });
                 }}
                 placeholder="planned stop"
                 inputMode="decimal"
+                className="h-8 text-xs"
               />
             </MonetaryField>
           </div>
           <div>
-            <label className="text-xs text-muted-foreground">Profit target</label>
+            <label className="text-[11px] text-muted-foreground">Profit target</label>
             <MonetaryField>
               <Input
                 value={profitTarget}
-                onChange={(event) => {
-                  setProfitTarget(event.target.value);
+                onChange={(e) => {
+                  setProfitTarget(e.target.value);
                   debounced({
-                    profitTarget: event.target.value === "" ? null : Number(event.target.value),
+                    profitTarget: e.target.value === "" ? null : Number(e.target.value),
                   });
                 }}
                 placeholder="planned target"
                 inputMode="decimal"
+                className="h-8 text-xs"
               />
             </MonetaryField>
           </div>
         </div>
 
         <div>
-          <label className="text-xs text-muted-foreground">Playbook</label>
+          <label className="text-[11px] text-muted-foreground">Playbook</label>
           <Select
             value={trade.playbookId ?? "none"}
-            onValueChange={(value) => void onPatch({ playbookId: value === "none" ? null : value })}
+            onValueChange={(val) => void onPatch({ playbookId: val === "none" ? null : val })}
           >
-            <SelectTrigger>
+            <SelectTrigger className="h-8 text-xs">
               <SelectValue placeholder="No playbook" />
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="none">No playbook</SelectItem>
-              {playbookData?.playbooks.map((playbook) => (
-                <SelectItem key={playbook.id} value={playbook.id}>
-                  {playbook.name}
+              {playbookData?.playbooks.map((p) => (
+                <SelectItem key={p.id} value={p.id}>
+                  {p.name}
                 </SelectItem>
               ))}
             </SelectContent>
@@ -426,7 +647,7 @@ function AnnotationsCard({
 
         <div>
           <div className="mb-1 flex items-center justify-between">
-            <label className="text-xs text-muted-foreground">Notes</label>
+            <label className="text-[11px] text-muted-foreground">Notes</label>
             <VoiceNote
               onPrepare={() => noteEditor.current?.focus()}
               onText={(text) => {
@@ -444,9 +665,9 @@ function AnnotationsCard({
               debounced({ notes: value });
             }}
           />
-          <div className="flex items-center justify-between text-xs text-muted-foreground">
+          <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
             <span role="status">{saveStatus}</span>
-            <Button variant="ghost" size="sm" onClick={() => void flush()}>
+            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => void flush()}>
               Save now
             </Button>
           </div>

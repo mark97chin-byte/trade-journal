@@ -18,36 +18,8 @@ const utcDate = (time: number) => new Date(time).toISOString().slice(0, 10);
 
 // --- Symbol Normalization ---
 export function normalizeLSESymbol(raw: string): { symbol: string; dataset?: string } {
-  const clean = raw
-    .trim()
-    .toUpperCase()
-    .replace(/\.(RAW|PRO|ECN|STD)$/i, "")
-    .replace(/_SB$/i, "")
-    .replace(/\.M$/i, "");
-
-  const map: Record<string, { symbol: string; dataset?: string }> = {
-    "US500": { symbol: "US500", dataset: "indices" },
-    "SPX500": { symbol: "US500", dataset: "indices" },
-    "SPX": { symbol: "US500", dataset: "indices" },
-    "ES": { symbol: "ES", dataset: "futures" },
-    "NAS100": { symbol: "NAS100", dataset: "indices" },
-    "USTEC": { symbol: "NAS100", dataset: "indices" },
-    "NDX": { symbol: "NAS100", dataset: "indices" },
-    "NQ": { symbol: "NQ", dataset: "futures" },
-    "EURUSD": { symbol: "EUR/USD", dataset: "forex" },
-    "GBPUSD": { symbol: "GBP/USD", dataset: "forex" },
-    "USDJPY": { symbol: "USD/JPY", dataset: "forex" },
-    "AUDUSD": { symbol: "AUD/USD", dataset: "forex" },
-    "USDCAD": { symbol: "USD/CAD", dataset: "forex" },
-    "USDCHF": { symbol: "USD/CHF", dataset: "forex" },
-    "NZDUSD": { symbol: "NZD/USD", dataset: "forex" },
-    "XAUUSD": { symbol: "XAU/USD", dataset: "commodities" },
-    "GOLD": { symbol: "XAU/USD", dataset: "commodities" },
-    "BTCUSD": { symbol: "BTC/USD", dataset: "crypto" },
-    "ETHUSD": { symbol: "ETH/USD", dataset: "crypto" },
-  };
-
-  return map[clean] || { symbol: clean };
+  const mapped = resolveProviderSymbol("london-strategic-edge", raw);
+  return { symbol: mapped.symbol, dataset: mapped.dataset || undefined };
 }
 
 async function read(path: string, key: string, signal?: AbortSignal): Promise<unknown> {
@@ -172,7 +144,7 @@ export const londonStrategicEdge: MarketDataProvider = {
     await read("/usage", key);
   },
   async history(request, key) {
-    const step = RESOLUTIONS[request.resolution];
+    const step = RESOLUTIONS[request.resolution as keyof typeof RESOLUTIONS] ?? 60_000;
     const firstBar = Math.floor(request.from / step) * step;
     const lastBar = Math.floor((request.to - 1) / step) * step;
 

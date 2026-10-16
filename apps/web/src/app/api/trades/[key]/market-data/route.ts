@@ -6,7 +6,7 @@ import { connectionKey, providerFor } from "@/server/market-data/connections";
 import { MarketDataError } from "@/server/market-data/provider";
 import { getTradeByKey, rowToTrade } from "@/server/trades-query";
 import { listExecutions } from "@/server/executions";
-import { isResolution } from "@/lib/market-data";
+import { isResolution, aggregateCandles } from "@/lib/market-data";
 import { estimateExcursions } from "@/lib/excursions";
 import { estimateFingerprint, saveEstimate, savedEstimates } from "@/server/market-data/estimates";
 
@@ -58,17 +58,30 @@ export const POST = handler(
       const trade = rowToTrade(row);
       const fingerprint = estimateFingerprint(trade);
 
-      const history = await provider.history(
+      // If custom/unsupported native timeframe, fetch 1m or 1h base bars and resample
+      const nativeResolutions = ["1m", "5m", "15m", "1h", "4h", "1d"];
+      const isNative = nativeResolutions.includes(body.resolution);
+      const fetchResolution = isNative ? body.resolution : (body.resolution.endsWith("h") ? "1h" : "1m");
+
+      const rawHistory = await provider.history(
         {
           symbol: body.symbol.trim(),
           dataset: body.dataset || undefined,
-          resolution: body.resolution,
+          resolution: fetchResolution,
           from,
           to,
           signal: request.signal,
         },
         connectionKey(provider.id),
       );
+
+      const history = !isNative
+        ? {
+            ...rawHistory,
+            resolution: body.resolution,
+            bars: aggregateCandles(rawHistory.bars, body.resolution),
+          }
+        : rawHistory;
 
       const accountCurrency = db
         .select({ currency: accounts.currency })
