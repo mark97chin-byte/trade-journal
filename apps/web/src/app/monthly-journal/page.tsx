@@ -27,7 +27,7 @@ function MonthlyJournalContent() {
 
       <div className="rounded-xl border border-border/60 bg-card p-6 space-y-4">
         <div className="flex items-center gap-3">
-          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-indigo-600/10 text-indigo-400">
+          <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10 text-muted-foreground">
             <BookOpen className="h-5 w-5" />
           </div>
           <div>

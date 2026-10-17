@@ -29,6 +29,7 @@
     "@radix-ui/react-tabs": "^1.1.21",
     "@radix-ui/react-tooltip": "^1.2.16",
     "@tanstack/react-table": "^9.1.2",
+    "@types/sharp": "^0.32.0",
     "ai": "^7.0.77",
     "better-sqlite3": "^12.2.0",
     "class-variance-authority": "^0.7.1",
@@ -46,6 +47,7 @@
     "react-markdown": "^10.1.0",
     "recharts": "^3.10.1",
     "remark-gfm": "^4.0.1",
+    "sharp": "^0.35.5",
     "tailwind-merge": "^3.6.0"
   },
   "devDependencies": {

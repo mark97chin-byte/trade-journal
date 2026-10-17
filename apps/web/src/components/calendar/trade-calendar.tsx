@@ -175,15 +175,15 @@ export function TradeCalendar({
             <span
               className={`font-semibold ${
                 activeCalendar.monthNetPnl > 0
-                  ? "text-emerald-400"
+                  ? "text-profit"
                   : activeCalendar.monthNetPnl < 0
-                  ? "text-rose-400"
+                  ? "text-loss"
                   : "text-muted-foreground"
               }`}
             >
               {formatPnl(activeCalendar.monthNetPnl, currency)}
             </span>
-            <span className="rounded bg-indigo-950/60 px-1 py-0.2 text-[9px] font-semibold text-indigo-300">
+            <span className="rounded bg-indigo-950/60 px-1 py-0.2 text-[9px] font-semibold text-foreground">
               {activeCalendar.tradingDays} {activeCalendar.tradingDays === 1 ? "day" : "days"}
             </span>
           </div>
@@ -258,13 +258,13 @@ export function TradeCalendar({
                             : isNegative
                             ? "cursor-pointer border-rose-900/60 bg-rose-950/30 hover:border-rose-500 hover:shadow-lg"
                             : "cursor-pointer border-border/40 bg-secondary/20 hover:border-border hover:bg-secondary/40"
-                          : "cursor-pointer border-border/30 bg-[#141720]/80 hover:border-border/60 hover:bg-secondary/20"
+                          : "cursor-pointer border-border/30 bg-secondary/50/80 hover:border-border/60 hover:bg-secondary/20"
                       }`}
                     >
                       <div className="flex items-center justify-between">
                         <span />
                         {isToday ? (
-                          <span className="flex h-4 w-4 sm:h-5 sm:w-5 items-center justify-center rounded-full bg-indigo-600 text-[10px] sm:text-[11px] font-bold text-white shadow">
+                          <span className="flex h-4 w-4 sm:h-5 sm:w-5 items-center justify-center rounded-full bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-[10px] sm:text-[11px] font-bold text-foreground shadow">
                             {dayNum}
                           </span>
                         ) : (
@@ -281,9 +281,9 @@ export function TradeCalendar({
                               compact ? "text-[11px] sm:text-xs" : "text-sm"
                             } ${
                               isPositive
-                                ? "text-emerald-400"
+                                ? "text-profit"
                                 : isNegative
-                                ? "text-rose-400"
+                                ? "text-loss"
                                 : "text-muted-foreground"
                             }`}
                           >
@@ -304,9 +304,9 @@ export function TradeCalendar({
                               <Crosshair
                                 className={`h-2.5 w-2.5 ${
                                   isPositive
-                                    ? "text-emerald-500/70"
+                                    ? "text-profit/70"
                                     : isNegative
-                                    ? "text-rose-500/70"
+                                    ? "text-loss/70"
                                     : "text-muted-foreground/50"
                                 }`}
                               />
@@ -338,7 +338,7 @@ export function TradeCalendar({
               <Link
                 key={idx}
                 href={`/weekly-journal?year=${activeCalendar.year}&week=${weekNum}${search ? `&${search}` : ""}`}
-                className={`group flex flex-col justify-between rounded-lg border border-border/40 bg-[#141720]/80 p-2 cursor-pointer transition-all hover:border-indigo-500/70 hover:bg-secondary/30 ${
+                className={`group flex flex-col justify-between rounded-lg border border-border/40 bg-secondary/50/80 p-2 cursor-pointer transition-all hover:border-indigo-500/70 hover:bg-secondary/30 ${
                   compact ? "min-h-[75px]" : "min-h-[110px]"
                 }`}
               >
@@ -346,7 +346,7 @@ export function TradeCalendar({
                   <span className="text-[10px] sm:text-xs font-semibold text-muted-foreground group-hover:text-foreground">
                     Week {weekNum}
                   </span>
-                  <CalendarIcon className="h-2.5 w-2.5 sm:h-3 sm:w-3 text-muted-foreground/40 group-hover:text-indigo-400" />
+                  <CalendarIcon className="h-2.5 w-2.5 sm:h-3 sm:w-3 text-muted-foreground/40 group-hover:text-muted-foreground" />
                 </div>
 
                 <div className="flex flex-col">
@@ -357,15 +357,15 @@ export function TradeCalendar({
                       !hasActivity
                         ? "text-muted-foreground"
                         : isPositive
-                        ? "text-emerald-400"
+                        ? "text-profit"
                         : isNegative
-                        ? "text-rose-400"
+                        ? "text-loss"
                         : "text-muted-foreground"
                     }`}
                   >
                     {hasActivity ? formatPnl(week.weekNetPnl, currency) : "$0"}
                   </span>
-                  <span className="mt-0.5 inline-block text-[9px] sm:text-[10px] font-semibold text-indigo-400">
+                  <span className="mt-0.5 inline-block text-[9px] sm:text-[10px] font-semibold text-muted-foreground">
                     {week.weekTrades} {week.weekTrades === 1 ? "trade" : "trades"}
                   </span>
                 </div>
@@ -385,9 +385,9 @@ export function TradeCalendar({
           <span
             className={`font-semibold ${
               activeCalendar.monthNetPnl > 0
-                ? "text-emerald-400"
+                ? "text-profit"
                 : activeCalendar.monthNetPnl < 0
-                ? "text-rose-400"
+                ? "text-loss"
                 : "text-muted-foreground"
             }`}
           >

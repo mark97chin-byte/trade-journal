@@ -98,7 +98,7 @@ export function YourStatsOverview({
   const { left, right, bestMonth, lowestMonth, avgMonthlyPnl, currency } = data;
 
   return (
-    <div className="w-full rounded-xl border border-border/50 bg-[#12141a] p-5 text-foreground shadow-sm mb-6">
+    <div className="w-full rounded-xl border border-border/50 bg-card p-5 text-foreground shadow-sm mb-6">
       {/* Header with dynamic date */}
       <div className="flex items-center justify-between pb-4">
         <div>
@@ -152,7 +152,7 @@ export function YourStatsOverview({
         </button>
       </div>
 
-      <div className="border-b border-border/40 pb-2 mb-2" />
+      <div className="border-b border-slate-200 dark:border-border/40 pb-2 mb-2" />
 
       {/* 2-Column Stats Table */}
       <div className="grid grid-cols-1 md:grid-cols-2 md:gap-x-12">

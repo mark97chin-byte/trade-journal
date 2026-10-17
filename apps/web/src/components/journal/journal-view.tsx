@@ -110,7 +110,7 @@ function IntradayPnlCurve({ trades }: { trades: JournalTrade[] }) {
 
   if (points.length <= 1) {
     return (
-      <div className="h-24 flex items-center justify-center text-xs text-muted-foreground/50 border border-dashed border-border/40 rounded-lg">
+      <div className="h-24 flex items-center justify-center text-xs text-muted-foreground/50 border border-dashed border-slate-200 dark:border-border/40 rounded-lg">
         No intraday trajectory data
       </div>
     );
@@ -223,10 +223,10 @@ function PnlSwingBar({
       <div className="flex justify-between items-center text-[11px] font-medium">
         <span className="text-muted-foreground">P&L Swing</span>
         <div className="flex gap-3">
-          <span className="text-rose-400">
+          <span className="text-loss">
             Max Loss: <span className="font-semibold">{fmtCurrency(maxDrawdown)}</span>
           </span>
-          <span className="text-emerald-400">
+          <span className="text-profit">
             Max Profit: <span className="font-semibold">{fmtCurrency(maxPeak)}</span>
           </span>
         </div>
@@ -234,11 +234,11 @@ function PnlSwingBar({
 
       <div className="relative h-2 w-full bg-[#1b1e2a] rounded-full overflow-hidden flex items-center">
         <div
-          className="h-full bg-rose-500/80 transition-all duration-300"
+          className="h-full bg-loss/10 transition-all duration-300"
           style={{ width: `${ddPct}%` }}
         />
         <div
-          className="h-full bg-emerald-500/80 transition-all duration-300"
+          className="h-full bg-profit/10 transition-all duration-300"
           style={{ width: `${peakPct}%` }}
         />
         <div
@@ -308,7 +308,7 @@ function StatsGrid({
         <div className="text-muted-foreground text-[10px]">Gross P&L</div>
         <div
           className={`font-semibold text-sm ${
-            metrics.grossPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+            metrics.grossPnl >= 0 ? "text-profit" : "text-loss"
           }`}
         >
           {fmtCurrency(metrics.grossPnl)}
@@ -378,7 +378,7 @@ function SubPeriodBarChart({
   };
 
   return (
-    <div className="rounded-lg border border-border/40 bg-[#161924]/50 p-2.5 select-none">
+    <div className="rounded-lg border border-slate-200 dark:border-border/40 bg-[#161924]/50 p-2.5 select-none">
       {title && (
         <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
           {title}
@@ -387,9 +387,9 @@ function SubPeriodBarChart({
       <div className="flex gap-1.5 w-full">
         {/* Y-Axis Reference Labels */}
         <div className="flex flex-col justify-between text-[9px] text-muted-foreground tabular-nums h-[80px] pb-3.5 pr-1 text-right min-w-[34px]">
-          <span className="text-emerald-400/80">{fmtCompactCurrency(maxExtent)}</span>
+          <span className="text-profit/80">{fmtCompactCurrency(maxExtent)}</span>
           <span>$0</span>
-          <span className="text-rose-400/80">{fmtCompactCurrency(-maxExtent)}</span>
+          <span className="text-loss/80">{fmtCompactCurrency(-maxExtent)}</span>
         </div>
 
         {/* Bars Container with 0-Baseline in the Middle */}
@@ -435,7 +435,7 @@ function SubPeriodBarChart({
                     {isPos && (
                       <div
                         style={{ height: `${pct}%` }}
-                        className="w-full max-w-[16px] rounded-t-[2px] bg-emerald-500/85 group-hover:bg-emerald-400 group-hover:ring-1 group-hover:ring-emerald-300 transition-all"
+                        className="w-full max-w-[16px] rounded-t-[2px] bg-profit/10 group-hover:bg-profit/15 text-profit group-hover:ring-1 group-hover:ring-emerald-300 transition-all"
                       />
                     )}
                   </div>
@@ -445,7 +445,7 @@ function SubPeriodBarChart({
                     {isNeg && (
                       <div
                         style={{ height: `${pct}%` }}
-                        className="w-full max-w-[16px] rounded-b-[2px] bg-rose-500/85 group-hover:bg-rose-400 group-hover:ring-1 group-hover:ring-rose-300 transition-all"
+                        className="w-full max-w-[16px] rounded-b-[2px] bg-loss/10 group-hover:bg-loss/15 text-loss group-hover:ring-1 group-hover:ring-rose-300 transition-all"
                       />
                     )}
                   </div>
@@ -507,8 +507,8 @@ function SubPeriodStrip({
             d.count === 0
               ? "bg-[#181a24]/40 text-muted-foreground/40 border border-transparent"
               : d.pnl >= 0
-              ? "bg-emerald-950/25 border border-emerald-900/50 hover:border-emerald-500 cursor-pointer text-emerald-400"
-              : "bg-rose-950/25 border border-rose-900/50 hover:border-rose-500 cursor-pointer text-rose-400"
+              ? "bg-emerald-950/25 border border-emerald-900/50 hover:border-emerald-500 cursor-pointer text-profit"
+              : "bg-rose-950/25 border border-rose-900/50 hover:border-rose-500 cursor-pointer text-loss"
           }`}
         >
           <span className="text-[10px] font-semibold text-muted-foreground">
@@ -570,16 +570,16 @@ function InteractiveDayCalendar({
 
   return (
     <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm mb-6 select-none">
-      <div className="flex items-center justify-between pb-3 border-b border-border/40">
+      <div className="flex items-center justify-between pb-3 border-b border-slate-200 dark:border-border/40">
         <div className="flex items-center gap-2">
-          <CalendarIcon className="w-4 h-4 text-indigo-400" />
+          <CalendarIcon className="w-4 h-4 text-muted-foreground" />
           <h3 className="text-sm font-semibold text-foreground">
             {monthName} {year}
           </h3>
           {selectedDate && (
             <button
               onClick={() => onSelectDate(null)}
-              className="inline-flex items-center gap-1 text-[11px] bg-indigo-500/15 text-indigo-300 px-2 py-0.5 rounded-md hover:bg-indigo-500/25 ml-2"
+              className="inline-flex items-center gap-1 text-[11px] bg-secondary text-foreground px-2 py-0.5 rounded-md hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/25 ml-2"
             >
               <span>Filtered: {selectedDate}</span>
               <X className="w-3 h-3" />
@@ -633,7 +633,7 @@ function InteractiveDayCalendar({
               }
               className={`h-14 rounded-lg p-1 flex flex-col justify-between items-center transition border text-left ${
                 isSelected
-                  ? "ring-2 ring-indigo-500 border-indigo-400 bg-indigo-500/10"
+                  ? "ring-2 ring-indigo-500 border-indigo-400 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10"
                   : dayData
                   ? dayData.netPnl >= 0
                     ? "bg-emerald-950/20 border-emerald-900/40 hover:border-emerald-700/60"
@@ -648,7 +648,7 @@ function InteractiveDayCalendar({
                 <div className="w-full text-center pb-0.5">
                   <span
                     className={`block text-[11px] font-bold leading-tight ${
-                      dayData.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                      dayData.netPnl >= 0 ? "text-profit" : "text-loss"
                     }`}
                   >
                     {fmtCurrency(dayData.netPnl)}
@@ -672,7 +672,7 @@ function TradesTable({ trades }: { trades: JournalTrade[] }) {
     <div className="mt-4 pt-3 border-t border-border/50 overflow-x-auto">
       <table className="w-full text-left text-xs">
         <thead>
-          <tr className="text-muted-foreground border-b border-border/40 pb-1">
+          <tr className="text-muted-foreground border-b border-slate-200 dark:border-border/40 pb-1">
             <th className="py-1.5 px-2 font-medium">Date / Time</th>
             <th className="py-1.5 px-2 font-medium">Ticker</th>
             <th className="py-1.5 px-2 font-medium">Side</th>
@@ -698,14 +698,14 @@ function TradesTable({ trades }: { trades: JournalTrade[] }) {
                   {datePart} <span className="text-muted-foreground/70">{timePart}</span>
                 </td>
                 <td className="py-2 px-2 font-semibold text-foreground">
-                  <span className="px-1.5 py-0.5 rounded bg-indigo-500/10 text-indigo-300 text-[11px]">
+                  <span className="px-1.5 py-0.5 rounded bg-secondary text-foreground text-[11px]">
                     {t.symbol}
                   </span>
                 </td>
                 <td className="py-2 px-2">
                   <span
                     className={`font-bold text-[11px] ${
-                      isBuy ? "text-emerald-400" : "text-rose-400"
+                      isBuy ? "text-profit" : "text-loss"
                     }`}
                   >
                     {t.direction.toUpperCase()}
@@ -713,7 +713,7 @@ function TradesTable({ trades }: { trades: JournalTrade[] }) {
                 </td>
                 <td
                   className={`py-2 px-2 text-right font-bold tabular-nums ${
-                    t.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                    t.netPnl >= 0 ? "text-profit" : "text-loss"
                   }`}
                 >
                   {fmtCurrency(t.netPnl)}
@@ -730,7 +730,7 @@ function TradesTable({ trades }: { trades: JournalTrade[] }) {
                 <td className="py-2 px-2 text-center">
                   <Link
                     href={`/trades/${t.key}`}
-                    className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 hover:underline"
+                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground hover:underline"
                   >
                     Review <ArrowRight className="w-3 h-3" />
                   </Link>
@@ -1241,7 +1241,7 @@ export function JournalView({ trades }: JournalViewProps) {
           {activeSubFilterId && period !== "day" && (
             <button
               onClick={() => setActiveSubFilterId(null)}
-              className="inline-flex items-center gap-1 text-xs bg-indigo-500/15 text-indigo-300 px-2.5 py-1 rounded-lg hover:bg-indigo-500/25"
+              className="inline-flex items-center gap-1 text-xs bg-secondary text-foreground px-2.5 py-1 rounded-lg hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/25"
             >
               <span>Showing: {activeSubFilterId}</span>
               <X className="w-3.5 h-3.5" />
@@ -1250,7 +1250,7 @@ export function JournalView({ trades }: JournalViewProps) {
         </div>
 
         {/* Period Selector Toggle */}
-        <div className="flex items-center rounded-xl bg-[#161822] p-1 border border-border/60">
+        <div className="flex items-center rounded-xl bg-secondary/50 p-1 border border-border/60">
           {(["day", "week", "month", "quarter", "year"] as JournalPeriod[]).map((p) => (
             <button
               key={p}
@@ -1261,7 +1261,7 @@ export function JournalView({ trades }: JournalViewProps) {
               }}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition ${
                 period === p
-                  ? "bg-indigo-600 text-white shadow"
+                  ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-foreground shadow"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -1294,7 +1294,7 @@ export function JournalView({ trades }: JournalViewProps) {
                   key={dg.id}
                   className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm hover:border-border transition"
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-border/40">
+                  <div className="flex flex-wrap items-center justify-between gap-3 pb-3 border-b border-slate-200 dark:border-border/40">
                     <div className="flex items-center gap-2.5">
                       <button
                         onClick={() => toggleCard(dg.id)}
@@ -1308,14 +1308,14 @@ export function JournalView({ trades }: JournalViewProps) {
                       </button>
                       <h4
                         onDoubleClick={() => router.push(dg.journalHref)}
-                        className="text-sm font-bold text-foreground cursor-pointer hover:text-indigo-300 transition"
+                        className="text-sm font-bold text-foreground cursor-pointer hover:text-foreground transition"
                       >
                         {dg.title}
                       </h4>
                       <span className="text-muted-foreground text-xs">•</span>
                       <span
                         className={`text-sm font-bold ${
-                          isWin ? "text-emerald-400" : "text-rose-400"
+                          isWin ? "text-profit" : "text-loss"
                         }`}
                       >
                         Net P&L {fmtCurrency(dg.netPnl)}
@@ -1328,16 +1328,16 @@ export function JournalView({ trades }: JournalViewProps) {
                       </span>
                       <Link
                         href={dg.journalHref}
-                        className="flex items-center gap-1.5 text-xs border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1 rounded-lg text-indigo-200 font-medium transition"
+                        className="flex items-center gap-1.5 text-xs border border-border bg-secondary/70 hover:bg-secondary px-3 py-1 rounded-lg text-foreground shadow-2xs font-medium transition"
                       >
-                        <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                        <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                         <span>Journal</span>
                       </Link>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-12 gap-6 pt-3 items-center">
-                    <div className="md:col-span-5 border-r-0 md:border-r border-border/40 pr-0 md:pr-4">
+                    <div className="md:col-span-5 border-r-0 md:border-r border-slate-200 dark:border-border/40 pr-0 md:pr-4">
                       <IntradayPnlCurve trades={dg.trades} />
                     </div>
                     <div className="md:col-span-7">
@@ -1358,7 +1358,7 @@ export function JournalView({ trades }: JournalViewProps) {
           </div>
 
           {/* Pagination Controls */}
-          <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-border/40 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-4 pt-4 border-t border-slate-200 dark:border-border/40 text-xs">
             <div className="flex items-center gap-2">
               <span className="text-muted-foreground">Days per page:</span>
               <select
@@ -1367,7 +1367,7 @@ export function JournalView({ trades }: JournalViewProps) {
                   setDaysPerPage(Number(e.target.value));
                   setCurrentPage(1);
                 }}
-                className="bg-[#161822] border border-border/60 rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                className="bg-secondary/50 border border-border/60 rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
               >
                 <option value={10}>10</option>
                 <option value={25}>25</option>
@@ -1414,7 +1414,7 @@ export function JournalView({ trades }: JournalViewProps) {
                 key={wg.id}
                 className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm hover:border-border transition"
               >
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-border/40">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-slate-200 dark:border-border/40">
                   <div className="flex items-center gap-2.5">
                     <button
                       onClick={() => toggleCard(wg.id)}
@@ -1430,7 +1430,7 @@ export function JournalView({ trades }: JournalViewProps) {
                     <span className="text-muted-foreground text-xs">•</span>
                     <span
                       className={`text-sm font-bold ${
-                        isWin ? "text-emerald-400" : "text-rose-400"
+                        isWin ? "text-profit" : "text-loss"
                       }`}
                     >
                       Net P&L {fmtCurrency(wg.netPnl)}
@@ -1439,9 +1439,9 @@ export function JournalView({ trades }: JournalViewProps) {
 
                   <Link
                     href={wg.journalHref}
-                    className="flex items-center gap-1.5 text-xs border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1 rounded-lg text-indigo-200 font-medium transition"
+                    className="flex items-center gap-1.5 text-xs border border-border bg-secondary/70 hover:bg-secondary px-3 py-1 rounded-lg text-foreground shadow-2xs font-medium transition"
                   >
-                    <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                     <span>Weekly Journal</span>
                   </Link>
                 </div>
@@ -1493,7 +1493,7 @@ export function JournalView({ trades }: JournalViewProps) {
                 key={group.id}
                 className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm hover:border-border transition"
               >
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-border/40">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-slate-200 dark:border-border/40">
                   <div className="flex items-center gap-2.5">
                     <button
                       onClick={() => toggleCard(group.id)}
@@ -1509,7 +1509,7 @@ export function JournalView({ trades }: JournalViewProps) {
                     <span className="text-muted-foreground text-xs">•</span>
                     <span
                       className={`text-sm font-bold ${
-                        isWin ? "text-emerald-400" : "text-rose-400"
+                        isWin ? "text-profit" : "text-loss"
                       }`}
                     >
                       Net P&L {fmtCurrency(group.netPnl)}
@@ -1518,9 +1518,9 @@ export function JournalView({ trades }: JournalViewProps) {
 
                   <Link
                     href={group.journalHref}
-                    className="flex items-center gap-1.5 text-xs border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1 rounded-lg text-indigo-200 font-medium transition"
+                    className="flex items-center gap-1.5 text-xs border border-border bg-secondary/70 hover:bg-secondary px-3 py-1 rounded-lg text-foreground shadow-2xs font-medium transition"
                   >
-                    <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                     <span>Monthly Journal</span>
                   </Link>
                 </div>
@@ -1538,7 +1538,7 @@ export function JournalView({ trades }: JournalViewProps) {
                   <div className="lg:col-span-8">
                     <StatsGrid trades={group.trades} netPnl={group.netPnl} columns={7} />
                   </div>
-                  <div className="lg:col-span-4 lg:border-l border-border/40 lg:pl-4">
+                  <div className="lg:col-span-4 lg:border-l border-slate-200 dark:border-border/40 lg:pl-4">
                     <PnlSwingBar
                       maxDrawdown={group.maxDrawdown}
                       maxPeak={group.maxPeak}
@@ -1587,7 +1587,7 @@ export function JournalView({ trades }: JournalViewProps) {
                 key={group.id}
                 className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm hover:border-border transition"
               >
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-border/40">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-slate-200 dark:border-border/40">
                   <div className="flex items-center gap-2.5">
                     <button
                       onClick={() => toggleCard(group.id)}
@@ -1603,7 +1603,7 @@ export function JournalView({ trades }: JournalViewProps) {
                     <span className="text-muted-foreground text-xs">•</span>
                     <span
                       className={`text-sm font-bold ${
-                        isWin ? "text-emerald-400" : "text-rose-400"
+                        isWin ? "text-profit" : "text-loss"
                       }`}
                     >
                       Net P&L {fmtCurrency(group.netPnl)}
@@ -1612,9 +1612,9 @@ export function JournalView({ trades }: JournalViewProps) {
 
                   <Link
                     href={group.journalHref}
-                    className="flex items-center gap-1.5 text-xs border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1 rounded-lg text-indigo-200 font-medium transition"
+                    className="flex items-center gap-1.5 text-xs border border-border bg-secondary/70 hover:bg-secondary px-3 py-1 rounded-lg text-foreground shadow-2xs font-medium transition"
                   >
-                    <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                     <span>Quarterly Journal</span>
                   </Link>
                 </div>
@@ -1632,7 +1632,7 @@ export function JournalView({ trades }: JournalViewProps) {
                   <div className="lg:col-span-8">
                     <StatsGrid trades={group.trades} netPnl={group.netPnl} columns={7} />
                   </div>
-                  <div className="lg:col-span-4 lg:border-l border-border/40 lg:pl-4">
+                  <div className="lg:col-span-4 lg:border-l border-slate-200 dark:border-border/40 lg:pl-4">
                     <PnlSwingBar
                       maxDrawdown={group.maxDrawdown}
                       maxPeak={group.maxPeak}
@@ -1689,7 +1689,7 @@ export function JournalView({ trades }: JournalViewProps) {
                 key={group.id}
                 className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm hover:border-border transition"
               >
-                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-border/40">
+                <div className="flex flex-wrap items-center justify-between gap-3 pb-2.5 border-b border-slate-200 dark:border-border/40">
                   <div className="flex items-center gap-2.5">
                     <button
                       onClick={() => toggleCard(group.id)}
@@ -1705,7 +1705,7 @@ export function JournalView({ trades }: JournalViewProps) {
                     <span className="text-muted-foreground text-xs">•</span>
                     <span
                       className={`text-sm font-bold ${
-                        isWin ? "text-emerald-400" : "text-rose-400"
+                        isWin ? "text-profit" : "text-loss"
                       }`}
                     >
                       Net P&L {fmtCurrency(group.netPnl)}
@@ -1714,9 +1714,9 @@ export function JournalView({ trades }: JournalViewProps) {
 
                   <Link
                     href={group.journalHref}
-                    className="flex items-center gap-1.5 text-xs border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1 rounded-lg text-indigo-200 font-medium transition"
+                    className="flex items-center gap-1.5 text-xs border border-border bg-secondary/70 hover:bg-secondary px-3 py-1 rounded-lg text-foreground shadow-2xs font-medium transition"
                   >
-                    <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                    <FileText className="w-3.5 h-3.5 text-muted-foreground" />
                     <span>Yearly Journal</span>
                   </Link>
                 </div>
@@ -1740,7 +1740,7 @@ export function JournalView({ trades }: JournalViewProps) {
                   <div className="lg:col-span-8">
                     <StatsGrid trades={group.trades} netPnl={group.netPnl} columns={7} />
                   </div>
-                  <div className="lg:col-span-4 lg:border-l border-border/40 lg:pl-4">
+                  <div className="lg:col-span-4 lg:border-l border-slate-200 dark:border-border/40 lg:pl-4">
                     <PnlSwingBar
                       maxDrawdown={group.maxDrawdown}
                       maxPeak={group.maxPeak}

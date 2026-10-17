@@ -14,7 +14,6 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Markdown, RichEditor, type RichEditorHandle } from "@/components/rich-editor";
-import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import { useAutosave } from "@/lib/use-autosave";
 import { useApi } from "@/lib/use-api";
@@ -258,7 +257,7 @@ function JournalDay({ date }: { date: string }) {
                 ],
               }}
             />
-            <Attachments type="day" id={date} />
+            
           </CardContent>
         </Card>
       </div>

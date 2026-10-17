@@ -69,7 +69,7 @@ export function AccountSelector() {
             {loadingDemo ? "Loading demo…" : label}
           </span>
         </SelectTrigger>
-        <SelectContent className="rounded-2xl border-white/10 p-1 shadow-2xl" align="end">
+        <SelectContent className="rounded-2xl border-border p-1 shadow-2xl" align="end">
           <SelectItem value="all" className="rounded-lg text-xs">
             All accounts
           </SelectItem>

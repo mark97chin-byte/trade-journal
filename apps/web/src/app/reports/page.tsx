@@ -129,7 +129,7 @@ function ReportsContent() {
 
       <main className="mx-auto max-w-7xl px-4 py-5 space-y-5">
         {/* TOP TAB BAR */}
-        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-border/40 pb-3">
           <div className="flex flex-wrap items-center gap-2">
             {/* 1. Overview */}
             <button
@@ -137,8 +137,8 @@ function ReportsContent() {
               onClick={() => setMainTab("overview")}
               className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
                 mainTab === "overview"
-                  ? "bg-[#4f46e5] text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                  ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
               }`}
             >
               Overview
@@ -151,8 +151,8 @@ function ReportsContent() {
                 onClick={() => setDropdownOpen(!dropdownOpen)}
                 className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
                   isReportsTabActive || mainTab === "content_management"
-                    ? "bg-[#4f46e5] text-white shadow-sm"
-                    : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                    ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                    : "text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
                 }`}
               >
                 <span>
@@ -165,7 +165,7 @@ function ReportsContent() {
               </button>
 
               {dropdownOpen && (
-                <div className="absolute left-0 top-full z-50 mt-1.5 w-48 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95">
+                <div className="absolute left-0 top-full z-50 mt-1.5 w-48 rounded-xl border border-border/80 bg-slate-50 dark:bg-card p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95">
                   {REPORT_DROPDOWN_OPTIONS.map((opt) => (
                     <button
                       key={opt.key}
@@ -177,14 +177,14 @@ function ReportsContent() {
                       className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium text-left transition-colors ${
                         mainTab === opt.key ||
                         (mainTab === "content_management" && opt.key === "tags")
-                          ? "bg-[#4f46e5]/20 text-[#a5b4fc]"
-                          : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                          ? "bg-secondary text-foreground font-semibold border border-border/20 text-[#a5b4fc]"
+                          : "text-muted-foreground hover:bg-slate-100/90 dark:bg-secondary/40 hover:text-foreground"
                       }`}
                     >
                       <span>{opt.label}</span>
                       {(mainTab === opt.key ||
                         (mainTab === "content_management" && opt.key === "tags")) && (
-                        <Check className="h-3.5 w-3.5 text-indigo-400" />
+                        <Check className="h-3.5 w-3.5 text-muted-foreground" />
                       )}
                     </button>
                   ))}
@@ -198,8 +198,8 @@ function ReportsContent() {
               onClick={() => setMainTab("performance")}
               className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
                 mainTab === "performance"
-                  ? "bg-[#4f46e5] text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                  ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
               }`}
             >
               Performance
@@ -211,8 +211,8 @@ function ReportsContent() {
               onClick={() => setMainTab("compare")}
               className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
                 mainTab === "compare"
-                  ? "bg-[#4f46e5] text-white shadow-sm"
-                  : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                  ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
               }`}
             >
               Compare
@@ -228,8 +228,8 @@ function ReportsContent() {
               }
               className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
                 mainTab === "content_management"
-                  ? "border-indigo-500 bg-[#4f46e5] text-white shadow-sm"
-                  : "border-border/60 bg-[#161822] text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                  ? "border-indigo-500 bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                  : "border-border/60 bg-slate-50 dark:bg-card text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
               }`}
             >
               <Tags className="h-3.5 w-3.5" />
@@ -240,7 +240,7 @@ function ReportsContent() {
 
         {/* SUB-PILLS FOR DAY & TIME */}
         {mainTab === "day_time" && (
-          <div className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-[#161822] p-1 w-fit">
+          <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-border/40 bg-slate-50 dark:bg-card p-1 w-fit">
             {(
               [
                 ["days", "days"],
@@ -255,7 +255,7 @@ function ReportsContent() {
                 onClick={() => setDayTimeSubTab(subKey)}
                 className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
                   dayTimeSubTab === subKey
-                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -268,13 +268,13 @@ function ReportsContent() {
         {/* COMPACT CONTROLS FOR TAGS REPORT (Pills + Category Dropdown Menu) */}
         {mainTab === "tags" && data?.tagCategories && (
           <div className="flex flex-wrap items-center gap-2">
-            <div className="flex items-center gap-1.5 rounded-lg border border-border/40 bg-[#161822] p-1">
+            <div className="flex items-center gap-1.5 rounded-lg border border-slate-200 dark:border-border/40 bg-slate-50 dark:bg-card p-1">
               <button
                 type="button"
                 onClick={() => setSelectedTagCategory("all")}
                 className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
                   selectedTagCategory === "all"
-                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -286,7 +286,7 @@ function ReportsContent() {
                 onClick={() => setSelectedTagCategory("by_category")}
                 className={`rounded-md px-3 py-1 text-xs font-medium transition-all ${
                   selectedTagCategory === "by_category"
-                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -301,8 +301,8 @@ function ReportsContent() {
                 onClick={() => setCatDropdownOpen(!catDropdownOpen)}
                 className={`flex h-8 items-center gap-2 rounded-lg border px-3 text-xs font-medium transition-colors ${
                   activeCategoryObj
-                    ? "border-indigo-500/60 bg-[#4f46e5]/20 text-foreground"
-                    : "border-border/50 bg-[#161822] text-muted-foreground hover:text-foreground"
+                    ? "border-indigo-500/60 bg-secondary text-foreground font-semibold border border-border/20 text-foreground"
+                    : "border-border/50 bg-slate-50 dark:bg-card text-muted-foreground hover:text-foreground"
                 }`}
               >
                 {activeCategoryObj ? (
@@ -320,7 +320,7 @@ function ReportsContent() {
               </button>
 
               {catDropdownOpen && (
-                <div className="absolute left-0 top-full z-50 mt-1.5 w-56 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95">
+                <div className="absolute left-0 top-full z-50 mt-1.5 w-56 rounded-xl border border-border/80 bg-slate-50 dark:bg-card p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95">
                   <button
                     type="button"
                     onClick={() => {
@@ -329,13 +329,13 @@ function ReportsContent() {
                     }}
                     className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
                       selectedTagCategory === "all"
-                        ? "bg-[#4f46e5]/20 text-[#a5b4fc]"
-                        : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                        ? "bg-secondary text-foreground font-semibold border border-border/20 text-[#a5b4fc]"
+                        : "text-muted-foreground hover:bg-slate-100/90 dark:bg-secondary/40 hover:text-foreground"
                     }`}
                   >
                     <span>All categories</span>
                     {selectedTagCategory === "all" && (
-                      <Check className="h-3.5 w-3.5 text-indigo-400" />
+                      <Check className="h-3.5 w-3.5 text-muted-foreground" />
                     )}
                   </button>
 
@@ -353,8 +353,8 @@ function ReportsContent() {
                           }}
                           className={`flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-xs font-medium text-left transition-colors ${
                             selectedTagCategory === cat.id
-                              ? "bg-[#4f46e5]/20 text-[#a5b4fc]"
-                              : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                              ? "bg-secondary text-foreground font-semibold border border-border/20 text-[#a5b4fc]"
+                              : "text-muted-foreground hover:bg-slate-100/90 dark:bg-secondary/40 hover:text-foreground"
                           }`}
                         >
                           <div className="flex items-center gap-2 truncate">
@@ -365,7 +365,7 @@ function ReportsContent() {
                             <span className="truncate">{cat.name}</span>
                           </div>
                           {selectedTagCategory === cat.id && (
-                            <Check className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                            <Check className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
                           )}
                         </button>
                       )

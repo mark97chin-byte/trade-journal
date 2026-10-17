@@ -337,7 +337,7 @@ export function ReportMetricChart({
   }, [searchQuery]);
 
   return (
-    <div className="relative w-full rounded-xl border border-border/40 bg-[#12141a] p-4 text-foreground shadow-sm">
+    <div className="relative w-full rounded-xl border border-slate-200 dark:border-border/40 bg-card p-4 text-foreground shadow-sm">
       {/* HEADER CONTROLS */}
       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/20 pb-3">
         {/* Left: Metric pills */}
@@ -354,7 +354,7 @@ export function ReportMetricChart({
             return (
               <div
                 key={m.id}
-                className="group flex items-center rounded-lg border bg-[#161822] text-xs transition-colors hover:border-foreground/30"
+                className="group flex items-center rounded-lg border bg-slate-50 dark:bg-card text-xs transition-colors hover:border-foreground/30"
                 style={{ borderColor: `${m.color}80` }}
               >
                 <button
@@ -405,14 +405,14 @@ export function ReportMetricChart({
               <button
                 type="button"
                 onClick={() => setTimeframeMenuOpen(!timeframeMenuOpen)}
-                className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-[#161822] px-3 py-1.5 text-xs font-medium text-foreground hover:bg-secondary/40"
+                className="flex items-center gap-1.5 rounded-lg border border-border/60 bg-slate-50 dark:bg-card px-3 py-1.5 text-xs font-medium text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
               >
                 <span className="capitalize">{timeframe}</span>
                 <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
               </button>
 
               {timeframeMenuOpen && (
-                <div className="absolute right-0 top-full z-50 mt-1 w-28 rounded-lg border border-border/80 bg-[#161822] p-1 shadow-xl">
+                <div className="absolute right-0 top-full z-50 mt-1 w-28 rounded-lg border border-border/80 bg-slate-50 dark:bg-card p-1 shadow-xl">
                   {(["day", "week", "month"] as const).map((mode) => (
                     <button
                       key={mode}
@@ -423,12 +423,12 @@ export function ReportMetricChart({
                       }}
                       className={`flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs font-medium capitalize text-left transition-colors ${
                         timeframe === mode
-                          ? "bg-indigo-600/30 text-indigo-300"
-                          : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                          ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 text-foreground"
+                          : "text-muted-foreground hover:bg-slate-100/90 dark:bg-secondary/40 hover:text-foreground"
                       }`}
                     >
                       <span>{mode}</span>
-                      {timeframe === mode && <Check className="h-3 w-3 text-indigo-400" />}
+                      {timeframe === mode && <Check className="h-3 w-3 text-muted-foreground" />}
                     </button>
                   ))}
                 </div>
@@ -450,7 +450,7 @@ export function ReportMetricChart({
       {isDropdownOpen && (
         <div
           ref={dropdownRef}
-          className="absolute left-6 top-16 z-50 w-72 sm:w-80 rounded-xl border border-border/80 bg-[#161822] p-3 shadow-2xl animate-in fade-in-50 zoom-in-95"
+          className="absolute left-6 top-16 z-50 w-72 sm:w-80 rounded-xl border border-border/80 bg-slate-50 dark:bg-card p-3 shadow-2xl animate-in fade-in-50 zoom-in-95"
         >
           <div className="relative mb-3">
             <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
@@ -489,12 +489,12 @@ export function ReportMetricChart({
                             onClick={() => handleSelectMetric(m)}
                             className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-xs text-left transition-colors ${
                               isSelected
-                                ? "bg-indigo-600/30 text-indigo-300 font-medium"
-                                : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                                ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 text-foreground font-medium"
+                                : "text-muted-foreground hover:bg-slate-100/90 dark:bg-secondary/40 hover:text-foreground"
                             }`}
                           >
                             <span>{m.label}</span>
-                            {isSelected && <Check className="h-3 w-3 text-indigo-400" />}
+                            {isSelected && <Check className="h-3 w-3 text-muted-foreground" />}
                           </button>
                         );
                       })}
@@ -705,7 +705,7 @@ export function ReportMetricChart({
 
         {hoveredIdx !== null && (
           <div
-            className="pointer-events-none absolute rounded-md border border-border/80 bg-[#161822] p-2 text-xs shadow-xl"
+            className="pointer-events-none absolute rounded-md border border-border/80 bg-slate-50 dark:bg-card p-2 text-xs shadow-xl"
             style={{
               left: `${(getX(hoveredIdx) / width) * 100}%`,
               top: "15%",
@@ -754,13 +754,13 @@ export function ReportMetricChart({
 
       {/* SETTINGS DRAWER */}
       {isSettingsOpen && (
-        <div className="mt-3 rounded-lg border border-border/60 bg-[#161822] p-3 text-xs space-y-3 animate-in fade-in-50">
+        <div className="mt-3 rounded-lg border border-border/60 bg-slate-50 dark:bg-card p-3 text-xs space-y-3 animate-in fade-in-50">
           <div className="font-semibold text-foreground">Chart Customization</div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             {activeMetrics.map((m, idx) => {
               const def = METRIC_DEFINITIONS.find((d) => d.key === m.key);
               return (
-                <div key={m.id} className="space-y-2 rounded border border-border/40 p-2">
+                <div key={m.id} className="space-y-2 rounded border border-slate-200 dark:border-border/40 p-2">
                   <div className="font-medium text-foreground">{def?.label}</div>
 
                   <div className="flex items-center gap-2">
@@ -776,8 +776,8 @@ export function ReportMetricChart({
                         }
                         className={`rounded px-2 py-0.5 text-[10px] uppercase font-semibold ${
                           m.chartType === type
-                            ? "bg-indigo-600 text-white"
-                            : "bg-secondary/40 text-muted-foreground hover:text-foreground"
+                            ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-foreground"
+                            : "bg-slate-100/90 dark:bg-secondary/40 text-muted-foreground hover:text-foreground"
                         }`}
                       >
                         {type}

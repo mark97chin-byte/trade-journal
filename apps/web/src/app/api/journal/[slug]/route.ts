@@ -106,7 +106,7 @@ export async function PUT(req: NextRequest, { params }: Params) {
       }
 
       const blocks = await fetchNotionBlocksRecursive(pageId, token);
-      const htmlContent = notionBlocksToHtml(blocks);
+      const htmlContent = await notionBlocksToHtml(blocks, slug);
 
       const entry = await saveJournalEntry(slug, {
         title: pageTitle,

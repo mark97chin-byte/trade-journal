@@ -29,7 +29,6 @@ import { ThemeToggle } from "./theme";
 import { PageTransition } from "./page-transition";
 import { Button } from "./ui/button";
 import { HoverHint } from "./ui/tooltip";
-import { SyncNotionButton } from "./sync-notion-button";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -245,7 +244,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           <span className="truncate">Trade Journal</span>
         </Link>
         <PrivacyToggle compact />
-        <SyncNotionButton iconOnly />
+        
         <ThemeToggle iconOnly />
       </header>
       <aside
@@ -281,7 +280,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         {navigation(sidebarCollapsed)}
         <div className="journal-sidebar-privacy border-t p-3">
           <div className="w-full space-y-1">
-            <SyncNotionButton iconOnly={sidebarCollapsed} />
+            
             <ThemeToggle iconOnly={sidebarCollapsed} />
             <PrivacyToggle iconOnly={sidebarCollapsed} />
           </div>

@@ -104,7 +104,7 @@ function MetricItem({
             title="View details"
           >
             <span>{value}</span>
-            <ExternalLink className="h-3.5 w-3.5 text-indigo-400 opacity-80 group-hover:opacity-100" />
+            <ExternalLink className="h-3.5 w-3.5 text-muted-foreground opacity-80 group-hover:opacity-100" />
           </Link>
         ) : (
           <span className={valueClass}>{value}</span>
@@ -131,7 +131,7 @@ export function PerformanceView({
   return (
     <div className="space-y-6">
       {/* 1. TOP TABBED CARD */}
-      <div className="rounded-xl border border-border/50 bg-[#12141a] p-5 shadow-sm">
+      <div className="rounded-xl border border-border/50 bg-card p-5 shadow-sm">
         <div className="flex items-center justify-between border-b border-border/30 pb-3">
           <div className="flex items-center gap-6">
             {(["summary", "days", "trades"] as const).map((tab) => (
@@ -141,7 +141,7 @@ export function PerformanceView({
                 onClick={() => setActiveTab(tab)}
                 className={`relative pb-2 text-xs font-semibold capitalize transition-colors ${
                   activeTab === tab
-                    ? "text-indigo-400 after:absolute after:bottom-[-13px] after:left-0 after:right-0 after:h-0.5 after:bg-indigo-500"
+                    ? "text-muted-foreground after:absolute after:bottom-[-13px] after:left-0 after:right-0 after:h-0.5 after:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >

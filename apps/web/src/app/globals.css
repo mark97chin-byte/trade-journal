@@ -1425,3 +1425,200 @@ body.dashboard-is-dragging * {
   max-width: 100%;
   border-radius: 6px;
 }
+
+
+/* ==========================================================================
+   CLEAN LIGHT & DARK THEME HARMONIZATION (Soft Slate Borders & Neutral UI)
+   ========================================================================== */
+:root:not(.dark) [class*="bg-[#0"],
+:root:not(.dark) [class*="bg-[#1"],
+:root:not(.dark) [class*="bg-[#2"],
+html:not(.dark) [class*="bg-[#0"],
+html:not(.dark) [class*="bg-[#1"],
+html:not(.dark) [class*="bg-[#2"] {
+  background-color: var(--card, #ffffff) !important;
+  color: var(--card-foreground, #0f172a) !important;
+  border-color: var(--border, #e5e7eb) !important;
+}
+
+/* Ensure all cards, tables, and inputs use soft subtle borders in Light Mode (never harsh black) */
+:root:not(.dark) .border,
+:root:not(.dark) [class*="border-border"],
+:root:not(.dark) [class*="border-white"],
+:root:not(.dark) [class*="border-slate"],
+:root:not(.dark) .tz-rich-content,
+:root:not(.dark) select,
+:root:not(.dark) input,
+:root:not(.dark) button {
+  border-color: var(--border, #e5e7eb);
+}
+
+:root:not(.dark) .tz-rich-content {
+  background-color: #ffffff !important;
+  color: #0f172a !important;
+}
+
+
+
+/* ==========================================================================
+   CALENDAR TILES: EXACT MATCH TO ACTIVITY 'WIN' / 'LOSS' PILLS (--profit / --loss)
+   ========================================================================== */
+:root:not(.dark) [class*="bg-emerald-"],
+:root:not(.dark) [class*="bg-green-"],
+:root:not(.dark) [class*="bg-profit"] {
+  background-color: color-mix(in srgb, var(--profit, #166534) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--profit, #166534) 22%, transparent) !important;
+  color: var(--profit, #166534) !important;
+}
+
+:root:not(.dark) [class*="bg-rose-"],
+:root:not(.dark) [class*="bg-red-"],
+:root:not(.dark) [class*="bg-loss"] {
+  background-color: color-mix(in srgb, var(--loss, #991b1b) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--loss, #991b1b) 22%, transparent) !important;
+  color: var(--loss, #991b1b) !important;
+}
+
+
+/* ==========================================================================
+   STANDARDIZED CALENDAR GREEN & PASTEL PALETTE
+   ========================================================================== */
+:root {
+  --profit: #16a34a; /* #15803d - Standard Calendar Green */
+  --profit-foreground: 0 0% 100%;
+  --loss: #dc2626;      /* #b91c1c - Standard Calendar Red */
+  --loss-foreground: 0 0% 100%;
+}
+
+.dark {
+  --profit: #16a34a; /* #22c55e */
+  --loss: #dc2626;
+}
+
+/* Unified green text across reports, summaries, and charts */
+.text-profit,
+[class*="text-emerald-"],
+[class*="text-green-"] {
+  color: #15803d !important;
+}
+.dark .text-profit,
+.dark [class*="text-emerald-"],
+.dark [class*="text-green-"] {
+  color: #34d399 !important;
+}
+
+/* Unified green table highlights (Cross analysis, summaries) */
+[class*="bg-emerald-50"],
+[class*="bg-green-50"],
+[class*="bg-profit/10"] {
+  background-color: #ecfdf5 !important;
+  border-color: #a7f3d0 !important;
+  color: #15803d !important;
+}
+
+/* Journal Selected Day Tile - Clean Light Gray in Light Mode */
+:root:not(.dark) [data-selected="true"],
+:root:not(.dark) .calendar-day-selected,
+:root:not(.dark) [data-filtered="true"] {
+  background-color: #e2e8f0 !important;
+  border-color: #94a3b8 !important;
+  color: #0f172a !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
+}
+
+:root:not(.dark) [data-selected="true"] span,
+:root:not(.dark) .calendar-day-selected span {
+  color: #0f172a !important;
+}
+
+
+/* ==========================================================================
+   CALENDAR TILES: EXACT MATCH TO ACTIVITY 'WIN' / 'LOSS' PILLS (--profit / --loss)
+   ========================================================================== */
+:root:not(.dark) [class*="bg-emerald-"],
+:root:not(.dark) [class*="bg-green-"],
+:root:not(.dark) [class*="bg-profit"] {
+  background-color: color-mix(in srgb, var(--profit, #166534) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--profit, #166534) 22%, transparent) !important;
+  color: var(--profit, #166534) !important;
+}
+
+:root:not(.dark) [class*="bg-rose-"],
+:root:not(.dark) [class*="bg-red-"],
+:root:not(.dark) [class*="bg-loss"] {
+  background-color: color-mix(in srgb, var(--loss, #991b1b) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--loss, #991b1b) 22%, transparent) !important;
+  color: var(--loss, #991b1b) !important;
+}
+
+
+/* ==========================================================================
+   CALENDAR TILES: EXACT MATCH TO ACTIVITY 'WIN' / 'LOSS' PILLS (--profit / --loss)
+   ========================================================================== */
+:root:not(.dark) [class*="bg-emerald-"],
+:root:not(.dark) [class*="bg-green-"],
+:root:not(.dark) [class*="bg-profit"] {
+  background-color: color-mix(in srgb, var(--profit, #166534) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--profit, #166534) 22%, transparent) !important;
+  color: var(--profit, #166534) !important;
+}
+
+:root:not(.dark) [class*="bg-rose-"],
+:root:not(.dark) [class*="bg-red-"],
+:root:not(.dark) [class*="bg-loss"] {
+  background-color: color-mix(in srgb, var(--loss, #991b1b) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--loss, #991b1b) 22%, transparent) !important;
+  color: var(--loss, #991b1b) !important;
+}
+
+
+/* ==========================================================================
+   CALENDAR TILES: EXACT MATCH TO ACTIVITY 'WIN' / 'LOSS' PILLS (--profit / --loss)
+   ========================================================================== */
+:root:not(.dark) [class*="bg-emerald-"],
+:root:not(.dark) [class*="bg-green-"],
+:root:not(.dark) [class*="bg-profit"] {
+  background-color: color-mix(in srgb, var(--profit, #166534) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--profit, #166534) 22%, transparent) !important;
+  color: var(--profit, #166534) !important;
+}
+
+:root:not(.dark) [class*="bg-rose-"],
+:root:not(.dark) [class*="bg-red-"],
+:root:not(.dark) [class*="bg-loss"] {
+  background-color: color-mix(in srgb, var(--loss, #991b1b) 12%, transparent) !important;
+  border-color: color-mix(in srgb, var(--loss, #991b1b) 22%, transparent) !important;
+  color: var(--loss, #991b1b) !important;
+}
+
+
+/* ==========================================================================
+   RESTORE VALID --profit AND --loss HEX VARIABLES FOR CHARTS, BADGES & TILES
+   ========================================================================== */
+:root,
+html:not(.dark) {
+  --profit: #16a34a !important;
+  --loss: #dc2626 !important;
+}
+
+.dark,
+html.dark {
+  --profit: #22c55e !important;
+  --loss: #ef4444 !important;
+}
+
+.text-loss {
+  color: var(--loss, #dc2626) !important;
+}
+
+.text-profit {
+  color: var(--profit, #16a34a) !important;
+}
+
+.bg-loss {
+  background-color: var(--loss, #dc2626) !important;
+}
+
+.bg-profit {
+  background-color: var(--profit, #16a34a) !important;
+}

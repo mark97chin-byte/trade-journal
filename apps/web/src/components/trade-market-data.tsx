@@ -271,7 +271,7 @@ export function TradeMarketData({
             <span className="rounded bg-secondary/60 px-2 py-0.5 text-muted-foreground">
               {available.find((c) => c.id === provider)?.name || provider || "No provider"}
             </span>
-            <span className="rounded bg-secondary/60 px-2 py-0.5 font-mono text-indigo-300">
+            <span className="rounded bg-secondary/60 px-2 py-0.5 font-mono text-foreground">
               {symbol}
             </span>
             <span className="rounded bg-secondary/60 px-2 py-0.5 text-muted-foreground">
@@ -283,7 +283,7 @@ export function TradeMarketData({
               </span>
             ) : null}
             {busy && (
-              <span className="inline-flex items-center gap-1 text-[11px] text-indigo-400">
+              <span className="inline-flex items-center gap-1 text-[11px] text-muted-foreground">
                 <Loader2 className="h-3 w-3 animate-spin" /> Fetching...
               </span>
             )}
@@ -709,7 +709,7 @@ export function HistoricalReplay({
                   onClick={() => onTimeframeChange(res)}
                   className={`rounded px-2 py-0.5 font-medium transition ${
                     activeResolution === res
-                      ? "bg-indigo-600 text-white shadow-sm"
+                      ? "bg-foreground text-background font-semibold shadow-2xs shadow-sm"
                       : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   }`}
                 >
@@ -719,7 +719,7 @@ export function HistoricalReplay({
               <button
                 type="button"
                 onClick={() => setShowCustomModal(true)}
-                className="rounded px-2 py-0.5 text-[11px] font-semibold text-indigo-400 hover:bg-indigo-500/10"
+                className="rounded px-2 py-0.5 text-[11px] font-semibold text-muted-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10"
                 title="Create custom timeframe (e.g. 2m, 45m, 8h)"
               >
                 + Custom
@@ -749,7 +749,7 @@ export function HistoricalReplay({
               </button>
             </div>
 
-            {busy && <Loader2 className="h-4 w-4 animate-spin text-indigo-400" />}
+            {busy && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
           </div>
         </div>
       </CardHeader>
@@ -791,7 +791,7 @@ export function HistoricalReplay({
                 <ChevronLeft />
               </Button>
               <Button
-                className="min-w-24 bg-indigo-600 hover:bg-indigo-700 text-white"
+                className="min-w-24 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-white text-white"
                 disabled={history.bars.length <= 1}
                 onClick={() => {
                   if (complete) setCount(Math.max(1, entryBarIndex - 2));
@@ -845,7 +845,7 @@ export function HistoricalReplay({
             <div className="relative w-full py-2 flex items-center">
               {/* Shaded trade window */}
               <div
-                className="absolute h-2.5 rounded bg-indigo-500/25 border border-indigo-400/40 pointer-events-none"
+                className="absolute h-2.5 rounded bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/25 border border-indigo-400/40 pointer-events-none"
                 style={{
                   left: `${entryPct}%`,
                   width: `${tradeSpanPct}%`,
@@ -916,7 +916,7 @@ export function HistoricalReplay({
                 </Button>
                 <Button
                   size="sm"
-                  className="bg-indigo-600 hover:bg-indigo-700 text-white"
+                  className="bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-white text-white"
                   onClick={handleApplyCustomTf}
                 >
                   Apply
@@ -1097,7 +1097,7 @@ function ReplayChart({
         priceStyle: "candles",
         volume: false,
         drawings: true,
-        upColor: "#ffffff",
+        upColor: "#cbd5e1",
         downColor: "#787b86",
         visibleRange: {
           from: visibleFrom,

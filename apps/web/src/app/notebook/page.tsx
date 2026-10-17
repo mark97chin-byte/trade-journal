@@ -10,7 +10,6 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
 import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/components/ui/dialog";
-import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import { useAutosave } from "@/lib/use-autosave";
 import { postJson, useApi } from "@/lib/use-api";
@@ -425,7 +424,7 @@ function NoteEditor({ note, onChanged }: { note: NoteRow; onChanged: () => void 
           </Button>
         </div>
         <ReviewExport document={{ title: title || "Journal note", lines: [content] }} />
-        <Attachments type="note" id={note.id} />
+        
       </CardContent>
     </Card>
   );

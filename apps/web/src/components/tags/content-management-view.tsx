@@ -232,7 +232,7 @@ export function ContentManagementView() {
           onClick={() => setActiveTab("categories")}
           className={`relative pb-2.5 text-xs font-semibold transition-colors ${
             activeTab === "categories"
-              ? "text-indigo-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-indigo-500"
+              ? "text-muted-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900"
               : "text-muted-foreground hover:text-foreground"
           }`}
         >
@@ -243,7 +243,7 @@ export function ContentManagementView() {
           onClick={() => setActiveTab("tags")}
           className={`relative pb-2.5 text-xs font-semibold transition-colors ${
             activeTab === "tags"
-              ? "text-indigo-400 after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-indigo-500"
+              ? "text-muted-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900"
               : "text-muted-foreground hover:text-foreground"
           }`}
         >
@@ -304,7 +304,7 @@ export function ContentManagementView() {
                 type="button"
                 size="sm"
                 onClick={openAddCategory}
-                className="h-8 bg-[#6366f1] hover:bg-[#4f46e5] text-white text-xs font-semibold px-3.5"
+                className="h-8 bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border text-xs font-semibold px-3.5"
               >
                 Add category
               </Button>
@@ -476,7 +476,7 @@ export function ContentManagementView() {
                 type="button"
                 size="sm"
                 onClick={openAddTag}
-                className="h-8 bg-[#6366f1] hover:bg-[#4f46e5] text-white text-xs font-semibold px-3.5"
+                className="h-8 bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border text-xs font-semibold px-3.5"
               >
                 Add tag
               </Button>
@@ -654,7 +654,7 @@ export function ContentManagementView() {
               <Button
                 type="submit"
                 size="sm"
-                className="bg-[#6366f1] hover:bg-[#4f46e5] text-white text-xs font-semibold"
+                className="bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border text-xs font-semibold"
               >
                 {editingCat ? "Save changes" : "Create category"}
               </Button>
@@ -738,7 +738,7 @@ export function ContentManagementView() {
               <Button
                 type="submit"
                 size="sm"
-                className="bg-[#6366f1] hover:bg-[#4f46e5] text-white text-xs font-semibold"
+                className="bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border text-xs font-semibold"
               >
                 {editingTag ? "Save changes" : "Create tag"}
               </Button>

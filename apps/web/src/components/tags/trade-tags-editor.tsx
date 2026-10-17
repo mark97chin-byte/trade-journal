@@ -221,7 +221,7 @@ export function TradeTagsEditor({
         <label className="text-xs text-muted-foreground">Tags & Categories</label>
         <Link
           href="/tags"
-          className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:text-indigo-300 transition-colors"
+          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
         >
           <Settings2 className="h-3 w-3" />
           <span>Manage tags</span>
@@ -387,7 +387,7 @@ export function TradeTagsEditor({
                   type="button"
                   disabled={creating}
                   onClick={handleCreateNewTag}
-                  className="inline-flex items-center gap-1 rounded-md bg-[#4f46e5] hover:bg-[#4338ca] px-2.5 py-1 text-xs font-semibold text-white transition-colors"
+                  className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border px-2.5 py-1 text-xs font-semibold text-white transition-colors"
                 >
                   <Plus className="h-3.5 w-3.5" />
                   <span>Create &ldquo;{search.trim()}&rdquo;</span>

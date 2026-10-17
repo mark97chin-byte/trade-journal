@@ -9,7 +9,6 @@ import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { RichEditor, Markdown } from "@/components/rich-editor";
-import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import { MonetaryValue, MonetaryField } from "@/components/privacy";
 import { useApi, postJson } from "@/lib/use-api";
@@ -200,7 +199,7 @@ function Missed() {
                     ],
                   }}
                 />
-                <Attachments type="missed" id={t.id} />
+                
               </CardContent>
             </Card>
           ))}

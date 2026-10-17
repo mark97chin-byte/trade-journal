@@ -227,12 +227,12 @@ export function StrategyRulesCard({
   };
 
   return (
-    <div className="rounded-xl border border-border/50 bg-[#12141a] p-5 shadow-sm space-y-5">
+    <div className="rounded-xl border border-border/50 bg-card p-5 shadow-sm space-y-5">
       {/* HEADER & CONTROLS */}
-      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-border/40 pb-4">
+      <div className="flex flex-wrap items-start justify-between gap-4 border-b border-slate-200 dark:border-border/40 pb-4">
         <div>
           <div className="flex items-center gap-2">
-            <CheckSquare className="h-4 w-4 text-indigo-400" />
+            <CheckSquare className="h-4 w-4 text-muted-foreground" />
             <h3 className="text-sm font-bold text-foreground">
               Strategy Rules Winrate &amp; Multi-Rule Impact
             </h3>
@@ -252,7 +252,7 @@ export function StrategyRulesCard({
                 setSelectedPlaybookId(e.target.value);
                 setSelectedRuleKeys([]);
               }}
-              className="h-8 rounded-lg border border-border/60 bg-[#161822] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+              className="h-8 rounded-lg border border-border/60 bg-slate-50 dark:bg-card px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
             >
               <option value="all">All strategies</option>
               {playbooks.map((pb) => (
@@ -264,13 +264,13 @@ export function StrategyRulesCard({
           </div>
 
           {/* AND / OR Mode Toggle */}
-          <div className="flex items-center rounded-lg border border-border/50 bg-[#161822] p-0.5 text-xs">
+          <div className="flex items-center rounded-lg border border-border/50 bg-slate-50 dark:bg-card p-0.5 text-xs">
             <button
               type="button"
               onClick={() => setMatchMode("AND")}
               className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-all ${
                 matchMode === "AND"
-                  ? "bg-[#4f46e5] text-white shadow-xs"
+                  ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-xs"
                   : "text-muted-foreground hover:text-foreground"
               }`}
               title="Trades where ALL selected rules were followed"
@@ -282,7 +282,7 @@ export function StrategyRulesCard({
               onClick={() => setMatchMode("OR")}
               className={`rounded-md px-2.5 py-1 text-[11px] font-semibold transition-all ${
                 matchMode === "OR"
-                  ? "bg-[#4f46e5] text-white shadow-xs"
+                  ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-xs"
                   : "text-muted-foreground hover:text-foreground"
               }`}
               title="Trades where ANY of the selected rules were followed"
@@ -308,10 +308,10 @@ export function StrategyRulesCard({
 
       {/* MULTI-RULE COMBINATION COMPARISON PANEL */}
       {combinationComparison ? (
-        <div className="rounded-xl border border-indigo-500/30 bg-[#161822]/90 p-4 space-y-4">
+        <div className="rounded-xl border border-indigo-500/30 bg-slate-50 dark:bg-card/90 p-4 space-y-4">
           {/* Active rule pills */}
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-indigo-300 mr-1">
+            <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-foreground mr-1">
               <Sparkles className="h-3.5 w-3.5" />
               <span>
                 Comparing {selectedRuleKeys.length}{" "}
@@ -323,7 +323,7 @@ export function StrategyRulesCard({
               return (
                 <span
                   key={rk}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/40 bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-medium text-foreground"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/40 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/15 px-2.5 py-0.5 text-[11px] font-medium text-foreground"
                 >
                   <span className="max-w-[220px] truncate">{ruleText}</span>
                   <button
@@ -500,7 +500,7 @@ export function StrategyRulesCard({
           </div>
         </div>
       ) : (
-        <div className="rounded-xl border border-dashed border-border/60 bg-[#161822]/40 px-4 py-3 text-xs text-muted-foreground flex items-center justify-between">
+        <div className="rounded-xl border border-dashed border-border/60 bg-slate-50 dark:bg-card/40 px-4 py-3 text-xs text-muted-foreground flex items-center justify-between">
           <span>
             💡 Tip: Check one or multiple rules in the table below to simulate their combined Win % and P&amp;L impact.
           </span>
@@ -510,7 +510,7 @@ export function StrategyRulesCard({
       {/* INDIVIDUAL RULES WINRATE TABLE */}
       <div className="overflow-x-auto">
         <table className="w-full text-left text-xs">
-          <thead className="border-b border-border/40 text-muted-foreground">
+          <thead className="border-b border-slate-200 dark:border-border/40 text-muted-foreground">
             <tr>
               <th className="w-9 py-2.5 pl-2">
                 <Checkbox
@@ -551,7 +551,7 @@ export function StrategyRulesCard({
                   onClick={() => toggleRuleSelection(r.ruleKey)}
                   className={`cursor-pointer transition-colors ${
                     isSelected
-                      ? "bg-indigo-500/15 hover:bg-indigo-500/20"
+                      ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/15 hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/20"
                       : "hover:bg-secondary/20"
                   }`}
                 >

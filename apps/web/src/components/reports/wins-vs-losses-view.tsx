@@ -117,7 +117,7 @@ export function WinsVsLossesView({
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
       {/* LEFT: WINS */}
       <div className="space-y-4">
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4">
           <div className="flex items-center justify-between pb-3 border-b border-border/20">
             <div>
               <h3 className="text-sm font-semibold text-foreground">
@@ -205,7 +205,7 @@ export function WinsVsLossesView({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4">
           <div className="flex items-center justify-between pb-2 border-b border-border/20">
             <div>
               <h4 className="text-xs font-semibold text-foreground">Daily net cumulative P&L (Wins)</h4>
@@ -218,7 +218,7 @@ export function WinsVsLossesView({
 
       {/* RIGHT: LOSSES */}
       <div className="space-y-4">
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4">
           <div className="flex items-center justify-between pb-3 border-b border-border/20">
             <div>
               <h3 className="text-sm font-semibold text-foreground">
@@ -306,7 +306,7 @@ export function WinsVsLossesView({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4">
           <div className="flex items-center justify-between pb-2 border-b border-border/20">
             <div>
               <h4 className="text-xs font-semibold text-foreground">Daily net cumulative P&L (Losses)</h4>

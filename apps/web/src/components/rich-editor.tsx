@@ -76,7 +76,256 @@ const CALLOUT_ICONS = ["💡", "🎯", "⚠️", "🔥", "✅", "❌", "📌", "
 
 const EDITOR_CSS = `
 
-/* Notion Line-by-Line Block Gutter & Column Styling */
+/* Notion Line-by-Line Block Gutter & Column Styling (Light + Dark Mode Aware) */
+
+/* High-Contrast Legible Editor Typography (Light & Dark Mode) */
+.tz-rich-content,
+.tz-rich-content p,
+.tz-rich-content span,
+.tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.tz-rich-content li,
+.tz-rich-content em,
+.tz-rich-content strong {
+  color: #0f172a;
+}
+.dark .tz-rich-content,
+.dark .tz-rich-content p,
+.dark .tz-rich-content span,
+.dark .tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.dark .tz-rich-content li,
+.dark .tz-rich-content em,
+.dark .tz-rich-content strong {
+  color: #f8fafc;
+}
+
+/* Toggles & Toggle Headings Text Contrast */
+.tz-toggle-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+.dark .tz-toggle-title {
+  color: #f8fafc !important;
+}
+.tz-toggle-body {
+  color: #1e293b !important;
+}
+.dark .tz-toggle-body {
+  color: #e2e8f0 !important;
+}
+
+/* Quotes */
+.tz-quote,
+blockquote {
+  border-left: 3px solid #6366f1 !important;
+  color: #334155 !important;
+  font-style: italic;
+  padding-left: 0.75rem;
+}
+.dark .tz-quote,
+.dark blockquote {
+  color: #cbd5e1 !important;
+}
+
+.tz-rich-content {
+  position: relative;
+  padding-left: 3rem !important;
+  padding-right: 1rem !important;
+  color: inherit;
+}
+.tz-rich-content p,
+.tz-rich-content h1,
+.tz-rich-content h2,
+.tz-rich-content h3,
+.tz-rich-content ul,
+.tz-rich-content ol,
+.tz-rich-content blockquote,
+.tz-rich-content .tz-toggle,
+.tz-rich-content .tz-callout,
+.tz-rich-content .tz-banner,
+.tz-rich-content .tz-check-row,
+.tz-rich-content .tz-figure,
+.tz-rich-content .tz-code-block {
+  position: relative;
+  min-height: 1.65em;
+  margin-top: 2px;
+  margin-bottom: 2px;
+  padding: 2px 4px;
+  border-radius: 4px;
+  transition: background-color 0.1s ease;
+}
+.tz-block-hovered {
+  background-color: rgba(0, 0, 0, 0.035);
+}
+.dark .tz-block-hovered {
+  background-color: rgba(255, 255, 255, 0.03);
+}
+.tz-block-dragging {
+  opacity: 0.35;
+}
+/* Notion Section Banner Bars */
+.tz-banner {
+  display: block;
+  width: 100%;
+  padding: 0.38rem 0.75rem;
+  margin: 0.65rem 0 0.4rem;
+  border-radius: 0.35rem;
+  font-size: 0.84rem;
+  font-weight: 700;
+  color: #1e293b;
+  background-color: #f1f5f9;
+  border: 1px solid #cbd5e1;
+}
+.dark .tz-banner {
+  color: #f8fafc;
+  background-color: rgba(148, 163, 184, 0.16);
+  border-color: rgba(148, 163, 184, 0.24);
+}
+.tz-banner.tz-color-brown_background {
+  background-color: #fef3c7 !important;
+  color: #78350f !important;
+  border-color: #fde68a !important;
+}
+.dark .tz-banner.tz-color-brown_background {
+  background-color: rgba(180, 120, 80, 0.24) !important;
+  color: #fde68a !important;
+  border-color: rgba(180, 120, 80, 0.38) !important;
+}
+.tz-banner.tz-color-gray_background {
+  background-color: #e2e8f0 !important;
+  color: #1e293b !important;
+  border-color: #cbd5e1 !important;
+}
+.dark .tz-banner.tz-color-gray_background {
+  background-color: rgba(100, 116, 139, 0.24) !important;
+  color: #f8fafc !important;
+  border-color: rgba(100, 116, 139, 0.36) !important;
+}
+/* Notion Column Rows */
+.tz-column-list {
+  display: flex;
+  flex-direction: row;
+  gap: 1.25rem;
+  margin: 0.65rem 0;
+  width: 100%;
+  align-items: stretch;
+}
+.tz-column {
+  flex: 1;
+  min-width: 0;
+  border: 1px dashed #cbd5e1 !important;
+  background: #f8fafc !important;
+  border-radius: 0.5rem;
+  padding: 0.45rem 0.65rem 0.45rem 2.2rem !important;
+  position: relative;
+  transition: border-color 0.15s, background 0.15s;
+}
+.dark .tz-column {
+  border: 1px dashed rgba(255, 255, 255, 0.09) !important;
+  background: rgba(255, 255, 255, 0.015) !important;
+}
+.tz-column:hover,
+.tz-column:focus-within {
+  border-color: #6366f1 !important;
+  background: #f1f5f9 !important;
+}
+.dark .tz-column:hover,
+.dark .tz-column:focus-within {
+  border-color: rgba(99, 102, 241, 0.45) !important;
+  background: rgba(255, 255, 255, 0.025) !important;
+}
+/* Notion Add Ticker Button */
+.tz-add-ticker-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.35rem 0;
+  padding: 0.25rem 0.65rem;
+  border-radius: 0.375rem;
+  border: 1px solid #cbd5e1;
+  background: #f1f5f9;
+  color: #334155;
+  font-size: 0.75rem;
+  font-weight: 600;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s, border-color 0.15s;
+}
+.dark .tz-add-ticker-btn {
+  border-color: rgba(255, 255, 255, 0.14);
+  background: rgba(255, 255, 255, 0.04);
+  color: #cbd5e1;
+}
+.tz-add-ticker-btn:hover {
+  background: #e0e7ff;
+  border-color: #6366f1;
+  color: #4338ca;
+}
+.dark .tz-add-ticker-btn:hover {
+  background: rgba(99, 102, 241, 0.18);
+  border-color: rgba(99, 102, 241, 0.45);
+  color: #ffffff;
+}
+/* Empty Quote Placeholder */
+.tz-quote div:empty:before,
+blockquote:empty:before {
+  content: attr(data-placeholder);
+  color: #94a3b8;
+  pointer-events: none;
+}
+.dark .tz-quote div:empty:before,
+.dark blockquote:empty:before {
+  color: #64748b;
+}
+
+
+/* High-Contrast Legible Editor Typography (Light & Dark Mode) */
+.tz-rich-content,
+.tz-rich-content p,
+.tz-rich-content span,
+.tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.tz-rich-content li,
+.tz-rich-content em,
+.tz-rich-content strong {
+  color: #0f172a;
+}
+.dark .tz-rich-content,
+.dark .tz-rich-content p,
+.dark .tz-rich-content span,
+.dark .tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.dark .tz-rich-content li,
+.dark .tz-rich-content em,
+.dark .tz-rich-content strong {
+  color: #f8fafc;
+}
+
+/* Toggles & Toggle Headings Text Contrast */
+.tz-toggle-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+.dark .tz-toggle-title {
+  color: #f8fafc !important;
+}
+.tz-toggle-body {
+  color: #1e293b !important;
+}
+.dark .tz-toggle-body {
+  color: #e2e8f0 !important;
+}
+
+/* Quotes */
+.tz-quote,
+blockquote {
+  border-left: 3px solid #6366f1 !important;
+  color: #334155 !important;
+  font-style: italic;
+  padding-left: 0.75rem;
+}
+.dark .tz-quote,
+.dark blockquote {
+  color: #cbd5e1 !important;
+}
+
 .tz-rich-content {
   position: relative;
   padding-left: 3rem !important;
@@ -133,6 +382,55 @@ const EDITOR_CSS = `
   background: rgba(255, 255, 255, 0.02) !important;
 }
 
+
+/* High-Contrast Legible Editor Typography (Light & Dark Mode) */
+.tz-rich-content,
+.tz-rich-content p,
+.tz-rich-content span,
+.tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.tz-rich-content li,
+.tz-rich-content em,
+.tz-rich-content strong {
+  color: #0f172a;
+}
+.dark .tz-rich-content,
+.dark .tz-rich-content p,
+.dark .tz-rich-content span,
+.dark .tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.dark .tz-rich-content li,
+.dark .tz-rich-content em,
+.dark .tz-rich-content strong {
+  color: #f8fafc;
+}
+
+/* Toggles & Toggle Headings Text Contrast */
+.tz-toggle-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+.dark .tz-toggle-title {
+  color: #f8fafc !important;
+}
+.tz-toggle-body {
+  color: #1e293b !important;
+}
+.dark .tz-toggle-body {
+  color: #e2e8f0 !important;
+}
+
+/* Quotes */
+.tz-quote,
+blockquote {
+  border-left: 3px solid #6366f1 !important;
+  color: #334155 !important;
+  font-style: italic;
+  padding-left: 0.75rem;
+}
+.dark .tz-quote,
+.dark blockquote {
+  color: #cbd5e1 !important;
+}
+
 .tz-rich-content {
   position: relative;
   padding-left: 2.6rem !important;
@@ -161,6 +459,55 @@ const EDITOR_CSS = `
 .tz-column:focus-within {
   border-color: rgba(255, 255, 255, 0.1) !important;
   background: rgba(255, 255, 255, 0.015) !important;
+}
+
+
+/* High-Contrast Legible Editor Typography (Light & Dark Mode) */
+.tz-rich-content,
+.tz-rich-content p,
+.tz-rich-content span,
+.tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.tz-rich-content li,
+.tz-rich-content em,
+.tz-rich-content strong {
+  color: #0f172a;
+}
+.dark .tz-rich-content,
+.dark .tz-rich-content p,
+.dark .tz-rich-content span,
+.dark .tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
+.dark .tz-rich-content li,
+.dark .tz-rich-content em,
+.dark .tz-rich-content strong {
+  color: #f8fafc;
+}
+
+/* Toggles & Toggle Headings Text Contrast */
+.tz-toggle-title {
+  color: #0f172a !important;
+  font-weight: 700 !important;
+}
+.dark .tz-toggle-title {
+  color: #f8fafc !important;
+}
+.tz-toggle-body {
+  color: #1e293b !important;
+}
+.dark .tz-toggle-body {
+  color: #e2e8f0 !important;
+}
+
+/* Quotes */
+.tz-quote,
+blockquote {
+  border-left: 3px solid #6366f1 !important;
+  color: #334155 !important;
+  font-style: italic;
+  padding-left: 0.75rem;
+}
+.dark .tz-quote,
+.dark blockquote {
+  color: #cbd5e1 !important;
 }
 
 .tz-rich-content {
@@ -612,9 +959,9 @@ function repairCorruptedHtml(input: string): string {
   }
   s = s.replace(
     /<a\s+href="[^"]*?(https?:\/\/[^"\s<>]+)[^"]*"[^>]*>[\s\S]*?<\/a>/gi,
-    '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-indigo-400 underline">$1</a>'
+    '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-muted-foreground underline">$1</a>'
   );
-  s = s.replace(/"=""\s*target="_blank"\s*rel="noopener noreferrer"\s*class="text-indigo-400 underline">/gi, "");
+  s = s.replace(/"=""\s*target="_blank"\s*rel="noopener noreferrer"\s*class="text-muted-foreground underline">/gi, "");
   s = s.replace(/<p>\s*<p>/gi, "<p>").replace(/<\/p>\s*<\/p>/gi, "</p>");
   return s;
 }
@@ -642,7 +989,7 @@ function normalizeIncomingValue(raw: string): string {
     .replace(/>/g, "&gt;");
   const withLinks = escaped.replace(
     /(https?:\/\/[^\s<]+)/g,
-    '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-indigo-400 underline">$1</a>'
+    '<a href="$1" target="_blank" rel="noopener noreferrer" class="text-muted-foreground underline">$1</a>'
   );
   return withLinks
     .split(/\n\n+/)
@@ -1564,8 +1911,7 @@ export function RichEditor({
   return (
     <div
       className={`${
-        fullscreen
-          ? "fixed inset-0 z-50 flex flex-col bg-[#0b0d12] p-6 overflow-y-auto"
+        fullscreen ? "fixed inset-0 z-[9999] bg-background flex flex-col h-screen w-screen overflow-y-auto p-4 md:p-8"
           : "relative"
       } ${className}`}
     >
@@ -1595,7 +1941,7 @@ export function RichEditor({
                 key={tpl.id}
                 type="button"
                 onClick={() => insertHtmlAtCursor(tpl.html)}
-                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-[#161822] px-2.5 py-1 text-[11px] font-medium text-foreground/90 hover:border-indigo-500/60 hover:text-indigo-300 transition-colors"
+                className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card px-2.5 py-1 text-[11px] font-medium text-foreground/90 hover:border-indigo-500/60 hover:text-foreground transition-colors"
               >
                 <span>{tpl.name}</span>
               </button>
@@ -1603,7 +1949,7 @@ export function RichEditor({
             <button
               type="button"
               onClick={() => setNewTemplateModal(true)}
-              className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-transparent px-2.5 py-1 text-[11px] font-medium text-indigo-400 hover:bg-indigo-500/10 transition-colors"
+              className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-transparent px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10 transition-colors"
             >
               <Plus className="h-3 w-3" />
               <span>Add template</span>
@@ -1613,7 +1959,7 @@ export function RichEditor({
       )}
 
       {/* MAIN EDITOR CONTAINER */}
-      <div className="flex-1 rounded-xl border border-border/60 bg-[#0d0f14] shadow-inner overflow-visible">
+      <div className="flex-1 rounded-xl border border-border/60 bg-[#0d0f14] shadow-inner overflow-visible shrink-0">
         {/* TOP TOOLBAR */}
         {!readOnly && (
           <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c] px-2.5 py-1.5 text-xs">
@@ -1632,7 +1978,7 @@ export function RichEditor({
                 </button>
 
                 {openPopover === "block" && (
-                  <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-xl border border-border/80 bg-[#161822] p-1 shadow-2xl space-y-0.5">
+                  <div className="absolute left-0 top-full z-50 mt-1 w-48 rounded-xl border border-slate-200 dark:border-border/80 bg-card p-1 shadow-2xl space-y-0.5">
                     {[
                       { tag: "p", code: "Normal", label: "Normal text" },
                       { tag: "h1", code: "H1", label: "Heading 1" },
@@ -1675,7 +2021,7 @@ export function RichEditor({
                 </button>
 
                 {openPopover === "font" && (
-                  <div className="absolute left-0 top-full z-50 mt-1 w-44 rounded-xl border border-border/80 bg-[#161822] p-1 shadow-2xl space-y-0.5">
+                  <div className="absolute left-0 top-full z-50 mt-1 w-44 rounded-xl border border-slate-200 dark:border-border/80 bg-card p-1 shadow-2xl space-y-0.5">
                     {FONT_FAMILIES.map((f) => (
                       <button
                         key={f.label}
@@ -1799,7 +2145,7 @@ export function RichEditor({
                 </button>
 
                 {openPopover === "color" && (
-                  <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-xl border border-border/80 bg-[#161822] p-3 shadow-2xl space-y-3">
+                  <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-xl border border-slate-200 dark:border-border/80 bg-card p-3 shadow-2xl space-y-3">
                     <div>
                       <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
                         Notion Text Color (10)
@@ -1892,11 +2238,11 @@ export function RichEditor({
                 </button>
 
                 {openPopover === "align" && (
-                  <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl space-y-0.5">
+                  <div className="absolute left-0 top-full z-50 mt-1 w-52 rounded-xl border border-slate-200 dark:border-border/80 bg-card p-1.5 shadow-2xl space-y-0.5">
                     <button
                       type="button"
                       onClick={() => insertToggleBlock("toggle")}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-indigo-300 font-medium hover:bg-secondary/50"
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-foreground font-medium hover:bg-secondary/50"
                     >
                       <ChevronRight className="h-3.5 w-3.5" />
                       <span>Toggle list</span>
@@ -1904,7 +2250,7 @@ export function RichEditor({
                     <button
                       type="button"
                       onClick={() => insertToggleBlock("heading_2")}
-                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-indigo-300 font-medium hover:bg-secondary/50"
+                      className="flex w-full items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-foreground font-medium hover:bg-secondary/50"
                     >
                       <ChevronRight className="h-3.5 w-3.5" />
                       <span>Toggle Heading (H2)</span>
@@ -1983,7 +2329,7 @@ export function RichEditor({
               <button
                 type="button"
                 onClick={() => insertToggleBlock("toggle")}
-                className="flex h-7 items-center gap-1 rounded-md border border-border/60 bg-[#181b26] px-2 text-[11px] font-medium text-indigo-300 hover:border-indigo-500/50"
+                className="flex h-7 items-center gap-1 rounded-md border border-border/60 bg-[#181b26] px-2 text-[11px] font-medium text-foreground hover:border-indigo-500/50"
                 title="Insert collapsible toggle"
               >
                 <ChevronRight className="h-3.5 w-3.5" />
@@ -2031,7 +2377,7 @@ export function RichEditor({
                 </button>
 
                 {openPopover === "insert" && (
-                  <div className="absolute left-0 top-full z-50 mt-1 w-64 max-h-96 overflow-y-auto rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl space-y-0.5">
+                  <div className="absolute left-0 top-full z-50 mt-1 w-64 max-h-96 overflow-y-auto rounded-xl border border-slate-200 dark:border-border/80 bg-card p-1.5 shadow-2xl space-y-0.5">
                     <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                       Toggles &amp; Headings
                     </div>
@@ -2040,7 +2386,7 @@ export function RichEditor({
                       onClick={() => insertToggleBlock("toggle")}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/50"
                     >
-                      <ChevronRight className="h-4 w-4 text-indigo-400 shrink-0" />
+                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div>
                         <div className="font-semibold">Toggle list</div>
                         <div className="text-[10px] text-muted-foreground">
@@ -2053,7 +2399,7 @@ export function RichEditor({
                       onClick={() => insertToggleBlock("heading_1")}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/50"
                     >
-                      <ChevronRight className="h-4 w-4 text-indigo-400 shrink-0" />
+                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div>
                         <div className="font-semibold">Toggle Heading 1</div>
                         <div className="text-[10px] text-muted-foreground">
@@ -2066,7 +2412,7 @@ export function RichEditor({
                       onClick={() => insertToggleBlock("heading_2")}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/50"
                     >
-                      <ChevronRight className="h-4 w-4 text-indigo-400 shrink-0" />
+                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div>
                         <div className="font-semibold">Toggle Heading 2</div>
                         <div className="text-[10px] text-muted-foreground">
@@ -2079,7 +2425,7 @@ export function RichEditor({
                       onClick={() => insertToggleBlock("heading_3")}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/50"
                     >
-                      <ChevronRight className="h-4 w-4 text-indigo-400 shrink-0" />
+                      <ChevronRight className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div>
                         <div className="font-semibold">Toggle Heading 3</div>
                         <div className="text-[10px] text-muted-foreground">
@@ -2152,7 +2498,7 @@ export function RichEditor({
                       onClick={insertQuoteBlock}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/50"
                     >
-                      <Quote className="h-4 w-4 text-indigo-300 shrink-0" />
+                      <Quote className="h-4 w-4 text-foreground shrink-0" />
                       <div>
                         <div className="font-semibold">Quote block</div>
                         <div className="text-[10px] text-muted-foreground">
@@ -2207,7 +2553,7 @@ export function RichEditor({
                       onClick={insertBookmarkBlock}
                       className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/50"
                     >
-                      <Bookmark className="h-4 w-4 text-indigo-400 shrink-0" />
+                      <Bookmark className="h-4 w-4 text-muted-foreground shrink-0" />
                       <div>
                         <div className="font-semibold">Web Bookmark</div>
                         <div className="text-[10px] text-muted-foreground">
@@ -2270,8 +2616,8 @@ export function RichEditor({
 
         {/* SELECTED IMAGE RESIZE & CAPTION BAR */}
         {selectedImg && !readOnly && (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-500/30 bg-indigo-500/10 px-3 py-1.5 text-xs">
-            <span className="text-[11px] font-medium text-indigo-300">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-500/30 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10 px-3 py-1.5 text-xs">
+            <span className="text-[11px] font-medium text-foreground">
               Image selected:
             </span>
             <div className="flex items-center gap-1.5">
@@ -2283,7 +2629,7 @@ export function RichEditor({
                     selectedImg.style.width = w;
                     emitChange();
                   }}
-                  className="rounded bg-[#161822] px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-indigo-600 hover:text-white"
+                  className="rounded bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:text-white"
                 >
                   {w}
                 </button>
@@ -2306,7 +2652,7 @@ export function RichEditor({
                     }
                   }
                 }}
-                className="rounded bg-[#161822] px-2 py-0.5 text-[11px] font-medium text-indigo-300 hover:bg-indigo-600 hover:text-white"
+                className="rounded bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:text-white"
               >
                 + Caption
               </button>
@@ -2329,14 +2675,14 @@ export function RichEditor({
         )}
 
         {/* WYSIWYG EDITABLE SURFACE WITH NOTION LINE-BY-LINE BLOCK GUTTER & CONTEXT MENU */}
-        <div className="relative">
+        <div className="relative flex-1">
           {!readOnly && hoveredBlock && (
             <div
               style={{
                 top: hoveredBlock.top,
                 left: hoveredBlock.left,
               }}
-              className="tz-gutter-controls absolute z-30 flex items-center gap-0.5 rounded-md bg-[#161822]/95 px-1 py-0.5 border border-white/10 shadow-md transition-all duration-75"
+              className="tz-gutter-controls absolute z-30 flex items-center gap-0.5 rounded-md bg-white dark:bg-card/95 px-1 py-0.5 border border-border shadow-md transition-all duration-75"
               contentEditable={false}
             >
               <button
@@ -2361,7 +2707,7 @@ export function RichEditor({
 
               {/* NOTION BLOCK ACTION MENU (OPENS ON CLICKING ⋮⋮) */}
               {blockMenuOpen && (
-                <div className="absolute left-0 top-full mt-1 w-52 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl z-50 text-xs space-y-0.5">
+                <div className="absolute left-0 top-full mt-1 w-52 rounded-xl border border-slate-200 dark:border-border/80 bg-card p-1.5 shadow-2xl z-50 text-xs space-y-0.5">
                   <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                     Block Actions
                   </div>
@@ -2370,7 +2716,7 @@ export function RichEditor({
                     onClick={duplicateHoveredBlock}
                     className="flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-foreground hover:bg-secondary/60"
                   >
-                    <Copy className="h-3.5 w-3.5 text-indigo-400" />
+                    <Copy className="h-3.5 w-3.5 text-muted-foreground" />
                     <span>Duplicate block</span>
                   </button>
                   <button
@@ -2427,7 +2773,7 @@ export function RichEditor({
                 width: dropIndicator.rect.width,
                 height: 3,
               }}
-              className="pointer-events-none absolute z-40 rounded-full bg-indigo-500 shadow-[0_0_10px_#6366f1]"
+              className="pointer-events-none absolute z-40 rounded-full bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 shadow-[0_0_10px_#6366f1]"
             />
           )}
 
@@ -2460,11 +2806,8 @@ export function RichEditor({
           onPaste={handlePaste}
           onDrop={handleDrop}
           onKeyDown={handleKeyDown}
-          style={{
-            minHeight: fullscreen ? "calc(100vh - 150px)" : minHeight,
-            fontSize: `${fontSize}px`,
-          }}
-          className="tz-rich-content p-4 text-sm overflow-y-auto"
+          style={{ minHeight: fullscreen ? "calc(100vh - 140px)" : minHeight, fontSize: `${fontSize}px` }}
+          className="tz-rich-content p-4 md:p-6 text-sm overflow-y-auto"
         />
         </div>
 
@@ -2472,7 +2815,7 @@ export function RichEditor({
         {slashMenu.open && (
           <div
             style={{ left: slashMenu.x, top: slashMenu.y }}
-            className="absolute z-50 w-68 rounded-xl border border-border/80 bg-[#161822] p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95"
+            className="absolute z-50 w-68 rounded-xl border border-slate-200 dark:border-border/80 bg-card p-1.5 shadow-2xl animate-in fade-in-50 zoom-in-95"
           >
             <div className="flex items-center justify-between px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               <span>Notion Blocks</span>
@@ -2520,7 +2863,7 @@ export function RichEditor({
               alt={`Fullscreen ${lightbox.currentIndex + 1}`}
               className="max-w-full max-h-[88vh] object-contain rounded-lg shadow-2xl select-none"
             />
-            <div className="mt-3 flex items-center gap-4 text-xs font-semibold text-white/80 bg-black/60 px-4 py-1.5 rounded-full border border-white/10">
+            <div className="mt-3 flex items-center gap-4 text-xs font-semibold text-white/80 bg-black/60 px-4 py-1.5 rounded-full border border-border">
               <button
                 type="button"
                 onClick={() =>
@@ -2558,10 +2901,10 @@ export function RichEditor({
       {/* SAVE TEMPLATE MODAL */}
       {newTemplateModal && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-sm rounded-xl border border-border/80 bg-[#161822] p-5 space-y-4 shadow-2xl">
+          <div className="w-full max-w-sm rounded-xl border border-slate-200 dark:border-border/80 bg-card p-5 space-y-4 shadow-2xl">
             <div className="flex items-center justify-between">
               <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
-                <FolderPlus className="h-4 w-4 text-indigo-400" />
+                <FolderPlus className="h-4 w-4 text-muted-foreground" />
                 <span>Save current note as template</span>
               </h4>
               <button
@@ -2616,7 +2959,7 @@ export function RichEditor({
               <button
                 type="button"
                 onClick={handleSaveCustomTemplate}
-                className="rounded-lg bg-[#6366f1] hover:bg-[#4f46e5] px-3.5 py-1.5 text-xs font-semibold text-white"
+                className="rounded-lg bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border px-3.5 py-1.5 text-xs font-semibold text-white"
               >
                 Save template
               </button>
@@ -2690,11 +3033,11 @@ function renderMarkdownOrHtml(raw: string): string {
     .replace(/\*(.+?)\*/g, "<em>$1</em>")
     .replace(
       /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-      '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-indigo-400 underline">$1</a>'
+      '<a href="$2" target="_blank" rel="noopener noreferrer" class="text-muted-foreground underline">$1</a>'
     )
     .replace(
       /(^|[\s>])(https?:\/\/[^\s<]+)/g,
-      '$1<a href="$2" target="_blank" rel="noopener noreferrer" class="text-indigo-400 underline">$2</a>'
+      '$1<a href="$2" target="_blank" rel="noopener noreferrer" class="text-muted-foreground underline">$2</a>'
     );
 }
 

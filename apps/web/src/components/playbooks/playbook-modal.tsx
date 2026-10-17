@@ -263,7 +263,7 @@ export function PlaybookModal({
                             setIconPickerOpen(false);
                           }}
                           className={`flex h-8 w-8 items-center justify-center rounded-lg text-base hover:bg-secondary/60 ${
-                            icon === ic ? "bg-indigo-600/30 ring-1 ring-indigo-500" : ""
+                            icon === ic ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 ring-1 ring-indigo-500" : ""
                           }`}
                         >
                           {ic}
@@ -300,7 +300,7 @@ export function PlaybookModal({
                       onClick={() => toggleTag(tg)}
                       className={`rounded-full border px-2.5 py-1 text-[11px] font-medium transition-colors ${
                         active
-                          ? "border-indigo-500/60 bg-indigo-500/20 text-indigo-300"
+                          ? "border-border bg-secondary/70 text-foreground"
                           : "border-border/60 bg-[#161822] text-muted-foreground hover:text-foreground"
                       }`}
                     >
@@ -347,7 +347,7 @@ export function PlaybookModal({
                 type="button"
                 size="sm"
                 onClick={addRuleGroup}
-                className="bg-[#6366f1] hover:bg-[#4f46e5] text-white text-xs font-semibold h-8 px-3.5"
+                className="bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border text-xs font-semibold h-8 px-3.5"
               >
                 Add rule group
               </Button>
@@ -422,7 +422,7 @@ export function PlaybookModal({
                     <button
                       type="button"
                       onClick={() => addRuleToGroup(group.id)}
-                      className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-semibold text-indigo-400 hover:text-indigo-300 transition-colors"
+                      className="inline-flex items-center gap-1.5 px-2 py-1 text-xs font-semibold text-muted-foreground hover:text-foreground transition-colors"
                     >
                       <Plus className="h-3.5 w-3.5" />
                       <span>Add rule</span>
@@ -448,7 +448,7 @@ export function PlaybookModal({
               type="submit"
               size="sm"
               disabled={saving}
-              className="bg-[#6366f1] hover:bg-[#4f46e5] text-white text-xs font-semibold h-9 px-5"
+              className="bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border text-xs font-semibold h-9 px-5"
             >
               {saving
                 ? "Saving..."

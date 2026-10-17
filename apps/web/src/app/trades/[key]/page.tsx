@@ -45,7 +45,6 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
-import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import { RuleChecklist } from "@/components/rule-checklist";
 import { TradeTagsEditor } from "@/components/tags/trade-tags-editor";
@@ -412,7 +411,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
           {!leftCollapsed && !rightCollapsed && (
             <div
               onMouseDown={handleMouseDown}
-              className="hidden lg:flex w-2 cursor-col-resize items-center justify-center hover:bg-indigo-500/30 transition-colors group z-10"
+              className="hidden lg:flex w-2 cursor-col-resize items-center justify-center hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 transition-colors group z-10"
               title="Drag to resize split"
             >
               <div className="h-12 w-1 rounded-full bg-border/60 group-hover:bg-indigo-400 transition-colors" />
@@ -687,7 +686,7 @@ function AnnotationsCard({
               ],
             }}
           />
-          <Attachments type="trade" id={trade.key} />
+          
         </div>
       </CardContent>
     </Card>

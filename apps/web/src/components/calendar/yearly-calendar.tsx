@@ -175,13 +175,13 @@ export function YearlyCalendar() {
         </div>
 
         {/* Metric Mode Segmented Buttons */}
-        <div className="flex items-center rounded-lg border border-border/50 bg-[#1a1d26] p-0.5 text-xs">
+        <div className="flex items-center rounded-lg border border-border/50 bg-secondary/50 p-0.5 text-xs">
           <button
             type="button"
             onClick={() => setMetric("winrate")}
             className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
               metric === "winrate"
-                ? "bg-[#4f46e5] text-white shadow-sm"
+                ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -192,7 +192,7 @@ export function YearlyCalendar() {
             onClick={() => setMetric("pnl")}
             className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
               metric === "pnl"
-                ? "bg-[#4f46e5] text-white shadow-sm"
+                ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -203,7 +203,7 @@ export function YearlyCalendar() {
             onClick={() => setMetric("trades")}
             className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
               metric === "trades"
-                ? "bg-[#4f46e5] text-white shadow-sm"
+                ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -228,7 +228,7 @@ export function YearlyCalendar() {
                 return (
                   <div
                     key={q.label}
-                    className="col-span-3 flex items-center justify-center gap-1.5 rounded-lg border border-border/30 bg-[#161820]/40 px-2 py-1.5 text-center text-[11px] text-muted-foreground/40 font-medium select-none"
+                    className="col-span-3 flex items-center justify-center gap-1.5 rounded-lg border border-border/30 bg-secondary/50/40 px-2 py-1.5 text-center text-[11px] text-muted-foreground/40 font-medium select-none"
                   >
                     <span>{q.label}</span>
                     <span>--</span>
@@ -239,15 +239,15 @@ export function YearlyCalendar() {
               return (
                 <div
                   key={q.label}
-                  className="col-span-3 flex items-center justify-center gap-1.5 rounded-lg border border-border/50 bg-[#181a22] px-2 py-1.5 text-center text-[11px] font-medium shadow-sm select-none whitespace-nowrap"
+                  className="col-span-3 flex items-center justify-center gap-1.5 rounded-lg border border-border/50 bg-secondary/50 px-2 py-1.5 text-center text-[11px] font-medium shadow-sm select-none whitespace-nowrap"
                 >
                   <span className="font-semibold text-foreground">{q.label}</span>
                   <span
                     className={`font-bold ${
                       q.pnl > 0
-                        ? "text-emerald-400"
+                        ? "text-profit"
                         : q.pnl < 0
-                        ? "text-rose-400"
+                        ? "text-loss"
                         : "text-foreground"
                     }`}
                   >
@@ -280,7 +280,7 @@ export function YearlyCalendar() {
             ))}
 
             {/* ROW 3: Year Card with Full-Year Stats */}
-            <div className="flex min-h-[90px] flex-col items-center justify-center rounded-xl border border-border/50 bg-[#161820] p-1 text-center shadow-sm select-none">
+            <div className="flex min-h-[90px] flex-col items-center justify-center rounded-xl border border-border/50 bg-secondary/50 p-1 text-center shadow-sm select-none">
               <span className="text-xs font-bold text-foreground tracking-tight">{year}</span>
               {yearTotal.trades > 0 ? (
                 <>
@@ -289,9 +289,9 @@ export function YearlyCalendar() {
                       <span
                         className={`text-xs sm:text-sm font-bold tracking-tight mt-0.5 ${
                           yearTotal.pnl > 0
-                            ? "text-emerald-400"
+                            ? "text-profit"
                             : yearTotal.pnl < 0
-                            ? "text-rose-400"
+                            ? "text-loss"
                             : "text-foreground"
                         }`}
                       >
@@ -355,28 +355,28 @@ export function YearlyCalendar() {
                   <Link
                     key={m.month}
                     href={href}
-                    className="flex min-h-[90px] flex-col items-center justify-center rounded-xl border border-border/30 bg-[#161820]/80 text-xs font-medium text-muted-foreground/50 transition-all hover:border-border/60 hover:bg-secondary/20"
+                    className="flex min-h-[90px] flex-col items-center justify-center rounded-xl border border-border/30 bg-secondary/50/80 text-xs font-medium text-muted-foreground/50 transition-all hover:border-border/60 hover:bg-secondary/20"
                   >
                     --
                   </Link>
                 );
               }
 
-              let bgClasses = "border-transparent text-white";
+              let bgClasses = "border-transparent text-foreground";
               if (metric === "pnl") {
                 bgClasses += isNegative
                   ? " bg-[#df5656] hover:bg-[#d44848]"
                   : isPositive
-                  ? " bg-[#22c55e] hover:bg-[#16a34a]"
+                  ? " bg-secondary/40 hover:bg-secondary/50"
                   : " bg-secondary/50 text-foreground";
               } else if (metric === "winrate") {
                 const winRate = m.winRate ?? 0;
                 bgClasses +=
                   winRate >= 50
-                    ? " bg-[#22c55e] hover:bg-[#16a34a]"
+                    ? " bg-secondary/40 hover:bg-secondary/50"
                     : " bg-[#df5656] hover:bg-[#d44848]";
               } else {
-                bgClasses += " bg-[#4f46e5] hover:bg-[#4338ca]";
+                bgClasses += " bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border";
               }
 
               return (

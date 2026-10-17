@@ -369,7 +369,7 @@ function PlaybookDetailContent() {
         <div className="flex items-center gap-1.5 text-xs">
           <Link
             href="/playbooks"
-            className="font-medium text-indigo-400 hover:underline"
+            className="font-medium text-muted-foreground hover:underline"
           >
             Strategies
           </Link>
@@ -528,7 +528,7 @@ function PlaybookDetailContent() {
                   onClick={() => setActiveTab(key)}
                   className={`relative pb-3 text-xs font-semibold transition-colors ${
                     activeTab === key
-                      ? "text-indigo-400 after:absolute after:bottom-[-13px] after:left-0 after:right-0 after:h-0.5 after:bg-indigo-500"
+                      ? "text-muted-foreground after:absolute after:bottom-[-13px] after:left-0 after:right-0 after:h-0.5 after:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -850,7 +850,7 @@ function PlaybookDetailContent() {
                         type="button"
                         size="sm"
                         onClick={() => handleAddRule(group.id)}
-                        className="h-8 bg-[#6366f1] text-white text-xs"
+                        className="h-8 bg-secondary text-foreground font-semibold border border-border text-xs"
                       >
                         Add
                       </Button>
@@ -907,7 +907,7 @@ function PlaybookDetailContent() {
                         type="button"
                         size="sm"
                         onClick={handleAddRuleGroup}
-                        className="bg-[#6366f1] text-white text-xs"
+                        className="bg-secondary text-foreground font-semibold border border-border text-xs"
                       >
                         Create Group
                       </Button>
@@ -928,7 +928,7 @@ function PlaybookDetailContent() {
                   onClick={() => setTradesSubTab("executed")}
                   className={`rounded-md px-3.5 py-1.5 text-xs font-semibold transition-all ${
                     tradesSubTab === "executed"
-                      ? "bg-[#4f46e5] text-white"
+                      ? "bg-secondary text-foreground font-semibold border border-border"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -939,7 +939,7 @@ function PlaybookDetailContent() {
                   onClick={() => setTradesSubTab("missed")}
                   className={`rounded-md px-3.5 py-1.5 text-xs font-semibold transition-all ${
                     tradesSubTab === "missed"
-                      ? "bg-[#4f46e5] text-white"
+                      ? "bg-secondary text-foreground font-semibold border border-border"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -1051,7 +1051,7 @@ function PlaybookDetailContent() {
                 <button
                   type="button"
                   onClick={handleCreateNote}
-                  className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-indigo-400 hover:bg-indigo-500/10 transition-colors"
+                  className="flex w-full items-center gap-1.5 rounded-lg px-3 py-2 text-xs font-semibold text-muted-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10 transition-colors"
                 >
                   <Plus className="h-4 w-4" />
                   <span>Add note</span>
@@ -1112,7 +1112,7 @@ function PlaybookDetailContent() {
                           type="button"
                           size="sm"
                           onClick={() => handleSaveCurrentNote(noteTitle, noteContent)}
-                          className="h-7 bg-[#6366f1] text-white text-xs"
+                          className="h-7 bg-secondary text-foreground font-semibold border border-border text-xs"
                         >
                           Save note
                         </Button>

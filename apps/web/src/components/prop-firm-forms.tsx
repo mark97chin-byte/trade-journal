@@ -649,7 +649,7 @@ function Detail({ modal, data }: Props & { modal: Extract<PropModal, { kind: "de
           )}
         </>
       )}
-      <Attachments type={modal.type === "account" ? "prop-account" : "prop-entry"} id={modal.id} />
+      
       <details>
         <summary className="cursor-pointer text-sm">Edit history · latest 100 changes</summary>
         <div className="mt-3 space-y-3">

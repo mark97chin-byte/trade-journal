@@ -287,7 +287,7 @@ export function RunningPnlChart({
                   metrics.efficiency >= 100
                     ? "border-emerald-500/50 bg-emerald-500/10 text-emerald-400"
                     : metrics.efficiency >= 70
-                    ? "border-indigo-500/50 bg-indigo-500/10 text-indigo-300"
+                    ? "border-border bg-secondary/70 text-foreground"
                     : "border-rose-500/50 bg-rose-500/10 text-rose-400"
                 }`}
               >

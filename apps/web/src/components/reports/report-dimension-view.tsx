@@ -71,7 +71,7 @@ export function ReportDimensionView({
     <div className="space-y-6">
       {/* 1. TOP 4 HIGHLIGHT CARDS */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4 shadow-sm">
           <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
             <TrendingUp className="h-4 w-4" />
             <span>Best performing {unitLabel}</span>
@@ -85,7 +85,7 @@ export function ReportDimensionView({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4 shadow-sm">
           <div className="flex items-center gap-1.5 text-xs text-rose-400 font-medium">
             <TrendingDown className="h-4 w-4" />
             <span>Least performing {unitLabel}</span>
@@ -99,7 +99,7 @@ export function ReportDimensionView({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4 shadow-sm">
           <div className="flex items-center gap-1.5 text-xs text-amber-400 font-medium">
             <Zap className="h-4 w-4" />
             <span>Most active {unitLabel}</span>
@@ -110,8 +110,8 @@ export function ReportDimensionView({
           </div>
         </div>
 
-        <div className="rounded-xl border border-border/50 bg-[#161822] p-4 shadow-sm">
-          <div className="flex items-center gap-1.5 text-xs text-indigo-400 font-medium">
+        <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4 shadow-sm">
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
             <Trophy className="h-4 w-4" />
             <span>Best win rate</span>
           </div>
@@ -141,7 +141,7 @@ export function ReportDimensionView({
       {extraSection}
 
       {/* 3. SUMMARY TABLE */}
-      <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 shadow-sm">
+      <div className="rounded-xl border border-border/50 bg-card p-4 shadow-sm">
         <div className="flex items-center justify-between pb-3">
           <h3 className="text-sm font-semibold text-foreground">Summary</h3>
           <button type="button" className="text-muted-foreground hover:text-foreground">
@@ -151,7 +151,7 @@ export function ReportDimensionView({
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="border-b border-border/40 text-muted-foreground">
+            <thead className="border-b border-slate-200 dark:border-border/40 text-muted-foreground">
               <tr>
                 <th className="py-2.5 font-medium">{title}</th>
                 {showCategoryCol && <th className="py-2.5 font-medium">Category</th>}
@@ -222,17 +222,17 @@ export function ReportDimensionView({
 
       {/* 4. CROSS ANALYSIS MATRIX */}
       {cross && cross.columns.length > 0 && (
-        <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 shadow-sm">
+        <div className="rounded-xl border border-border/50 bg-card p-4 shadow-sm">
           <div className="flex flex-wrap items-center justify-between gap-3 pb-3">
             <h3 className="text-sm font-semibold text-foreground">Cross analysis</h3>
 
-            <div className="flex items-center rounded-lg border border-border/50 bg-[#161822] p-0.5 text-xs">
+            <div className="flex items-center rounded-lg border border-border/50 bg-slate-50 dark:bg-card p-0.5 text-xs">
               <button
                 type="button"
                 onClick={() => setCrossMetric("winrate")}
                 className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
                   crossMetric === "winrate"
-                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -243,7 +243,7 @@ export function ReportDimensionView({
                 onClick={() => setCrossMetric("pnl")}
                 className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
                   crossMetric === "pnl"
-                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -254,7 +254,7 @@ export function ReportDimensionView({
                 onClick={() => setCrossMetric("trades")}
                 className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
                   crossMetric === "trades"
-                    ? "bg-[#4f46e5] text-white shadow-sm"
+                    ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -265,7 +265,7 @@ export function ReportDimensionView({
 
           <div className="overflow-x-auto">
             <table className="w-full text-center text-xs">
-              <thead className="border-b border-border/40 text-muted-foreground">
+              <thead className="border-b border-slate-200 dark:border-border/40 text-muted-foreground">
                 <tr>
                   <th className="py-2.5 text-left font-medium"></th>
                   {cross.columns.map((c) => (
@@ -300,7 +300,7 @@ export function ReportDimensionView({
                               ? "bg-emerald-500/25 text-emerald-300 font-semibold"
                               : "bg-rose-500/25 text-rose-300 font-semibold";
                         } else {
-                          cellBg = "bg-indigo-500/20 text-indigo-300 font-semibold";
+                          cellBg = "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/20 text-foreground font-semibold";
                         }
                       } else {
                         cellBg = "text-muted-foreground/60";

@@ -1,6 +1,8 @@
 import { parse, HTMLElement, Node } from "node-html-parser";
 import fs from "fs";
 import path from "path";
+import crypto from "crypto";
+import sharp from "sharp";
 import { eq } from "drizzle-orm";
 import { db, attachments } from "@/db";
 
@@ -38,6 +40,93 @@ async function notionFetch(endpoint: string, token: string, options: RequestInit
   return res.json();
 }
 
+// Download remote Notion image (temporary S3 or external URL) and convert to local WebP
+async function downloadAndSaveNotionImage(remoteUrl: string, slug?: string): Promise<{ id: string; localUrl: string } | null> {
+  try {
+    const res = await fetch(remoteUrl, {
+      headers: { "User-Agent": "TradeJournalSync/1.0" },
+    });
+    if (!res.ok) {
+      console.warn(`[Notion Pull] Failed to fetch image: ${res.status}`);
+      return null;
+    }
+
+    const arrayBuf = await res.arrayBuffer();
+    const inputBuffer = Buffer.from(arrayBuf);
+    const webpBuffer = await sharp(inputBuffer).webp({ quality: 90 }).toBuffer();
+
+    const attId = crypto.randomBytes(8).toString("base64url");
+    const fileName = `${attId}.webp`;
+    const targetSlug = slug || "general";
+    const ownerType = targetSlug.startsWith("week-")
+      ? "week"
+      : targetSlug.startsWith("month-")
+      ? "month"
+      : targetSlug.startsWith("quarter-")
+      ? "quarter"
+      : targetSlug.startsWith("year-")
+      ? "year"
+      : "day";
+    const nowIso = new Date().toISOString();
+
+    const storageDirs = [
+      path.join(process.cwd(), "apps", "web", "data", "attachments"),
+      path.join(process.cwd(), "data", "attachments"),
+      path.join(process.cwd(), "..", "data", "attachments"),
+    ];
+
+    for (const dir of storageDirs) {
+      try {
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        fs.writeFileSync(path.join(dir, fileName), webpBuffer);
+      } catch {}
+    }
+
+    try {
+      const rawDb = (db as any).session?.client || (db as any).$client;
+      if (rawDb?.prepare) {
+        const tableInfo = rawDb.prepare("PRAGMA table_info(attachments)").all() as Array<{
+          name: string;
+          type: string;
+          notnull: number;
+          dflt_value: any;
+        }>;
+
+        const rowData: Record<string, any> = {};
+        for (const col of tableInfo) {
+          const cname = col.name;
+          const clower = cname.toLowerCase();
+          if (clower === "id") rowData[cname] = attId;
+          else if (["owner_type", "ownertype", "type"].includes(clower)) rowData[cname] = ownerType;
+          else if (["owner_id", "ownerid", "journal_entry_slug", "journalentryslug", "slug"].includes(clower)) rowData[cname] = targetSlug;
+          else if (["name", "filename", "file_name", "original_name", "originalname", "title"].includes(clower)) rowData[cname] = fileName;
+          else if (["file_path", "filepath", "path", "storage_path", "storagepath", "url"].includes(clower)) rowData[cname] = fileName;
+          else if (["mime_type", "mimetype", "content_type", "contenttype"].includes(clower)) rowData[cname] = "image/webp";
+          else if (["size", "file_size", "filesize", "bytes", "byte_size"].includes(clower)) rowData[cname] = webpBuffer.length;
+          else if (["data", "blob", "content", "buffer"].includes(clower)) rowData[cname] = webpBuffer;
+          else if (clower.includes("created") || clower.includes("updated") || clower.includes("date") || clower.endsWith("_at")) rowData[cname] = nowIso;
+          else if (col.notnull && col.dflt_value === null) {
+            rowData[cname] = col.type.toUpperCase().includes("INT") || col.type.toUpperCase().includes("NUM") ? 0 : "";
+          }
+        }
+
+        const activeCols = Object.keys(rowData);
+        const placeholders = activeCols.map(() => "?").join(", ");
+        const vals = activeCols.map((c) => rowData[c]);
+        rawDb.prepare(`INSERT OR REPLACE INTO attachments (${activeCols.join(", ")}) VALUES (${placeholders})`).run(...vals);
+      }
+    } catch (rawErr) {
+      console.warn("[Notion Pull] Attachment DB insert warning:", rawErr);
+    }
+
+    console.log(`[Notion Pull] Saved local WebP attachment: /api/attachments/${attId}`);
+    return { id: attId, localUrl: `/api/attachments/${attId}` };
+  } catch (err) {
+    console.error("[Notion Pull] Error downloading Notion image:", err);
+    return null;
+  }
+}
+
 function searchFileRecursive(dir: string, pattern: string): string | null {
   if (!fs.existsSync(dir)) return null;
   const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -54,7 +143,6 @@ function searchFileRecursive(dir: string, pattern: string): string | null {
   return null;
 }
 
-// 3-Tier Local Attachment Binary Resolver
 async function getAttachmentBuffer(attId: string): Promise<{ buffer: Buffer; mimeType: string; fileName: string } | null> {
   try {
     const row = db.select().from(attachments).where(eq(attachments.id, attId)).get() as any;
@@ -130,18 +218,14 @@ async function getAttachmentBuffer(attId: string): Promise<{ buffer: Buffer; mim
           };
         }
       }
-    } catch {
-      // Continue
-    }
+    } catch {}
   }
 
   return null;
 }
 
-// Cache Notion file_upload IDs (reusable across attachments within Notion's 1-hour window or permanently once attached)
 const notionFileUploadCache = new Map<string, string>();
 
-// Upload binary file directly into Notion's private S3 storage via /v1/file_uploads
 async function uploadToNotionNativeStorage(attId: string, token: string): Promise<string | null> {
   if (!token) return null;
   if (notionFileUploadCache.has(attId)) {
@@ -155,7 +239,6 @@ async function uploadToNotionNativeStorage(attId: string, token: string): Promis
   }
 
   try {
-    // Step 1: Create a File Upload object in Notion
     const createRes = await fetch("https://api.notion.com/v1/file_uploads", {
       method: "POST",
       headers: {
@@ -170,18 +253,11 @@ async function uploadToNotionNativeStorage(attId: string, token: string): Promis
       }),
     });
 
-    if (!createRes.ok) {
-      const errText = await createRes.text();
-      console.error(`[Notion Native Upload] Step 1 create failed (${createRes.status}):`, errText);
-      return null;
-    }
-
+    if (!createRes.ok) return null;
     const uploadObj = await createRes.json();
     const fileUploadId = uploadObj.id;
     if (!fileUploadId) return null;
 
-    // Step 2: Transmit binary contents via multipart/form-data to /v1/file_uploads/{id}/send
-    // IMPORTANT: Do NOT set Content-Type manually so fetch attaches the multipart boundary automatically!
     const formData = new FormData();
     const blob = new Blob([new Uint8Array(fileData.buffer)], { type: fileData.mimeType });
     formData.append("file", blob, fileData.fileName);
@@ -195,17 +271,10 @@ async function uploadToNotionNativeStorage(attId: string, token: string): Promis
       body: formData,
     });
 
-    if (!sendRes.ok) {
-      const errText = await sendRes.text();
-      console.error(`[Notion Native Upload] Step 2 send failed (${sendRes.status}):`, errText);
-      return null;
-    }
-
-    console.log(`[Notion Native Upload] Uploaded ${attId} directly to Notion Private Storage (id: ${fileUploadId})`);
+    if (!sendRes.ok) return null;
     notionFileUploadCache.set(attId, fileUploadId);
     return fileUploadId;
   } catch (err) {
-    console.error("[Notion Native Upload] Exception:", err);
     return null;
   }
 }
@@ -271,7 +340,8 @@ function richTextToHtml(richTextArr: any[] = []): string {
     .join("");
 }
 
-export function notionBlocksToHtml(blocks: any[]): string {
+// Convert Notion Block Tree -> RichEditor HTML (Async for Local WebP Image Ingestion)
+export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<string> {
   if (!blocks || !blocks.length) return "";
   const out: string[] = [];
 
@@ -282,7 +352,7 @@ export function notionBlocksToHtml(blocks: any[]): string {
     const colorClass = color ? ` tz-color-${color}` : "";
     const colorAttr = color ? ` data-notion-color="${color}"` : "";
     const textHtml = richTextToHtml(data.rich_text);
-    const childrenHtml = b.children ? notionBlocksToHtml(b.children) : "";
+    const childrenHtml = b.children ? await notionBlocksToHtml(b.children, slug) : "";
 
     if (type === "paragraph") {
       if (color && color.endsWith("_background")) {
@@ -292,7 +362,12 @@ export function notionBlocksToHtml(blocks: any[]): string {
       } else {
         out.push(`<p class="${colorClass.trim()}"${colorAttr}>${textHtml || "<br/>"}</p>`);
       }
-    } else if (type === "heading_1" || type === "heading_2" || type === "heading_3") {
+    } else if (
+      type === "heading_1" ||
+      type === "heading_2" ||
+      type === "heading_3" ||
+      type === "heading_4"
+    ) {
       const level = type.slice(-1);
       if (data.is_toggleable || (b.children && b.children.length > 0)) {
         out.push(`
@@ -355,21 +430,31 @@ export function notionBlocksToHtml(blocks: any[]): string {
       out.push(`<hr class="tz-divider" data-notion-type="divider" />`);
     } else if (type === "column_list") {
       const cols = b.children || [];
-      const colsHtml = cols
-        .map((col: any) => {
-          const colInner = col.children ? notionBlocksToHtml(col.children) : '<p data-placeholder="Column..."></p>';
-          return `<div class="tz-column" data-notion-type="column">${colInner}</div>`;
-        })
-        .join("");
+      const colDivs: string[] = [];
+      for (const col of cols) {
+        const colInner = col.children
+          ? await notionBlocksToHtml(col.children, slug)
+          : '<p data-placeholder="Column..."></p>';
+        colDivs.push(`<div class="tz-column" data-notion-type="column">${colInner}</div>`);
+      }
       out.push(
-        `<div class="tz-column-list" data-notion-type="column_list" data-columns="${cols.length || 2}">${colsHtml}</div>`
+        `<div class="tz-column-list" data-notion-type="column_list" data-columns="${cols.length || 2}">${colDivs.join("")}</div>`
       );
     } else if (type === "image") {
-      const url = data.file?.url || data.external?.url || "";
-      if (url) {
+      const remoteUrl = data.file?.url || data.external?.url || "";
+      if (remoteUrl) {
+        let finalSrc = remoteUrl;
+        let attAttr = "";
+
+        const localAtt = await downloadAndSaveNotionImage(remoteUrl, slug);
+        if (localAtt) {
+          finalSrc = localAtt.localUrl;
+          attAttr = ` data-attachment-id="${localAtt.id}"`;
+        }
+
         out.push(`
-          <figure class="tz-figure" data-notion-type="image">
-            <img src="${url}" alt="Notion chart" class="tz-editor-img" style="max-width: 100%; width: 100%; border-radius: 8px; margin: 6px 0;" />
+          <figure class="tz-figure" data-notion-type="image"${attAttr}>
+            <img src="${finalSrc}" alt="Chart" class="tz-editor-img" style="max-width: 100%; width: 100%; border-radius: 8px; margin: 6px 0;" />
           </figure>
         `);
       }
@@ -446,14 +531,13 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
       return { object: "block", type: "divider", divider: {} };
     }
 
-    // 2. Image / Figure -> Native Notion Private S3 Upload (/v1/file_uploads)
     if (tag === "FIGURE" || tag === "IMG" || el.classList.contains("tz-figure")) {
       const imgEl = tag === "IMG" ? el : el.querySelector("img");
       if (!imgEl) return null;
       const src = imgEl.getAttribute("src") || "";
       const attId =
         el.getAttribute("data-attachment-id") ||
-        (src.includes("/api/attachments/") ? (src.split("/api/attachments/")[1]?.split("?")[0] ?? "") : "");
+        (src.includes("/api/attachments/") ? src.split("/api/attachments/")[1]?.split("?")[0] ?? "" : "");
 
       if (attId && token) {
         const fileUploadId = await uploadToNotionNativeStorage(attId, token);
@@ -541,7 +625,7 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
       const children = bodyEl ? await parseNodes(bodyEl.childNodes) : [];
 
       const toggleKind = el.getAttribute("data-toggle-type") || el.getAttribute("data-notion-type") || "toggle";
-      if (toggleKind === "heading_1" || toggleKind === "heading_2" || toggleKind === "heading_3") {
+      if (toggleKind === "heading_1" || toggleKind === "heading_2" || toggleKind === "heading_3" || toggleKind === "heading_4") {
         return {
           object: "block",
           type: toggleKind,
@@ -700,7 +784,7 @@ export async function appendBlocksTreeRecursive(parentId: string, treeNodes: any
       });
     } catch (err: any) {
       if (err.message && err.message.includes("column_list")) {
-        console.warn("[Notion Sync] Nested column_list inside toggle rejected by Notion API; unpacking to sequential blocks");
+        console.warn("[Notion Sync] Unpacking nested column_list inside child container");
         const fallbackChildren: any[] = [];
         for (const node of chunk) {
           if (node.type === "column_list" && Array.isArray(node._children)) {
@@ -764,9 +848,14 @@ export async function findNotionPageInDb(databaseId: string, token: string, slug
     }
   }
 
-  const filter =
+  const filter: any =
     "Slug" in props && props["Slug"].type === "rich_text"
-      ? { property: "Slug", rich_text: { equals: slug } }
+      ? {
+          or: [
+            { property: "Slug", rich_text: { equals: slug } },
+            { property: titleProp, title: { contains: slug } },
+          ],
+        }
       : { property: titleProp, title: { contains: slug } };
 
   const queryRes = await notionFetch(`/databases/${databaseId}/query`, token, {

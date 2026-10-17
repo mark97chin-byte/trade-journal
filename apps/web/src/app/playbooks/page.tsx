@@ -92,7 +92,7 @@ function PlaybooksContent() {
               setEditingPlaybook(null);
               setModalOpen(true);
             }}
-            className="bg-[#6366f1] hover:bg-[#4f46e5] text-white text-xs font-semibold h-9 px-4 gap-1.5 shadow-sm"
+            className="bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border text-xs font-semibold h-9 px-4 gap-1.5 shadow-sm"
           >
             <Plus className="h-4 w-4" />
             <span>New playbook</span>
@@ -168,7 +168,7 @@ function PlaybooksContent() {
 
             {/* Best win rate */}
             <div className="rounded-xl border border-border/50 bg-[#12141a] p-4 shadow-sm">
-              <div className="flex items-center gap-1.5 text-xs text-indigo-400 font-medium">
+              <div className="flex items-center gap-1.5 text-xs text-muted-foreground font-medium">
                 <Trophy className="h-3.5 w-3.5" />
                 <span>Best win rate</span>
               </div>
@@ -193,7 +193,7 @@ function PlaybooksContent() {
               onClick={() => setViewMode("grid")}
               className={`rounded p-1.5 transition-colors ${
                 viewMode === "grid"
-                  ? "text-indigo-400 bg-indigo-500/10"
+                  ? "text-muted-foreground bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10"
                   : "text-muted-foreground hover:text-foreground"
               }`}
               title="Grid view"
@@ -205,7 +205,7 @@ function PlaybooksContent() {
               onClick={() => setViewMode("table")}
               className={`rounded p-1.5 transition-colors ${
                 viewMode === "table"
-                  ? "text-indigo-400 bg-indigo-500/10"
+                  ? "text-muted-foreground bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10"
                   : "text-muted-foreground hover:text-foreground"
               }`}
               title="List view"
@@ -412,7 +412,7 @@ function PlaybooksContent() {
                     <div className="flex items-center gap-2.5">
                       <span className="text-xl">{pb.icon}</span>
                       <div>
-                        <h3 className="text-sm font-bold text-foreground group-hover:text-indigo-400 transition-colors">
+                        <h3 className="text-sm font-bold text-foreground group-hover:text-muted-foreground transition-colors">
                           {pb.name}
                         </h3>
                         <p className="text-[11px] text-muted-foreground line-clamp-1">

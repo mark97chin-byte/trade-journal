@@ -20,10 +20,10 @@ import {
   ShieldCheck,
   TrendingUp,
   ArrowRight,
+  ArrowDownToLine,
 } from "lucide-react";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
 import { VoiceNote } from "@/components/voice-note";
-import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import type { JournalEntryRecord } from "@/server/journal-service";
 import type { JournalTrade } from "./journal-view";
@@ -469,6 +469,39 @@ export function JournalEntryEditor({
     }
   }, [range.periodType]);
 
+  const [pullingNotion, setPullingNotion] = useState(false);
+  const [editorKey, setEditorKey] = useState(0);
+
+  const handlePullFromNotion = useCallback(async () => {
+    setPullingNotion(true);
+    setSaveStatus(null);
+    try {
+      const res = await fetch(`/api/journal/${initialEntry.slug}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          pullFromNotion: true,
+          notionPageId: initialEntry.notionPageId,
+          title,
+        }),
+      });
+      const data = await res.json();
+      if (data.notionPulled && data.entry) {
+        setTitle(data.entry.title);
+        setContent(data.entry.content);
+        if (data.entry.notionUrl) setNotionUrl(data.entry.notionUrl);
+        setEditorKey((k) => k + 1);
+        setSaveStatus("Pulled latest content from Notion!");
+      } else {
+        setSaveStatus(data.notionError || "Could not pull from Notion");
+      }
+    } catch {
+      setSaveStatus("Error connecting to Notion");
+    } finally {
+      setPullingNotion(false);
+    }
+  }, [initialEntry.slug, initialEntry.notionPageId, title]);
+
   const handleSave = useCallback(
     async (syncNotion = false) => {
       if (syncNotion) setSyncingNotion(true);
@@ -554,13 +587,13 @@ export function JournalEntryEditor({
         <div className="flex flex-wrap items-center gap-2.5">
           <Link
             href="/journal"
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-[#161822] px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-secondary/50 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
             <span>Overview</span>
           </Link>
 
-          <div className="flex items-center rounded-lg border border-border/60 bg-[#161822] p-0.5">
+          <div className="flex items-center rounded-lg border border-border/60 bg-secondary/50 p-0.5">
             <button
               onClick={() => router.push(adjacentSlugs.prev)}
               title="Previous Period"
@@ -568,7 +601,7 @@ export function JournalEntryEditor({
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="px-2 text-xs font-bold uppercase tracking-wider text-indigo-400">
+            <span className="px-2 text-xs font-bold uppercase tracking-wider text-muted-foreground">
               {range.periodType}
             </span>
             <button
@@ -580,7 +613,7 @@ export function JournalEntryEditor({
             </button>
           </div>
 
-          <div className="flex flex-wrap items-center rounded-xl bg-[#161822] p-1 border border-border/60">
+          <div className="flex flex-wrap items-center rounded-xl bg-secondary/50 p-1 border border-border/60">
             {hierarchyLinks.map((link) => {
               const isActive = range.periodType === link.type;
               return (
@@ -589,7 +622,7 @@ export function JournalEntryEditor({
                   href={link.href}
                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
                     isActive
-                      ? "bg-indigo-600 text-white shadow"
+                      ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-foreground shadow"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -602,7 +635,7 @@ export function JournalEntryEditor({
 
         <div className="flex items-center gap-2">
           {saveStatus && (
-            <span className="text-xs text-emerald-400 flex items-center gap-1 mr-1">
+            <span className="text-xs text-profit flex items-center gap-1 mr-1">
               <CheckCircle2 className="w-3.5 h-3.5" />
               {saveStatus}
             </span>
@@ -613,7 +646,7 @@ export function JournalEntryEditor({
               href={notionUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-[#161822] px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-secondary/50 px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition"
             >
               <span>Open in Notion</span>
               <ExternalLink className="w-3.5 h-3.5" />
@@ -621,18 +654,28 @@ export function JournalEntryEditor({
           )}
 
           <button
+            type="button"
+            onClick={handlePullFromNotion}
+            disabled={pullingNotion || syncingNotion || saving}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition disabled:opacity-50"
+            title="Pull blocks & notes from Notion into this journal"
+          >
+            <ArrowDownToLine className="h-3.5 w-3.5" />
+            <span>{pullingNotion ? "Pulling..." : "Pull from Notion"}</span>
+          </button>
+          <button
             onClick={() => handleSave(true)}
             disabled={syncingNotion || saving}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-3 py-1.5 text-xs font-semibold text-indigo-200 transition disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition disabled:opacity-50"
           >
-            <CloudUpload className="w-3.5 h-3.5 text-indigo-400" />
+            <CloudUpload className="w-3.5 h-3.5 text-muted-foreground" />
             <span>{syncingNotion ? "Syncing Notion..." : "Sync to Notion"}</span>
           </button>
 
           <button
             onClick={() => handleSave(false)}
             disabled={saving || syncingNotion}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3.5 py-1.5 text-xs font-semibold text-white shadow transition disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 px-3.5 py-1.5 text-xs font-semibold text-foreground shadow transition disabled:opacity-50"
           >
             <Save className="w-3.5 h-3.5" />
             <span>{saving ? "Saving..." : "Save (Ctrl+S)"}</span>
@@ -642,9 +685,9 @@ export function JournalEntryEditor({
 
       {/* STATS BANNER */}
       <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm">
-        <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-border/40">
+        <div className="flex flex-wrap items-center justify-between gap-4 pb-3 border-b border-slate-200 dark:border-border/40">
           <div className="flex items-center gap-3">
-            <Calendar className="w-5 h-5 text-indigo-400" />
+            <Calendar className="w-5 h-5 text-muted-foreground" />
             <input
               value={title}
               onChange={(e) => setTitle(e.target.value)}
@@ -658,7 +701,7 @@ export function JournalEntryEditor({
               <span className="text-xs text-muted-foreground mr-1.5">Net P&L:</span>
               <span
                 className={`font-bold ${
-                  stats.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                  stats.netPnl >= 0 ? "text-profit" : "text-loss"
                 }`}
               >
                 {fmtCurrency(stats.netPnl)}
@@ -668,20 +711,20 @@ export function JournalEntryEditor({
               <span className="text-xs text-muted-foreground mr-1.5">Realized R:</span>
               <span
                 className={`font-bold ${
-                  stats.totalR >= 0 ? "text-emerald-400" : "text-rose-400"
+                  stats.totalR >= 0 ? "text-profit" : "text-loss"
                 }`}
               >
                 {stats.totalR > 0 ? `+${stats.totalR.toFixed(2)}R` : `${stats.totalR.toFixed(2)}R`}
               </span>
             </div>
-            <div className="px-2.5 py-0.5 rounded-full bg-indigo-500/15 border border-indigo-500/30 text-xs font-semibold text-indigo-300">
+            <div className="px-2.5 py-0.5 rounded-full bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/15 border border-indigo-500/30 text-xs font-semibold text-foreground">
               Process Score: {processScorePct}%
             </div>
           </div>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 pt-4 items-center">
-          <div className="lg:col-span-4 border-r-0 lg:border-r border-border/40 pr-0 lg:pr-5">
+          <div className="lg:col-span-4 border-r-0 lg:border-r border-slate-200 dark:border-border/40 pr-0 lg:pr-5">
             {stats.curvePts.length > 1 ? (
               <div className="space-y-2">
                 <div className="flex justify-between text-[10px] text-muted-foreground">
@@ -730,7 +773,7 @@ export function JournalEntryEditor({
                 </svg>
               </div>
             ) : (
-              <div className="h-16 flex items-center justify-center text-xs text-muted-foreground/50 border border-dashed border-border/40 rounded-lg">
+              <div className="h-16 flex items-center justify-center text-xs text-muted-foreground/50 border border-dashed border-slate-200 dark:border-border/40 rounded-lg">
                 No closed trades recorded in this period
               </div>
             )}
@@ -763,7 +806,7 @@ export function JournalEntryEditor({
               <div className="text-muted-foreground text-[10px]">Gross P&L</div>
               <div
                 className={`font-semibold text-sm ${
-                  stats.grossPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                  stats.grossPnl >= 0 ? "text-profit" : "text-loss"
                 }`}
               >
                 {fmtCurrency(stats.grossPnl)}
@@ -771,24 +814,24 @@ export function JournalEntryEditor({
             </div>
             <div>
               <div className="text-muted-foreground text-[10px]">Max Profit Peak</div>
-              <div className="font-semibold text-sm text-emerald-400">
+              <div className="font-semibold text-sm text-profit">
                 {fmtCurrency(stats.maxPeak)}
               </div>
             </div>
             <div>
               <div className="text-muted-foreground text-[10px]">Max Drawdown</div>
-              <div className="font-semibold text-sm text-rose-400">
+              <div className="font-semibold text-sm text-loss">
                 {fmtCurrency(stats.maxDd)}
               </div>
             </div>
             <div>
               <div className="text-muted-foreground text-[10px]">Best / Worst Trade</div>
               <div className="font-semibold text-xs tabular-nums">
-                <span className="text-emerald-400">
+                <span className="text-profit">
                   {stats.bestTrade ? fmtCurrency(stats.bestTrade.netPnl) : "—"}
                 </span>{" "}
                 /{" "}
-                <span className="text-rose-400">
+                <span className="text-loss">
                   {stats.worstTrade ? fmtCurrency(stats.worstTrade.netPnl) : "—"}
                 </span>
               </div>
@@ -801,9 +844,9 @@ export function JournalEntryEditor({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-8 space-y-4">
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-4">
-            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-border/40">
+            <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-border/40">
               <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-indigo-400" />
+                <FileText className="w-4 h-4 text-muted-foreground" />
                 <h2 className="text-sm font-bold text-foreground">
                   {sectionTitle}
                 </h2>
@@ -819,9 +862,9 @@ export function JournalEntryEditor({
                       key={k}
                       type="button"
                       onClick={() => insertTemplateHtml(k)}
-                      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-[#181b26] hover:bg-indigo-500/15 hover:border-indigo-500/40 px-2 py-1 text-[11px] font-medium text-foreground transition"
+                      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-[#181b26] hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/15 hover:border-indigo-500/40 px-2 py-1 text-[11px] font-medium text-foreground transition"
                     >
-                      <Sparkles className="w-3 h-3 text-indigo-400" />
+                      <Sparkles className="w-3 h-3 text-muted-foreground" />
                       <span>{tpl.label.split(" ")[0]}</span>
                     </button>
                   ))}
@@ -885,7 +928,7 @@ export function JournalEntryEditor({
 
             {/* FULL NOTION RICH EDITOR */}
             <div className="pt-1">
-              <RichEditor
+              <RichEditor key={editorKey}
                 editorRef={noteEditorRef}
                 value={content}
                 onChange={setContent}
@@ -897,7 +940,7 @@ export function JournalEntryEditor({
             </div>
 
             <div>
-              <label className="block text-[10px] font-semibold uppercase tracking-wider text-indigo-400 mb-1">
+              <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
                 Key Takeaway / Primary Focus for Next Session
               </label>
               <input
@@ -925,7 +968,7 @@ export function JournalEntryEditor({
                   ],
                 }}
               />
-              <Attachments type="day" id={initialEntry.slug} />
+              {/* Legacy attachment drawer removed: images are managed inline in the block editor */}
             </div>
           </div>
         </div>
@@ -933,14 +976,14 @@ export function JournalEntryEditor({
         {/* RIGHT SIDEBAR */}
         <div className="lg:col-span-4 space-y-4">
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-3.5">
-            <div className="flex items-center justify-between border-b border-border/40 pb-2.5">
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-border/40 pb-2.5">
               <div className="flex items-center gap-2">
-                <Target className="w-4 h-4 text-indigo-400" />
+                <Target className="w-4 h-4 text-muted-foreground" />
                 <h3 className="text-sm font-bold text-foreground">
                   Execution &amp; Process Scorecard
                 </h3>
               </div>
-              <span className="text-xs font-bold text-indigo-400">
+              <span className="text-xs font-bold text-muted-foreground">
                 {processScorePct}%
               </span>
             </div>
@@ -973,10 +1016,10 @@ export function JournalEntryEditor({
                         className={`h-2 rounded-full transition ${
                           active
                             ? scores[item.key] >= 4
-                              ? "bg-emerald-500"
+                              ? "bg-profit/15 text-profit"
                               : scores[item.key] === 3
                               ? "bg-amber-500"
-                              : "bg-rose-500"
+                              : "bg-loss/15 text-loss"
                             : "bg-muted/40 hover:bg-muted"
                         }`}
                       />
@@ -988,8 +1031,8 @@ export function JournalEntryEditor({
           </div>
 
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-3">
-            <div className="flex items-center gap-2 border-b border-border/40 pb-2.5">
-              <ShieldCheck className="w-4 h-4 text-emerald-400" />
+            <div className="flex items-center gap-2 border-b border-slate-200 dark:border-border/40 pb-2.5">
+              <ShieldCheck className="w-4 h-4 text-profit" />
               <h3 className="text-sm font-bold text-foreground">
                 Trading Plan Checklist
               </h3>
@@ -1010,12 +1053,12 @@ export function JournalEntryEditor({
                     }
                     className={`w-full flex items-start gap-2.5 p-2 rounded-lg border text-left text-xs transition ${
                       checked
-                        ? "border-emerald-500/40 bg-emerald-950/20 text-foreground"
-                        : "border-border/40 bg-[#161924]/40 text-muted-foreground hover:text-foreground"
+                        ? "border-profit/20 bg-emerald-950/20 text-foreground"
+                        : "border-slate-200 dark:border-border/40 bg-[#161924]/40 text-muted-foreground hover:text-foreground"
                     }`}
                   >
                     {checked ? (
-                      <CheckSquare className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                      <CheckSquare className="w-4 h-4 text-profit shrink-0 mt-0.5" />
                     ) : (
                       <Square className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
                     )}
@@ -1030,9 +1073,9 @@ export function JournalEntryEditor({
 
       {/* EXECUTED TRADES TABLE */}
       <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-4">
-        <div className="flex items-center justify-between border-b border-border/40 pb-3">
+        <div className="flex items-center justify-between border-b border-slate-200 dark:border-border/40 pb-3">
           <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-indigo-400" />
+            <TrendingUp className="w-4 h-4 text-muted-foreground" />
             <h2 className="text-sm font-bold text-foreground">
               Executed Trades ({trades.length})
             </h2>
@@ -1046,7 +1089,7 @@ export function JournalEntryEditor({
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
-                <tr className="text-muted-foreground border-b border-border/40">
+                <tr className="text-muted-foreground border-b border-slate-200 dark:border-border/40">
                   <th className="py-2 px-2.5 font-medium">Opened (NY)</th>
                   <th className="py-2 px-2.5 font-medium">Symbol</th>
                   <th className="py-2 px-2.5 font-medium">Side</th>
@@ -1076,14 +1119,14 @@ export function JournalEntryEditor({
                         {datePart} <span className="text-foreground font-medium">{timePart}</span>
                       </td>
                       <td className="py-2.5 px-2.5">
-                        <span className="px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-300 font-semibold text-[11px]">
+                        <span className="px-2 py-0.5 rounded bg-secondary text-foreground font-semibold text-[11px]">
                           {t.symbol}
                         </span>
                       </td>
                       <td className="py-2.5 px-2.5">
                         <span
                           className={`font-bold text-[11px] uppercase ${
-                            isBuy ? "text-emerald-400" : "text-rose-400"
+                            isBuy ? "text-profit" : "text-loss"
                           }`}
                         >
                           {t.direction}
@@ -1099,7 +1142,7 @@ export function JournalEntryEditor({
                         {t.realizedR != null ? (
                           <span
                             className={
-                              t.realizedR >= 0 ? "text-emerald-400" : "text-rose-400"
+                              t.realizedR >= 0 ? "text-profit" : "text-loss"
                             }
                           >
                             {t.realizedR > 0 ? `+${t.realizedR}R` : `${t.realizedR}R`}
@@ -1110,7 +1153,7 @@ export function JournalEntryEditor({
                       </td>
                       <td
                         className={`py-2.5 px-2.5 text-right font-bold tabular-nums ${
-                          t.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                          t.netPnl >= 0 ? "text-profit" : "text-loss"
                         }`}
                       >
                         {fmtCurrency(t.netPnl)}
@@ -1121,7 +1164,7 @@ export function JournalEntryEditor({
                       <td className="py-2.5 px-2.5 text-right">
                         <Link
                           href={`/trades/${t.key}`}
-                          className="inline-flex items-center gap-1 rounded-md bg-indigo-500/10 hover:bg-indigo-500/20 border border-indigo-500/30 px-2.5 py-1 text-[11px] font-semibold text-indigo-300 transition"
+                          className="inline-flex items-center gap-1 rounded-md bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10 hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/20 border border-indigo-500/30 px-2.5 py-1 text-[11px] font-semibold text-foreground transition"
                         >
                           <span>Replay</span>
                           <ArrowRight className="w-3 h-3" />
@@ -1134,7 +1177,7 @@ export function JournalEntryEditor({
             </table>
           </div>
         ) : (
-          <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-border/40 rounded-lg">
+          <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-slate-200 dark:border-border/40 rounded-lg">
             No trades executed during this period. You can still record your market observations and HTF narrative above.
           </div>
         )}
