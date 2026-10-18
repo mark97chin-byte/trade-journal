@@ -1,29 +1,16 @@
 import { NextRequest, NextResponse } from "next/server";
-import Database from "better-sqlite3";
-import path from "path";
-import fs from "fs";
+import { eq } from "drizzle-orm";
+import { db, trades } from "@/db";
 import { pullFromNotionPage, pushHtmlToNotionPage } from "@/server/notion-sync";
 
-function getSqliteDb() {
-  const candidates = [
-    path.join(process.cwd(), "data", "journal.db"),
-    path.join(process.cwd(), "apps", "web", "data", "journal.db"),
-  ];
-  const dbPath = candidates.find((p) => fs.existsSync(p)) || candidates[0];
-  return new Database(dbPath);
-}
-
-async function resolveTradeNotionPage(db: any, key: string, token: string) {
-  const row = db
-    .prepare("SELECT key, symbol, notion_page_id, notion_url, notes FROM trades WHERE key = ?")
-    .get(key) as any;
-
+async function resolveTrade(decodedKey: string, token: string) {
+  const row = db.select().from(trades).where(eq(trades.key, decodedKey)).get() as any;
   if (!row) return null;
 
-  let pageId = row.notion_page_id;
-  let notionUrl = row.notion_url;
+  let pageId = row.notionPageId || row.notion_page_id;
+  let notionUrl = row.notionUrl || row.notion_url;
 
-  // Fallback: query Notion Trades database by LuxAlgo ID if notion_page_id is missing in SQLite
+  // Fallback lookup if not cached in SQLite
   const tradesDbId = (
     process.env.NOTION_TRADES_DATABASE_ID ||
     process.env.NOTION_DATABASE_ID ||
@@ -42,7 +29,7 @@ async function resolveTradeNotionPage(db: any, key: string, token: string) {
         body: JSON.stringify({
           filter: {
             property: "LuxAlgo ID",
-            rich_text: { equals: key },
+            rich_text: { equals: decodedKey },
           },
           page_size: 1,
         }),
@@ -53,15 +40,14 @@ async function resolveTradeNotionPage(db: any, key: string, token: string) {
         if (page?.id) {
           pageId = page.id;
           notionUrl = page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`;
-          db.prepare("UPDATE trades SET notion_page_id = ?, notion_url = ? WHERE key = ?").run(
-            pageId,
-            notionUrl,
-            key
-          );
+          db.update(trades)
+            .set({ notionPageId: pageId, notionUrl } as any)
+            .where(eq(trades.key, decodedKey))
+            .run();
         }
       }
     } catch (err) {
-      console.warn("Could not look up trade page in Notion:", err);
+      console.warn("Failed to query Notion for trade page:", err);
     }
   }
 
@@ -76,21 +62,23 @@ export async function GET(
   const decodedKey = decodeURIComponent(key);
   const token = process.env.NOTION_TOKEN || "";
   if (!token) {
-    return NextResponse.json({ error: "Missing NOTION_TOKEN in .env" }, { status: 400 });
+    return NextResponse.json({ error: "Missing NOTION_TOKEN in environment" }, { status: 400 });
   }
 
-  const db = getSqliteDb();
   try {
-    const resolved = await resolveTradeNotionPage(db, decodedKey, token);
+    const resolved = await resolveTrade(decodedKey, token);
     if (!resolved || !resolved.pageId) {
       return NextResponse.json(
-        { error: "No linked Notion page found for this trade." },
+        { error: "No Notion page found for this trade." },
         { status: 404 }
       );
     }
 
     const html = await pullFromNotionPage(resolved.pageId, token, decodedKey);
-    db.prepare("UPDATE trades SET notes = ? WHERE key = ?").run(html, decodedKey);
+    db.update(trades)
+      .set({ notes: html } as any)
+      .where(eq(trades.key, decodedKey))
+      .run();
 
     return NextResponse.json({
       ok: true,
@@ -99,13 +87,11 @@ export async function GET(
       notionUrl: resolved.notionUrl,
     });
   } catch (err: any) {
-    console.error("Failed to pull trade notes from Notion:", err);
+    console.error("Trade Notion pull error:", err);
     return NextResponse.json(
-      { error: err?.message || "Failed to pull from Notion" },
+      { error: err?.message || "Failed to pull notes from Notion" },
       { status: 500 }
     );
-  } finally {
-    db.close();
   }
 }
 
@@ -117,23 +103,26 @@ export async function POST(
   const decodedKey = decodeURIComponent(key);
   const token = process.env.NOTION_TOKEN || "";
   if (!token) {
-    return NextResponse.json({ error: "Missing NOTION_TOKEN in .env" }, { status: 400 });
+    return NextResponse.json({ error: "Missing NOTION_TOKEN in environment" }, { status: 400 });
   }
 
   const body = await req.json().catch(() => ({}));
   const notesHtml = typeof body.notes === "string" ? body.notes : "";
 
-  const db = getSqliteDb();
   try {
-    const resolved = await resolveTradeNotionPage(db, decodedKey, token);
+    const resolved = await resolveTrade(decodedKey, token);
     if (!resolved || !resolved.pageId) {
       return NextResponse.json(
-        { error: "No linked Notion page found for this trade." },
+        { error: "No Notion page found for this trade." },
         { status: 404 }
       );
     }
 
-    db.prepare("UPDATE trades SET notes = ? WHERE key = ?").run(notesHtml, decodedKey);
+    db.update(trades)
+      .set({ notes: notesHtml } as any)
+      .where(eq(trades.key, decodedKey))
+      .run();
+
     await pushHtmlToNotionPage(resolved.pageId, notesHtml, token);
 
     return NextResponse.json({
@@ -142,12 +131,10 @@ export async function POST(
       notionUrl: resolved.notionUrl,
     });
   } catch (err: any) {
-    console.error("Failed to sync trade notes to Notion:", err);
+    console.error("Trade Notion sync error:", err);
     return NextResponse.json(
-      { error: err?.message || "Failed to sync to Notion" },
+      { error: err?.message || "Failed to sync notes to Notion" },
       { status: 500 }
     );
-  } finally {
-    db.close();
   }
 }

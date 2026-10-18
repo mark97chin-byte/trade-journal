@@ -601,8 +601,14 @@ function AnnotationsCard({
     setSyncMsg("Pulling from Notion...");
     try {
       const res = await fetch(`/api/trades/${encodeURIComponent(trade.key)}/notion`);
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to pull from Notion");
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(`Server returned status ${res.status}: ${rawText.slice(0, 100)}`);
+      }
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       if (typeof data.notes === "string") {
         setNotes(data.notes);
       }
@@ -627,8 +633,14 @@ function AnnotationsCard({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ notes }),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || "Failed to sync to Notion");
+      const rawText = await res.text();
+      let data: any = {};
+      try {
+        data = JSON.parse(rawText);
+      } catch {
+        throw new Error(`Server returned status ${res.status}: ${rawText.slice(0, 100)}`);
+      }
+      if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       if (data.notionUrl) setNotionUrl(data.notionUrl);
       setSyncMsg("Synced to Notion");
     } catch (err: any) {
