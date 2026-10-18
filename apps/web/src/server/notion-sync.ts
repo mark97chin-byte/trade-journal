@@ -2,7 +2,17 @@ import { parse, HTMLElement, Node } from "node-html-parser";
 import fs from "fs";
 import path from "path";
 import crypto from "crypto";
-import sharp from "sharp";
+let _sharp: any = null;
+async function getSharp() {
+  if (_sharp !== null) return _sharp;
+  try {
+    const mod = await import("sharp");
+    _sharp = mod.default || mod;
+  } catch {
+    _sharp = false;
+  }
+  return _sharp;
+}
 import { eq } from "drizzle-orm";
 import { db, attachments } from "@/db";
 
@@ -53,7 +63,10 @@ async function downloadAndSaveNotionImage(remoteUrl: string, slug?: string): Pro
 
     const arrayBuf = await res.arrayBuffer();
     const inputBuffer = Buffer.from(arrayBuf);
-    const webpBuffer = await sharp(inputBuffer).webp({ quality: 90 }).toBuffer();
+    const sharpInstance = await getSharp();
+    const webpBuffer = sharpInstance
+      ? await sharpInstance(inputBuffer).webp({ quality: 90 }).toBuffer()
+      : inputBuffer;
 
     const attId = crypto.randomBytes(8).toString("base64url");
     const fileName = `${attId}.webp`;
