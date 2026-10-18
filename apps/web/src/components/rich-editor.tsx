@@ -1052,8 +1052,12 @@ export function RichEditor({
   const [newTemplateModal, setNewTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState("");
   const [lightbox, setLightbox] = useState<{
-    open: boolean; images: string[]; currentIndex: number;
-  }>({ open: false, images: [], currentIndex: 0 });
+    open: boolean;
+    images: string[];
+    currentIndex: number;
+    zoom: number;
+    actualSize: boolean;
+  }>({ open: false, images: [], currentIndex: 0, zoom: 1, actualSize: false });
   const didInitializeRef = useRef(false);
   const lastSelectionRef = useRef<Range | null>(null);
 
@@ -1246,7 +1250,13 @@ export function RichEditor({
   const openLightboxForImage = (src: string) => {
     const images = Array.from(contentRef.current?.querySelectorAll("img") || []).map(img => img.src);
     const index = images.indexOf(src);
-    setLightbox({ open: true, images: images.length ? images : [src], currentIndex: Math.max(0, index) });
+    setLightbox({
+      open: true,
+      images: images.length ? images : [src],
+      currentIndex: Math.max(0, index),
+      zoom: 1,
+      actualSize: false,
+    });
   };
   const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
@@ -1282,23 +1292,43 @@ export function RichEditor({
     if (readOnly || !file.type.startsWith("image/")) return;
     try {
       const bitmap = await createImageBitmap(file);
-      const scale = Math.min(1, 1600 / Math.max(bitmap.width, bitmap.height));
+      // Sweet spot for 200-400 charts/week: 2560px (QHD) max width @ 0.92 WebP (~120KB/chart, razor-sharp text)
+      const scale = Math.min(1, 2560 / Math.max(bitmap.width, bitmap.height));
       const canvas = document.createElement("canvas");
       canvas.width = Math.max(1, Math.round(bitmap.width * scale));
       canvas.height = Math.max(1, Math.round(bitmap.height * scale));
-      canvas.getContext("2d")?.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      }
       bitmap.close();
-      const data = canvas.toDataURL("image/webp", 0.82);
+      const data = canvas.toDataURL("image/webp", 0.92);
       insertHtmlAtCursor(`<figure class="tz-figure" data-notion-type="image"><img src="${data}" alt="${escapeHtml(file.name)}" style="width:100%;height:auto"/><figcaption class="tz-block-caption"></figcaption></figure>`);
     } catch (error) { console.error("Failed to insert image", error); }
   };
   useEffect(() => {
     if (!lightbox.open) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setLightbox(s => ({ ...s, open: false }));
+      if (e.key === "Escape") setLightbox((s) => ({ ...s, open: false }));
       else if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-        setLightbox(s => ({ ...s, currentIndex: (s.currentIndex +
-          (e.key === "ArrowLeft" ? -1 : 1) + s.images.length) % s.images.length }));
+        setLightbox((s) => ({
+          ...s,
+          currentIndex:
+            (s.currentIndex + (e.key === "ArrowLeft" ? -1 : 1) + s.images.length) %
+            s.images.length,
+          zoom: 1,
+          actualSize: false,
+        }));
+      } else if (e.key === "+" || e.key === "=") {
+        setLightbox((s) => ({ ...s, actualSize: false, zoom: Math.min(4, +(s.zoom + 0.25).toFixed(2)) }));
+      } else if (e.key === "-") {
+        setLightbox((s) => ({ ...s, actualSize: false, zoom: Math.max(0.5, +(s.zoom - 0.25).toFixed(2)) }));
+      } else if (e.key === "0") {
+        setLightbox((s) => ({ ...s, actualSize: false, zoom: 1 }));
+      } else if (e.key === "1") {
+        setLightbox((s) => ({ ...s, actualSize: !s.actualSize, zoom: 1 }));
       }
     };
     window.addEventListener("keydown", onKey);
@@ -2961,52 +2991,187 @@ export function RichEditor({
       </div>
 
       
-      {/* LIGHTBOX MODAL WITH ARROW NAVIGATION & ESCAPE DISMISSAL */}
+      {/* LIGHTBOX MODAL WITH FULLSCREEN CENTER-PEEK, ZOOM CONTROLS & ACTUAL SIZE TOGGLE */}
       {lightbox.open && lightbox.images.length > 0 && (
         <div
           onClick={() => setLightbox((s) => ({ ...s, open: false }))}
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-4 backdrop-blur-sm animate-in fade-in"
+          onWheel={(e) => {
+            if (e.ctrlKey || e.metaKey || lightbox.zoom > 1) {
+              e.preventDefault();
+              const delta = e.deltaY < 0 ? 0.2 : -0.2;
+              setLightbox((s) => ({
+                ...s,
+                actualSize: false,
+                zoom: Math.min(4, Math.max(0.5, +(s.zoom + delta).toFixed(2))),
+              }));
+            }
+          }}
+          className="fixed inset-0 z-[9999] flex flex-col items-center justify-between bg-black/92 p-2 sm:p-4 backdrop-blur-md animate-in fade-in"
         >
+          {/* Scrollable / Pannable Image Viewport */}
           <div
-            onClick={(e) => e.stopPropagation()}
-            className="relative flex flex-col items-center justify-center max-w-[95vw] max-h-[95vh]"
+            onClick={(e) => {
+              if (e.target === e.currentTarget) {
+                setLightbox((s) => ({ ...s, open: false }));
+              }
+            }}
+            className="relative flex-1 w-full overflow-auto flex items-center justify-center"
           >
             <img
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                setLightbox((s) => ({
+                  ...s,
+                  actualSize: !s.actualSize,
+                  zoom: 1,
+                }));
+              }}
               src={lightbox.images[lightbox.currentIndex]}
-              alt={`Fullscreen ${lightbox.currentIndex + 1}`}
-              className="max-w-full max-h-[88vh] object-contain rounded-lg shadow-2xl select-none"
+              alt={`Chart ${lightbox.currentIndex + 1}`}
+              style={
+                lightbox.actualSize
+                  ? {
+                      width: "auto",
+                      height: "auto",
+                      maxWidth: "none",
+                      maxHeight: "none",
+                      transform: `scale(${lightbox.zoom})`,
+                      transformOrigin: "center center",
+                    }
+                  : {
+                      width: `${Math.round(96 * lightbox.zoom)}vw`,
+                      height: `${Math.round(90 * lightbox.zoom)}vh`,
+                      maxWidth: lightbox.zoom === 1 ? "96vw" : "none",
+                      maxHeight: lightbox.zoom === 1 ? "90vh" : "none",
+                    }
+              }
+              className={`rounded-lg shadow-2xl select-none transition-all duration-100 ${
+                lightbox.actualSize ? "cursor-zoom-out" : "object-contain cursor-zoom-in"
+              }`}
+              title="Double-click to toggle Actual Size (1:1)"
             />
-            <div className="mt-3 flex items-center gap-4 text-xs font-semibold text-white/80 bg-black/60 px-4 py-1.5 rounded-full border border-border">
-              <button
-                type="button"
-                onClick={() =>
-                  setLightbox((s) => ({
-                    ...s,
-                    currentIndex:
-                      (s.currentIndex - 1 + s.images.length) % s.images.length,
-                  }))
-                }
-                className="px-2 py-0.5 hover:text-white rounded hover:bg-white/10"
-              >
-                ◀ Prev (←)
-              </button>
-              <span>
-                {lightbox.currentIndex + 1} / {lightbox.images.length}
-              </span>
-              <button
-                type="button"
-                onClick={() =>
-                  setLightbox((s) => ({
-                    ...s,
-                    currentIndex: (s.currentIndex + 1) % s.images.length,
-                  }))
-                }
-                className="px-2 py-0.5 hover:text-white rounded hover:bg-white/10"
-              >
-                Next (→) ▶
-              </button>
-              <span className="text-white/40">| Click outside or Esc to close</span>
-            </div>
+          </div>
+
+          {/* Bottom HUD Control Bar */}
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="mt-2 flex flex-wrap items-center justify-center gap-2 sm:gap-3 text-xs font-semibold text-white/90 bg-zinc-950/90 px-4 py-1.5 rounded-full border border-white/15 shadow-2xl z-10"
+          >
+            <button
+              type="button"
+              onClick={() =>
+                setLightbox((s) => ({
+                  ...s,
+                  currentIndex:
+                    (s.currentIndex - 1 + s.images.length) % s.images.length,
+                  zoom: 1,
+                  actualSize: false,
+                }))
+              }
+              className="px-2 py-0.5 hover:text-white rounded hover:bg-white/10 transition"
+            >
+              ◀ Prev (←)
+            </button>
+            <span className="tabular-nums text-white/70">
+              {lightbox.currentIndex + 1} / {lightbox.images.length}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setLightbox((s) => ({
+                  ...s,
+                  currentIndex: (s.currentIndex + 1) % s.images.length,
+                  zoom: 1,
+                  actualSize: false,
+                }))
+              }
+              className="px-2 py-0.5 hover:text-white rounded hover:bg-white/10 transition"
+            >
+              Next (→) ▶
+            </button>
+
+            <span className="text-white/20">|</span>
+
+            {/* Zoom Controls */}
+            <button
+              type="button"
+              onClick={() =>
+                setLightbox((s) => ({
+                  ...s,
+                  actualSize: false,
+                  zoom: Math.max(0.5, +(s.zoom - 0.25).toFixed(2)),
+                }))
+              }
+              className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/15 text-white transition"
+              title="Zoom Out (-)"
+            >
+              −
+            </button>
+            <span className="min-w-[44px] text-center tabular-nums">
+              {lightbox.actualSize ? "1:1" : `${Math.round(lightbox.zoom * 100)}%`}
+            </span>
+            <button
+              type="button"
+              onClick={() =>
+                setLightbox((s) => ({
+                  ...s,
+                  actualSize: false,
+                  zoom: Math.min(4, +(s.zoom + 0.25).toFixed(2)),
+                }))
+              }
+              className="px-2 py-0.5 rounded bg-white/5 hover:bg-white/15 text-white transition"
+              title="Zoom In (+)"
+            >
+              +
+            </button>
+
+            {/* Fit vs Actual Size (1:1) Toggle */}
+            <button
+              type="button"
+              onClick={() =>
+                setLightbox((s) => ({
+                  ...s,
+                  actualSize: false,
+                  zoom: 1,
+                }))
+              }
+              className={`px-2.5 py-0.5 rounded transition ${
+                !lightbox.actualSize && lightbox.zoom === 1
+                  ? "bg-indigo-600 text-white"
+                  : "bg-white/5 hover:bg-white/15 text-white/80"
+              }`}
+              title="Fit to screen (0)"
+            >
+              Fit Screen
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                setLightbox((s) => ({
+                  ...s,
+                  actualSize: !s.actualSize,
+                  zoom: 1,
+                }))
+              }
+              className={`px-2.5 py-0.5 rounded transition ${
+                lightbox.actualSize
+                  ? "bg-indigo-600 text-white"
+                  : "bg-white/5 hover:bg-white/15 text-white/80"
+              }`}
+              title="Toggle Native 1:1 Pixel Resolution (1)"
+            >
+              Actual Size (1:1)
+            </button>
+
+            <span className="text-white/20 hidden sm:inline">|</span>
+            <button
+              type="button"
+              onClick={() => setLightbox((s) => ({ ...s, open: false }))}
+              className="text-white/60 hover:text-white px-1.5 py-0.5"
+            >
+              Esc ✕
+            </button>
           </div>
         </div>
       )}

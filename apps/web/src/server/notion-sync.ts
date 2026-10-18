@@ -65,7 +65,10 @@ async function downloadAndSaveNotionImage(remoteUrl: string, slug?: string): Pro
     const inputBuffer = Buffer.from(arrayBuf);
     const sharpInstance = await getSharp();
     const webpBuffer = sharpInstance
-      ? await sharpInstance(inputBuffer).webp({ quality: 90 }).toBuffer()
+      ? await sharpInstance(inputBuffer)
+          .resize({ width: 2560, height: 2560, fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 92, smartSubsample: true, effort: 4 })
+          .toBuffer()
       : inputBuffer;
 
     const attId = crypto.randomBytes(8).toString("base64url");
