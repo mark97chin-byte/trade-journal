@@ -507,8 +507,8 @@ function SubPeriodStrip({
             d.count === 0
               ? "bg-[#181a24]/40 text-muted-foreground/40 border border-transparent"
               : d.pnl >= 0
-              ? "bg-emerald-950/25 border border-emerald-900/50 hover:border-emerald-500 cursor-pointer text-profit"
-              : "bg-rose-950/25 border border-rose-900/50 hover:border-rose-500 cursor-pointer text-loss"
+              ? "bg-profit/10 border border-profit/25 hover:border-profit/25 cursor-pointer text-profit"
+              : "bg-loss/10 border border-loss/25 hover:border-loss/25 cursor-pointer text-loss"
           }`}
         >
           <span className="text-[10px] font-semibold text-muted-foreground">
@@ -579,7 +579,7 @@ function InteractiveDayCalendar({
           {selectedDate && (
             <button
               onClick={() => onSelectDate(null)}
-              className="inline-flex items-center gap-1 text-[11px] bg-secondary text-foreground px-2 py-0.5 rounded-md hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/25 ml-2"
+              className="inline-flex items-center gap-1 text-[11px] bg-secondary text-foreground px-2 py-0.5 rounded-md hover:bg-secondary text-foreground border border-border font-semibold shadow-2xs/25 ml-2"
             >
               <span>Filtered: {selectedDate}</span>
               <X className="w-3 h-3" />
@@ -633,11 +633,11 @@ function InteractiveDayCalendar({
               }
               className={`h-14 rounded-lg p-1 flex flex-col justify-between items-center transition border text-left ${
                 isSelected
-                  ? "ring-2 ring-indigo-500 border-indigo-400 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10"
+                  ? "ring-2  text-foreground ring-2 ring-foreground/25 border-indigo-400  dark:  dark:text-slate-900/10 bg-secondary text-foreground ring-2 ring-foreground/25 shadow-xs"
                   : dayData
                   ? dayData.netPnl >= 0
-                    ? "bg-emerald-950/20 border-emerald-900/40 hover:border-emerald-700/60"
-                    : "bg-rose-950/20 border-rose-900/40 hover:border-rose-700/60"
+                    ? "bg-profit/10 border-profit/25 hover:border-profit/25"
+                    : "bg-loss/10 border-loss/25 hover:border-loss/25"
                   : "border-transparent hover:bg-muted/20"
               }`}
             >
@@ -1241,7 +1241,7 @@ export function JournalView({ trades }: JournalViewProps) {
           {activeSubFilterId && period !== "day" && (
             <button
               onClick={() => setActiveSubFilterId(null)}
-              className="inline-flex items-center gap-1 text-xs bg-secondary text-foreground px-2.5 py-1 rounded-lg hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/25"
+              className="inline-flex items-center gap-1 text-xs bg-secondary text-foreground px-2.5 py-1 rounded-lg hover:bg-secondary text-foreground border border-border font-semibold shadow-2xs/25"
             >
               <span>Showing: {activeSubFilterId}</span>
               <X className="w-3.5 h-3.5" />
@@ -1261,7 +1261,7 @@ export function JournalView({ trades }: JournalViewProps) {
               }}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition ${
                 period === p
-                  ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-foreground shadow"
+                  ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs text-foreground shadow"
                   : "text-muted-foreground hover:text-foreground"
               }`}
             >
@@ -1367,7 +1367,7 @@ export function JournalView({ trades }: JournalViewProps) {
                   setDaysPerPage(Number(e.target.value));
                   setCurrentPage(1);
                 }}
-                className="bg-secondary/50 border border-border/60 rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
+                className="bg-secondary/50 border border-border/60 rounded px-2 py-1 text-foreground focus:outline-none focus:ring-1 focus:bg-secondary/90 text-foreground ring-2 ring-foreground/25"
               >
                 <option value={10}>10</option>
                 <option value={25}>25</option>

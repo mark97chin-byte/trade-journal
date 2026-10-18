@@ -141,7 +141,7 @@ export function PerformanceView({
                 onClick={() => setActiveTab(tab)}
                 className={`relative pb-2 text-xs font-semibold capitalize transition-colors ${
                   activeTab === tab
-                    ? "text-muted-foreground after:absolute after:bottom-[-13px] after:left-0 after:right-0 after:h-0.5 after:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900"
+                    ? "text-muted-foreground after:absolute after:bottom-[-13px] after:left-0 after:right-0 after:h-0.5 after:bg-secondary text-foreground border border-border font-semibold shadow-2xs"
                     : "text-muted-foreground hover:text-foreground"
                 }`}
               >
@@ -162,7 +162,7 @@ export function PerformanceView({
               <MetricItem
                 label="Net P&L"
                 value={fmtMoney(s.netPnl)}
-                valueClass={s.netPnl < 0 ? "text-rose-400" : s.netPnl > 0 ? "text-emerald-400" : ""}
+                valueClass={s.netPnl < 0 ? "text-rose-400" : s.netPnl > 0 ? "text-profit" : ""}
                 hint="Total net profits or losses realized across all closed trades."
               />
               <MetricItem
@@ -186,7 +186,7 @@ export function PerformanceView({
               <MetricItem
                 label="Trade expectancy"
                 value={fmtMoney(s.tradeExpectancy)}
-                valueClass={s.tradeExpectancy < 0 ? "text-rose-400" : "text-emerald-400"}
+                valueClass={s.tradeExpectancy < 0 ? "text-rose-400" : "text-profit"}
                 hint="Average expected return per trade."
               />
               <MetricItem
@@ -210,13 +210,13 @@ export function PerformanceView({
               <MetricItem
                 label="Avg net trade P&L"
                 value={fmtMoney(s.avgNetTradePnl)}
-                valueClass={s.avgNetTradePnl < 0 ? "text-rose-400" : "text-emerald-400"}
+                valueClass={s.avgNetTradePnl < 0 ? "text-rose-400" : "text-profit"}
                 hint="Average net P&L across all closed trades."
               />
               <MetricItem
                 label="Avg daily net P&L"
                 value={fmtMoney(s.avgDailyNetPnl)}
-                valueClass={s.avgDailyNetPnl < 0 ? "text-rose-400" : "text-emerald-400"}
+                valueClass={s.avgDailyNetPnl < 0 ? "text-rose-400" : "text-profit"}
                 hint="Average net P&L across all trading days."
               />
               <MetricItem
@@ -293,7 +293,7 @@ export function PerformanceView({
               <MetricItem
                 label="Largest profitable day"
                 value={fmtMoney(d.largestProfitableDay)}
-                valueClass="text-emerald-400"
+                valueClass="text-profit"
                 href={d.largestProfitableDayDate ? `/journal/${d.largestProfitableDayDate}` : undefined}
                 hint="The biggest single-day profit recorded. Click to open daily journal."
               />
@@ -303,7 +303,7 @@ export function PerformanceView({
               <MetricItem
                 label="Avg daily net P&L"
                 value={fmtMoney(d.avgDailyNetPnl)}
-                valueClass={d.avgDailyNetPnl < 0 ? "text-rose-400" : "text-emerald-400"}
+                valueClass={d.avgDailyNetPnl < 0 ? "text-rose-400" : "text-profit"}
                 hint="Average net P&L per active day."
               />
             </div>
@@ -327,7 +327,7 @@ export function PerformanceView({
               <MetricItem
                 label="Avg net trade P&L"
                 value={fmtMoney(t.avgNetTradePnl)}
-                valueClass={t.avgNetTradePnl < 0 ? "text-rose-400" : "text-emerald-400"}
+                valueClass={t.avgNetTradePnl < 0 ? "text-rose-400" : "text-profit"}
                 hint="Average net return per trade."
               />
             </div>
@@ -341,7 +341,7 @@ export function PerformanceView({
               <MetricItem
                 label="Trade expectancy"
                 value={fmtMoney(t.tradeExpectancy)}
-                valueClass={t.tradeExpectancy < 0 ? "text-rose-400" : "text-emerald-400"}
+                valueClass={t.tradeExpectancy < 0 ? "text-rose-400" : "text-profit"}
                 hint="Expected dollar gain or loss per trade."
               />
               <MetricItem
@@ -355,7 +355,7 @@ export function PerformanceView({
               <MetricItem
                 label="Largest profitable trade"
                 value={fmtMoney(t.largestProfitableTrade)}
-                valueClass="text-emerald-400"
+                valueClass="text-profit"
                 href={t.largestProfitableTradeId ? `/trades?id=${t.largestProfitableTradeId}` : undefined}
                 hint="The single most profitable trade. Click to view trade."
               />
@@ -400,7 +400,7 @@ export function PerformanceView({
           enableTimeframeControl={true}
           initialTimeframe="week"
           defaultMetrics={[
-            { key: "avgTradingWeeksDuration", chartType: "bar", color: "#10b981" },
+            { key: "avgTradingWeeksDuration", chartType: "bar", color: "var(--profit)" },
           ]}
         />
       </div>

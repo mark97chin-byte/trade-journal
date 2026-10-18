@@ -160,7 +160,7 @@ export function YourStatsOverview({
         <div className="divide-y divide-border/20 text-xs">
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Total P&L</span>
-            <span className={`font-semibold tabular-nums ${left.totalPnl > 0 ? "text-emerald-400" : left.totalPnl < 0 ? "text-rose-400" : ""}`}>
+            <span className={`font-semibold tabular-nums ${left.totalPnl > 0 ? "text-profit" : left.totalPnl < 0 ? "text-rose-400" : ""}`}>
               {fmtMoney(left.totalPnl, currency)}
             </span>
           </div>

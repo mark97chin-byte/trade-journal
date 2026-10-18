@@ -283,7 +283,7 @@ export function CompareView({
             <span
               className={`font-semibold tabular-nums ${
                 group.totalPnl > 0
-                  ? "text-emerald-400"
+                  ? "text-profit"
                   : group.totalPnl < 0
                   ? "text-rose-400"
                   : ""
@@ -300,7 +300,7 @@ export function CompareView({
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Average winning trade</span>
-            <span className="font-semibold tabular-nums text-emerald-400">
+            <span className="font-semibold tabular-nums text-profit">
               {fmtMoney(group.avgWinningTrade)}
             </span>
           </div>
@@ -344,7 +344,7 @@ export function CompareView({
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Avg win trade duration</span>
-            <span className="font-semibold text-emerald-400">
+            <span className="font-semibold text-profit">
               {fmtDuration(group.avgHoldTimeWinMs)}
             </span>
           </div>
@@ -375,7 +375,7 @@ export function CompareView({
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Best performing asset</span>
-            <span className="font-semibold text-emerald-400">
+            <span className="font-semibold text-profit">
               {group.assetStats.best
                 ? `${group.assetStats.best.name} (${fmtMoney(
                     group.assetStats.best.pnl
@@ -401,7 +401,7 @@ export function CompareView({
           </div>
           <div className="flex justify-between py-2">
             <span className="text-muted-foreground">Best strategy</span>
-            <span className="font-semibold text-emerald-400">
+            <span className="font-semibold text-profit">
               {group.strategyStats.best
                 ? `${group.strategyStats.best.name} (${fmtMoney(
                     group.strategyStats.best.pnl
@@ -455,7 +455,7 @@ export function CompareView({
                   cy="62"
                   r={radius}
                   fill="none"
-                  stroke="#10b981"
+                  stroke="var(--profit)"
                   strokeWidth="9"
                   strokeDasharray={`${strokeDash} ${circ}`}
                   strokeLinecap="butt"
@@ -589,8 +589,8 @@ export function CompareView({
                 y2={Math.max(zeroY, padTop + 1)}
                 gradientUnits="userSpaceOnUse"
               >
-                <stop offset="0%" stopColor="#10b981" stopOpacity="0.5" />
-                <stop offset="100%" stopColor="#10b981" stopOpacity="0.03" />
+                <stop offset="0%" stopColor="var(--profit)" stopOpacity="0.5" />
+                <stop offset="100%" stopColor="var(--profit)" stopOpacity="0.03" />
               </linearGradient>
 
               {/* Negative Area Gradient (Below $0) */}
@@ -669,7 +669,7 @@ export function CompareView({
             <path
               d={linePath}
               fill="none"
-              stroke="#34d399"
+              stroke="var(--profit)"
               strokeWidth="2"
               strokeLinecap="round"
               strokeLinejoin="round"

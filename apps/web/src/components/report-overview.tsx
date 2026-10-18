@@ -77,7 +77,7 @@ export function ReportOverview({
         />
         <ReportMetricChart
           dimension="weekday"
-          defaultMetrics={[{ key: "winRate", chartType: "bar", color: "#10b981" }]}
+          defaultMetrics={[{ key: "winRate", chartType: "bar", color: "var(--profit-fill, #0ca30c)" }]}
         />
       </div>
 

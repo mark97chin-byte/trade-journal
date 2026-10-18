@@ -263,7 +263,7 @@ export function PlaybookModal({
                             setIconPickerOpen(false);
                           }}
                           className={`flex h-8 w-8 items-center justify-center rounded-lg text-base hover:bg-secondary/60 ${
-                            icon === ic ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 ring-1 ring-indigo-500" : ""
+                            icon === ic ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs/30 ring-1 ring-indigo-500" : ""
                           }`}
                         >
                           {ic}

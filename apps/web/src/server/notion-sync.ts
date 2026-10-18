@@ -297,19 +297,41 @@ export async function fetchNotionBlocksRecursive(blockId: string, token: string,
 
 export async function clearNotionPageBlocks(pageId: string, token: string) {
   try {
-    const existing = await notionFetch(`/blocks/${pageId}/children?page_size=100`, token);
-    const results = existing.results || [];
-    await Promise.all(
-      results.map((block: any) =>
-        fetch(`https://api.notion.com/v1/blocks/${block.id}`, {
-          method: "DELETE",
-          headers: {
-            Authorization: `Bearer ${token}`,
-            "Notion-Version": NOTION_VERSION,
-          },
+    let cursor: string | undefined = undefined;
+    const blockIds: string[] = [];
+
+    do {
+      const qs = cursor ? `?page_size=100&start_cursor=${cursor}` : `?page_size=100`;
+      const existing = await notionFetch(`/blocks/${pageId}/children${qs}`, token);
+      for (const b of existing.results || []) {
+        if (b?.id) blockIds.push(b.id);
+      }
+      cursor = existing.has_more ? existing.next_cursor : undefined;
+    } while (cursor);
+
+    // Delete sequentially in small batches of 3 with retry on 409/429 to avoid Notion conflict_error
+    for (let i = 0; i < blockIds.length; i += 3) {
+      const batch = blockIds.slice(i, i + 3);
+      await Promise.all(
+        batch.map(async (id) => {
+          for (let attempt = 0; attempt < 3; attempt++) {
+            const res = await fetch(`https://api.notion.com/v1/blocks/${id}`, {
+              method: "DELETE",
+              headers: {
+                Authorization: `Bearer ${token}`,
+                "Notion-Version": NOTION_VERSION,
+              },
+            });
+            if (res.ok || res.status === 404) break;
+            if (res.status === 409 || res.status === 429) {
+              await new Promise((r) => setTimeout(r, 250 * (attempt + 1)));
+              continue;
+            }
+            break;
+          }
         })
-      )
-    );
+      );
+    }
   } catch (err) {
     console.warn("Could not clear previous Notion blocks:", err);
   }
@@ -468,6 +490,79 @@ function toRichText(text: string): any[] {
   const clean = (text || "").replace(/\s+/g, " ").trim();
   if (!clean) return [];
   return [{ type: "text", text: { content: clean.slice(0, 1950) } }];
+}
+
+function extractRichTextFromNode(rootNode: Node): any[] {
+  const segments: any[] = [];
+
+  function walk(
+    node: Node,
+    ann: { bold?: boolean; italic?: boolean; underline?: boolean; strikethrough?: boolean; code?: boolean; color?: string },
+    href?: string
+  ) {
+    if (node.nodeType === 3) {
+      const raw = (node.text || "").replace(/\u00A0/g, " ");
+      if (!raw) return;
+      const item: any = {
+        type: "text",
+        text: {
+          content: raw.slice(0, 1950),
+          ...(href ? { link: { url: href } } : {}),
+        },
+      };
+      const activeAnn: any = {};
+      if (ann.bold) activeAnn.bold = true;
+      if (ann.italic) activeAnn.italic = true;
+      if (ann.underline) activeAnn.underline = true;
+      if (ann.strikethrough) activeAnn.strikethrough = true;
+      if (ann.code) activeAnn.code = true;
+      if (ann.color && ann.color !== "default") activeAnn.color = ann.color;
+      if (Object.keys(activeAnn).length > 0) {
+        item.annotations = activeAnn;
+      }
+      segments.push(item);
+      return;
+    }
+
+    if (node.nodeType !== 1) return;
+    const el = node as HTMLElement;
+    const tag = el.tagName?.toUpperCase();
+    if (tag === "BR") {
+      segments.push({ type: "text", text: { content: "\n" } });
+      return;
+    }
+
+    const nextAnn = { ...ann };
+    let nextHref = href;
+
+    if (tag === "STRONG" || tag === "B") nextAnn.bold = true;
+    if (tag === "EM" || tag === "I") nextAnn.italic = true;
+    if (tag === "U") nextAnn.underline = true;
+    if (tag === "S" || tag === "STRIKE" || tag === "DEL") nextAnn.strikethrough = true;
+    if (tag === "CODE") nextAnn.code = true;
+    if (tag === "A") {
+      const linkAttr = el.getAttribute("href");
+      if (linkAttr && (linkAttr.startsWith("http://") || linkAttr.startsWith("https://"))) {
+        nextHref = linkAttr;
+      }
+    }
+
+    const classAttr = el.getAttribute("class") || "";
+    const colorMatch = classAttr.match(/tz-color-([a-z_]+)/);
+    if (colorMatch?.[1]) {
+      nextAnn.color = colorMatch[1];
+    }
+
+    for (const child of el.childNodes) {
+      walk(child, nextAnn, nextHref);
+    }
+  }
+
+  walk(rootNode, {});
+  if (segments.length === 0) {
+    return toRichText(rootNode.text || "");
+  }
+  return segments.slice(0, 95);
 }
 
 function findDirectChildByClass(parent: HTMLElement, className: string): HTMLElement | null {
@@ -683,7 +778,7 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
             items.push({
               object: "block",
               type: listType,
-              [listType]: { rich_text: toRichText(t) },
+              [listType]: { rich_text: extractRichTextFromNode(li) },
             });
           }
         }
@@ -698,7 +793,7 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
       return {
         object: "block",
         type: hType,
-        [hType]: { rich_text: toRichText(t) },
+        [hType]: { rich_text: extractRichTextFromNode(el) },
       };
     }
 
@@ -714,7 +809,7 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
       return {
         object: "block",
         type: "paragraph",
-        paragraph: { rich_text: toRichText(plain) },
+        paragraph: { rich_text: extractRichTextFromNode(el) },
       };
     }
 

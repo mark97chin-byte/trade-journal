@@ -48,7 +48,7 @@ interface ReportMetricChartProps {
 }
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
-const PRESET_COLORS = ["#10b981", "#ef4444", "#3b82f6", "#8b5cf6", "#f59e0b", "#06b6d4"];
+const PRESET_COLORS = ["var(--profit)", "#ef4444", "#3b82f6", "#8b5cf6", "#f59e0b", "#06b6d4"];
 
 function formatDayLabel(dateStr: string) {
   const [y, m, d] = dateStr.split("-");
@@ -138,7 +138,7 @@ export function ReportMetricChart({
   customBuckets,
   enableTimeframeControl = false,
   initialTimeframe = "day",
-  defaultMetrics = [{ key: "winRate", chartType: "bar", color: "#10b981" }],
+  defaultMetrics = [{ key: "winRate", chartType: "bar", color: "var(--profit)" }],
   trades: passedTrades,
 }: ReportMetricChartProps) {
   const searchParams = useSearchParams();
@@ -423,7 +423,7 @@ export function ReportMetricChart({
                       }}
                       className={`flex w-full items-center justify-between rounded px-2.5 py-1.5 text-xs font-medium capitalize text-left transition-colors ${
                         timeframe === mode
-                          ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 text-foreground"
+                          ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs/30 text-foreground"
                           : "text-muted-foreground hover:bg-slate-100/90 dark:bg-secondary/40 hover:text-foreground"
                       }`}
                     >
@@ -489,7 +489,7 @@ export function ReportMetricChart({
                             onClick={() => handleSelectMetric(m)}
                             className={`flex w-full items-center justify-between rounded px-2 py-1.5 text-xs text-left transition-colors ${
                               isSelected
-                                ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 text-foreground font-medium"
+                                ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs/30 text-foreground font-medium"
                                 : "text-muted-foreground hover:bg-slate-100/90 dark:bg-secondary/40 hover:text-foreground"
                             }`}
                           >
@@ -776,7 +776,7 @@ export function ReportMetricChart({
                         }
                         className={`rounded px-2 py-0.5 text-[10px] uppercase font-semibold ${
                           m.chartType === type
-                            ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-foreground"
+                            ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs text-foreground"
                             : "bg-slate-100/90 dark:bg-secondary/40 text-muted-foreground hover:text-foreground"
                         }`}
                       >

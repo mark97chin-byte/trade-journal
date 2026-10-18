@@ -27,6 +27,25 @@ function formatPnl(amount: number, currency: string = "USD"): string {
   return `${sign}${abs.toFixed(amount % 1 === 0 ? 0 : 2)}`;
 }
 
+/**
+ * Computes the Monday YYYY-MM-DD date for a given calendar week row (Sun..Sat)
+ * so clicking a week card navigates to /journal/week-YYYY-MM-DD (e.g. week-2026-09-28).
+ */
+function getWeekMondayDate(days: Array<{ date: string } | null | undefined>): string | null {
+  if (days[1]?.date) {
+    return days[1].date;
+  }
+  for (let dIdx = 0; dIdx < days.length; dIdx++) {
+    const d = days[dIdx];
+    if (d?.date) {
+      const dt = new Date(`${d.date}T00:00:00Z`);
+      dt.setUTCDate(dt.getUTCDate() + (1 - dIdx));
+      return dt.toISOString().slice(0, 10);
+    }
+  }
+  return null;
+}
+
 export function TradeCalendar({
   calendar,
   currency = "USD",
@@ -183,14 +202,14 @@ export function TradeCalendar({
             >
               {formatPnl(activeCalendar.monthNetPnl, currency)}
             </span>
-            <span className="rounded bg-indigo-950/60 px-1 py-0.2 text-[9px] font-semibold text-foreground">
+            <span className="rounded bg-secondary border border-border/60 px-1.5 py-0.2 text-[9px] font-semibold text-foreground">
               {activeCalendar.tradingDays} {activeCalendar.tradingDays === 1 ? "day" : "days"}
             </span>
           </div>
 
           <Link
-            href={`/monthly-journal?month=${monthKey}${search ? `&${search}` : ""}`}
-            className="flex items-center gap-1 rounded-md border border-border/60 bg-secondary/40 px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-primary hover:text-primary-foreground"
+            href={`/journal/month-${monthKey}${search ? `?${search}` : ""}`}
+            className="flex items-center gap-1 rounded-md border border-border/60 bg-secondary/40 px-2 py-1 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary"
           >
             <BookOpen className="h-3 w-3" />
             <span className="hidden sm:inline">Monthly Journal</span>
@@ -254,9 +273,9 @@ export function TradeCalendar({
                       } ${
                         hasTrades
                           ? isPositive
-                            ? "cursor-pointer border-emerald-900/60 bg-emerald-950/30 hover:border-emerald-500 hover:shadow-lg"
+                            ? "cursor-pointer border-profit/25 bg-profit/10 hover:border-profit/40 hover:shadow-md"
                             : isNegative
-                            ? "cursor-pointer border-rose-900/60 bg-rose-950/30 hover:border-rose-500 hover:shadow-lg"
+                            ? "cursor-pointer border-loss/25 bg-loss/10 hover:border-loss/40 hover:shadow-md"
                             : "cursor-pointer border-border/40 bg-secondary/20 hover:border-border hover:bg-secondary/40"
                           : "cursor-pointer border-border/30 bg-secondary/50/80 hover:border-border/60 hover:bg-secondary/20"
                       }`}
@@ -264,7 +283,7 @@ export function TradeCalendar({
                       <div className="flex items-center justify-between">
                         <span />
                         {isToday ? (
-                          <span className="flex h-4 w-4 sm:h-5 sm:w-5 items-center justify-center rounded-full bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 text-[10px] sm:text-[11px] font-bold text-foreground shadow">
+                          <span className="flex h-4 w-4 sm:h-5 sm:w-5 items-center justify-center rounded-full bg-secondary text-foreground border border-border font-semibold shadow-2xs text-[10px] sm:text-[11px] font-bold">
                             {dayNum}
                           </span>
                         ) : (
@@ -333,13 +352,25 @@ export function TradeCalendar({
             const isPositive = week.weekNetPnl > 0;
             const isNegative = week.weekNetPnl < 0;
             const weekNum = idx + 1;
+            const mondayDate = getWeekMondayDate(week.days);
+            const weekHref = mondayDate
+              ? `/journal/week-${mondayDate}${search ? `?${search}` : ""}`
+              : `/journal${search ? `?${search}` : ""}`;
 
             return (
               <Link
                 key={idx}
-                href={`/weekly-journal?year=${activeCalendar.year}&week=${weekNum}${search ? `&${search}` : ""}`}
-                className={`group flex flex-col justify-between rounded-lg border border-border/40 bg-secondary/50/80 p-2 cursor-pointer transition-all hover:border-indigo-500/70 hover:bg-secondary/30 ${
+                href={weekHref}
+                className={`group flex flex-col justify-between rounded-lg border p-2 cursor-pointer transition-all select-none ${
                   compact ? "min-h-[75px]" : "min-h-[110px]"
+                } ${
+                  hasActivity
+                    ? isPositive
+                      ? "border-profit/25 bg-profit/10 hover:border-profit/40 hover:shadow-md"
+                      : isNegative
+                      ? "border-loss/25 bg-loss/10 hover:border-loss/40 hover:shadow-md"
+                      : "border-border/40 bg-secondary/20 hover:border-border hover:bg-secondary/40"
+                    : "border-border/30 bg-secondary/50/80 hover:border-border/60 hover:bg-secondary/20"
                 }`}
               >
                 <div className="flex items-center justify-between">

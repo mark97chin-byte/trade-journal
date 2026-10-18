@@ -32,7 +32,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Time Analysis",
     format: "duration",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "avgTradingDaysDuration",
@@ -40,7 +40,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Time Analysis",
     format: "duration",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "avgHoldTime",
@@ -48,7 +48,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Time Analysis",
     format: "duration",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "longestTradeDuration",
@@ -74,7 +74,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Profitability",
     format: "money",
     defaultChartType: "line",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "avgDailyNetPnl",
@@ -82,7 +82,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Profitability",
     format: "money",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "avgDailyWinLoss",
@@ -106,7 +106,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Profitability",
     format: "money",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "avgNetTradePnl",
@@ -114,7 +114,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Profitability",
     format: "money",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "avgTradeWinLoss",
@@ -138,7 +138,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Profitability",
     format: "money",
     defaultChartType: "line",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "largestProfitableTrade",
@@ -146,7 +146,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Profitability",
     format: "money",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "largestLosingTrade",
@@ -240,7 +240,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Streaks & Consistency",
     format: "percent",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "longsWinPct",
@@ -248,7 +248,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Streaks & Consistency",
     format: "percent",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "shortsWinPct",
@@ -256,7 +256,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Streaks & Consistency",
     format: "percent",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
   {
     key: "avgDailyWinPct",
@@ -264,7 +264,7 @@ export const METRIC_DEFINITIONS: MetricDef[] = [
     category: "Streaks & Consistency",
     format: "percent",
     defaultChartType: "bar",
-    defaultColor: "#10b981",
+    defaultColor: "var(--profit-fill, #0ca30c)",
   },
 ];
 

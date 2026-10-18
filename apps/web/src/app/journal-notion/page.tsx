@@ -51,7 +51,7 @@ function Journal() {
         title="Daily journal"
         actions={
           <Link
-            href={`/journal-notion/${dayKeyOf(new Date().toISOString(), timeZone)}?${query}`}
+            href={`/journal/${dayKeyOf(new Date().toISOString(), timeZone)}?${query}`}
             className="rounded-md bg-primary px-3 py-1.5 text-xs font-medium text-primary-foreground hover:bg-primary/90"
           >
             View my day
@@ -77,7 +77,7 @@ function Journal() {
           </p>
         )}
         {data?.days.slice(0, limit).map((day) => (
-          <Link key={day.date} href={`/journal-notion/${day.date}?${query}`} className="block">
+          <Link key={day.date} href={`/journal/${day.date}?${query}`} className="block">
             <Card className="transition-colors hover:border-ring">
               <CardContent className="flex flex-wrap items-center gap-x-4 gap-y-3 py-3">
                 <div className="w-full shrink-0 sm:w-28">

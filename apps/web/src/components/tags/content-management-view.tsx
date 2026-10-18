@@ -232,7 +232,7 @@ export function ContentManagementView() {
           onClick={() => setActiveTab("categories")}
           className={`relative pb-2.5 text-xs font-semibold transition-colors ${
             activeTab === "categories"
-              ? "text-muted-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900"
+              ? "text-muted-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-secondary text-foreground border border-border font-semibold shadow-2xs"
               : "text-muted-foreground hover:text-foreground"
           }`}
         >
@@ -243,7 +243,7 @@ export function ContentManagementView() {
           onClick={() => setActiveTab("tags")}
           className={`relative pb-2.5 text-xs font-semibold transition-colors ${
             activeTab === "tags"
-              ? "text-muted-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900"
+              ? "text-muted-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-0.5 after:bg-secondary text-foreground border border-border font-semibold shadow-2xs"
               : "text-muted-foreground hover:text-foreground"
           }`}
         >

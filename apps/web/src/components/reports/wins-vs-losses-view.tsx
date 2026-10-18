@@ -138,7 +138,7 @@ export function WinsVsLossesView({
           <div className="divide-y divide-border/20 text-xs pt-2">
             <div className="flex justify-between py-2">
               <span className="text-muted-foreground">Total P&L</span>
-              <span className="font-semibold text-emerald-400 tabular-nums">
+              <span className="font-semibold text-profit tabular-nums">
                 {fmtMoney(winsStats.totalPnl)}
               </span>
             </div>
@@ -148,13 +148,13 @@ export function WinsVsLossesView({
             </div>
             <div className="flex justify-between py-2">
               <span className="text-muted-foreground">Average winning trade</span>
-              <span className="font-semibold tabular-nums text-emerald-400">
+              <span className="font-semibold tabular-nums text-profit">
                 {fmtMoney(winsStats.avgTradePnl)}
               </span>
             </div>
             <div className="flex justify-between py-2">
               <span className="text-muted-foreground">Largest winning trade</span>
-              <span className="font-semibold tabular-nums text-emerald-400">
+              <span className="font-semibold tabular-nums text-profit">
                 {fmtMoney(winsStats.largestTrade)}
               </span>
             </div>
@@ -164,7 +164,7 @@ export function WinsVsLossesView({
             </div>
             <div className="flex justify-between py-2">
               <span className="text-muted-foreground">Average MFE (Max Run-up)</span>
-              <span className="font-semibold text-emerald-400 tabular-nums">
+              <span className="font-semibold text-profit tabular-nums">
                 {winsStats.avgMfe !== null ? fmtMoney(winsStats.avgMfe) : "N/A"}
               </span>
             </div>
@@ -182,7 +182,7 @@ export function WinsVsLossesView({
             </div>
             <div className="flex justify-between py-2">
               <span className="text-muted-foreground">Average realized R-Multiple</span>
-              <span className="font-semibold tabular-nums text-emerald-400">
+              <span className="font-semibold tabular-nums text-profit">
                 {winsStats.avgRealizedR !== null ? `${winsStats.avgRealizedR.toFixed(2)}R` : "N/A"}
               </span>
             </div>
@@ -200,7 +200,7 @@ export function WinsVsLossesView({
             </div>
             <div className="flex justify-between py-2">
               <span className="text-muted-foreground">Max consecutive wins</span>
-              <span className="font-semibold tabular-nums text-emerald-400">{winsStats.maxConsecutiveStreak}</span>
+              <span className="font-semibold tabular-nums text-profit">{winsStats.maxConsecutiveStreak}</span>
             </div>
           </div>
         </div>
@@ -212,7 +212,7 @@ export function WinsVsLossesView({
               <span className="text-[10px] text-muted-foreground">({dateLabel})</span>
             </div>
           </div>
-          <div className="pt-2">{renderCurve(winsCurve, "#10b981")}</div>
+          <div className="pt-2">{renderCurve(winsCurve, "var(--profit)")}</div>
         </div>
       </div>
 
@@ -265,7 +265,7 @@ export function WinsVsLossesView({
             </div>
             <div className="flex justify-between py-2">
               <span className="text-muted-foreground">Average MFE (Max Run-up)</span>
-              <span className="font-semibold text-emerald-400 tabular-nums">
+              <span className="font-semibold text-profit tabular-nums">
                 {lossesStats.avgMfe !== null ? fmtMoney(lossesStats.avgMfe) : "N/A"}
               </span>
             </div>

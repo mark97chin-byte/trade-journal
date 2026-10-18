@@ -72,28 +72,28 @@ export function ReportDimensionView({
       {/* 1. TOP 4 HIGHLIGHT CARDS */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4 shadow-sm">
-          <div className="flex items-center gap-1.5 text-xs text-emerald-400 font-medium">
+          <div className="flex items-center gap-1.5 text-xs text-profit font-semibold font-medium">
             <TrendingUp className="h-4 w-4" />
             <span>Best performing {unitLabel}</span>
           </div>
           <div className="mt-2 text-xl font-bold text-foreground truncate">{highlights.best.label}</div>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
             <span>{highlights.best.count} trades</span>
-            <span className="font-semibold text-emerald-400">
+            <span className="font-semibold text-profit font-semibold">
               {highlights.best.pnl !== 0 ? fmtMoney(highlights.best.pnl) : "$0"}
             </span>
           </div>
         </div>
 
         <div className="rounded-xl border border-border/50 bg-slate-50 dark:bg-card p-4 shadow-sm">
-          <div className="flex items-center gap-1.5 text-xs text-rose-400 font-medium">
+          <div className="flex items-center gap-1.5 text-xs text-loss font-semibold font-medium">
             <TrendingDown className="h-4 w-4" />
             <span>Least performing {unitLabel}</span>
           </div>
           <div className="mt-2 text-xl font-bold text-foreground truncate">{highlights.least.label}</div>
           <div className="mt-1 flex items-center gap-2 text-xs text-muted-foreground">
             <span>{highlights.least.count} trades</span>
-            <span className="font-semibold text-rose-400">
+            <span className="font-semibold text-loss font-semibold">
               {highlights.least.pnl !== 0 ? fmtMoney(highlights.least.pnl) : "$0"}
             </span>
           </div>
@@ -133,7 +133,7 @@ export function ReportDimensionView({
         />
         <ReportMetricChart
           customBuckets={chartBuckets}
-          defaultMetrics={[{ key: "winRate", chartType: "bar", color: "#10b981" }]}
+          defaultMetrics={[{ key: "winRate", chartType: "bar", color: "var(--profit)" }]}
         />
       </div>
 
@@ -199,17 +199,17 @@ export function ReportDimensionView({
                     </td>
                     <td
                       className={`py-2.5 text-right font-semibold tabular-nums ${
-                        s.netPnl > 0 ? "text-emerald-400" : s.netPnl < 0 ? "text-rose-400" : "text-muted-foreground"
+                        s.netPnl > 0 ? "text-profit font-semibold" : s.netPnl < 0 ? "text-loss font-semibold" : "text-muted-foreground"
                       }`}
                     >
                       {fmtMoney(s.netPnl)}
                     </td>
                     <td className="py-2.5 text-right tabular-nums text-foreground">{s.tradesCount}</td>
                     <td className="py-2.5 text-right tabular-nums text-muted-foreground">{s.avgVolume.toFixed(2)}</td>
-                    <td className="py-2.5 text-right tabular-nums text-emerald-400 font-medium">
+                    <td className="py-2.5 text-right tabular-nums text-profit font-semibold font-medium">
                       {s.avgWin > 0 ? fmtMoney(s.avgWin) : "$0"}
                     </td>
-                    <td className="py-2.5 text-right tabular-nums text-rose-400 font-medium">
+                    <td className="py-2.5 text-right tabular-nums text-loss font-semibold font-medium">
                       {s.avgLoss < 0 ? fmtMoney(s.avgLoss) : "$0"}
                     </td>
                   </tr>
@@ -290,17 +290,17 @@ export function ReportDimensionView({
                         if (crossMetric === "pnl") {
                           cellBg =
                             cell.netPnl > 0
-                              ? "bg-emerald-500/25 text-emerald-300 font-semibold"
+                              ? "bg-profit/10 text-profit font-semibold font-semibold"
                               : cell.netPnl < 0
-                              ? "bg-rose-500/25 text-rose-300 font-semibold"
+                              ? "bg-loss/10 text-loss font-semibold font-semibold"
                               : "text-muted-foreground";
                         } else if (crossMetric === "winrate") {
                           cellBg =
                             cell.winRate >= 50
-                              ? "bg-emerald-500/25 text-emerald-300 font-semibold"
-                              : "bg-rose-500/25 text-rose-300 font-semibold";
+                              ? "bg-profit/10 text-profit font-semibold font-semibold"
+                              : "bg-loss/10 text-loss font-semibold font-semibold";
                         } else {
-                          cellBg = "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/20 text-foreground font-semibold";
+                          cellBg = "bg-secondary text-foreground border border-border font-semibold shadow-2xs/20 text-foreground font-semibold";
                         }
                       } else {
                         cellBg = "text-muted-foreground/60";

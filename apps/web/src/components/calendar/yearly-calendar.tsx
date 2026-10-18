@@ -115,6 +115,20 @@ export function YearlyCalendar() {
     return { pnl, trades, wins, winRate };
   }, [months]);
 
+  const yearHasTrades = yearTotal.trades > 0;
+  const yearIsPositive =
+    metric === "pnl"
+      ? yearTotal.pnl > 0
+      : metric === "winrate"
+      ? (yearTotal.winRate ?? 0) >= 50
+      : false;
+  const yearIsNegative =
+    metric === "pnl"
+      ? yearTotal.pnl < 0
+      : metric === "winrate"
+      ? (yearTotal.winRate ?? 0) < 50
+      : false;
+
   return (
     <Card className="h-full">
       <CardHeader className="flex-row flex-wrap items-center justify-between gap-3 pb-3">
@@ -181,7 +195,7 @@ export function YearlyCalendar() {
             onClick={() => setMetric("winrate")}
             className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
               metric === "winrate"
-                ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                ? "bg-secondary text-foreground font-semibold border border-border shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -192,7 +206,7 @@ export function YearlyCalendar() {
             onClick={() => setMetric("pnl")}
             className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
               metric === "pnl"
-                ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                ? "bg-secondary text-foreground font-semibold border border-border shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -203,7 +217,7 @@ export function YearlyCalendar() {
             onClick={() => setMetric("trades")}
             className={`rounded-md px-2.5 py-1 text-[11px] font-medium transition-all ${
               metric === "trades"
-                ? "bg-secondary text-foreground font-semibold border border-border text-foreground shadow-sm"
+                ? "bg-secondary text-foreground font-semibold border border-border shadow-sm"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
@@ -222,7 +236,7 @@ export function YearlyCalendar() {
             style={{ gridTemplateColumns: "repeat(13, minmax(0, 1fr))" }}
           >
             {/* ROW 1: Quarterly Stats Row */}
-            <div /> {/* Spacer cell aligned above the Year column */}
+            <div />
             {quarters.map((q) => {
               if (q.trades === 0) {
                 return (
@@ -237,9 +251,10 @@ export function YearlyCalendar() {
               }
 
               return (
-                <div
+                <Link
                   key={q.label}
-                  className="col-span-3 flex items-center justify-center gap-1.5 rounded-lg border border-border/50 bg-secondary/50 px-2 py-1.5 text-center text-[11px] font-medium shadow-sm select-none whitespace-nowrap"
+                  href={`/journal/quarter-${year}-${q.label}${search ? `?${search}` : ""}`}
+                  className="col-span-3 flex items-center justify-center gap-1.5 rounded-lg border border-border/50 bg-secondary/50 px-2 py-1.5 text-center text-[11px] font-medium shadow-sm select-none whitespace-nowrap hover:border-border transition-colors"
                 >
                   <span className="font-semibold text-foreground">{q.label}</span>
                   <span
@@ -262,7 +277,7 @@ export function YearlyCalendar() {
                       : "0%"}{" "}
                     Winrate
                   </span>
-                </div>
+                </Link>
               );
             })}
 
@@ -279,10 +294,21 @@ export function YearlyCalendar() {
               </div>
             ))}
 
-            {/* ROW 3: Year Card with Full-Year Stats */}
-            <div className="flex min-h-[90px] flex-col items-center justify-center rounded-xl border border-border/50 bg-secondary/50 p-1 text-center shadow-sm select-none">
+            {/* ROW 3: Year Card with Full-Year Stats (Matches Monthly Calendar Day Tile Style) */}
+            <Link
+              href={`/journal/year-${year}${search ? `?${search}` : ""}`}
+              className={`flex min-h-[90px] flex-col items-center justify-center rounded-xl border p-1 text-center shadow-sm transition-all select-none ${
+                yearHasTrades
+                  ? yearIsPositive
+                    ? "border-profit/25 bg-profit/10 hover:border-profit/40"
+                    : yearIsNegative
+                    ? "border-loss/25 bg-loss/10 hover:border-loss/40"
+                    : "border-border/50 bg-secondary/50"
+                  : "border-border/30 bg-secondary/50/80"
+              }`}
+            >
               <span className="text-xs font-bold text-foreground tracking-tight">{year}</span>
-              {yearTotal.trades > 0 ? (
+              {yearHasTrades ? (
                 <>
                   {metric === "pnl" && (
                     <>
@@ -313,7 +339,11 @@ export function YearlyCalendar() {
 
                   {metric === "winrate" && (
                     <>
-                      <span className="text-xs sm:text-sm font-bold tracking-tight mt-0.5 text-foreground">
+                      <span
+                        className={`text-xs sm:text-sm font-bold tracking-tight mt-0.5 ${
+                          yearIsPositive ? "text-profit" : "text-loss"
+                        }`}
+                      >
                         {yearTotal.winRate !== null
                           ? `${yearTotal.winRate.toFixed(0)}%`
                           : "0%"}
@@ -338,16 +368,14 @@ export function YearlyCalendar() {
               ) : (
                 <span className="text-xs text-muted-foreground/50 mt-1">--</span>
               )}
-            </div>
+            </Link>
 
-            {/* ROW 3: 12 Month Cards */}
+            {/* ROW 3: 12 Month Cards (Exact Same Classes as Monthly Calendar Day Tiles) */}
             {months.map((m) => {
               const hasTrades = m.trades > 0;
-              const isPositive = m.pnl > 0;
-              const isNegative = m.pnl < 0;
               const monthStr = String(m.month).padStart(2, "0");
-              const href = `/monthly-journal?month=${year}-${monthStr}${
-                search ? `&${search}` : ""
+              const href = `/journal/month-${year}-${monthStr}${
+                search ? `?${search}` : ""
               }`;
 
               if (!hasTrades) {
@@ -362,39 +390,53 @@ export function YearlyCalendar() {
                 );
               }
 
-              let bgClasses = "border-transparent text-foreground";
-              if (metric === "pnl") {
-                bgClasses += isNegative
-                  ? " bg-[#df5656] hover:bg-[#d44848]"
+              const isPositive =
+                metric === "pnl"
+                  ? m.pnl > 0
+                  : metric === "winrate"
+                  ? (m.winRate ?? 0) >= 50
+                  : false;
+              const isNegative =
+                metric === "pnl"
+                  ? m.pnl < 0
+                  : metric === "winrate"
+                  ? (m.winRate ?? 0) < 50
+                  : false;
+
+              const tileClasses =
+                metric === "trades"
+                  ? "border-border/50 bg-secondary/50 hover:bg-secondary/70"
                   : isPositive
-                  ? " bg-secondary/40 hover:bg-secondary/50"
-                  : " bg-secondary/50 text-foreground";
-              } else if (metric === "winrate") {
-                const winRate = m.winRate ?? 0;
-                bgClasses +=
-                  winRate >= 50
-                    ? " bg-secondary/40 hover:bg-secondary/50"
-                    : " bg-[#df5656] hover:bg-[#d44848]";
-              } else {
-                bgClasses += " bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border";
-              }
+                  ? "border-profit/25 bg-profit/10 hover:border-profit/40 hover:shadow-md"
+                  : isNegative
+                  ? "border-loss/25 bg-loss/10 hover:border-loss/40 hover:shadow-md"
+                  : "border-border/40 bg-secondary/20 hover:border-border";
+
+              const valueColor =
+                metric === "trades"
+                  ? "text-foreground"
+                  : isPositive
+                  ? "text-profit"
+                  : isNegative
+                  ? "text-loss"
+                  : "text-foreground";
 
               return (
                 <Link
                   key={m.month}
                   href={href}
-                  className={`flex min-h-[90px] flex-col items-center justify-center rounded-xl border p-1 text-center shadow-sm transition-all hover:scale-[1.02] select-none ${bgClasses}`}
+                  className={`flex min-h-[90px] flex-col items-center justify-center rounded-xl border p-1 text-center shadow-sm transition-all hover:scale-[1.02] select-none ${tileClasses}`}
                 >
                   {metric === "pnl" && (
                     <>
-                      <span className="text-xs sm:text-sm font-bold tracking-tight">
+                      <span className={`text-xs sm:text-sm font-bold tracking-tight ${valueColor}`}>
                         {formatPnlK(m.pnl)}
                       </span>
-                      <span className="mt-0.5 text-[10px] font-medium opacity-90">
-                        {m.trades} trades
+                      <span className="mt-0.5 text-[10px] font-medium text-muted-foreground/90">
+                        {m.trades} {m.trades === 1 ? "trade" : "trades"}
                       </span>
                       {m.winRate !== null && (
-                        <span className="text-[10px] font-medium opacity-90">
+                        <span className="text-[10px] font-medium text-muted-foreground/80">
                           {m.winRate % 1 === 0 ? m.winRate.toFixed(0) : m.winRate.toFixed(1)}%
                         </span>
                       )}
@@ -403,22 +445,22 @@ export function YearlyCalendar() {
 
                   {metric === "winrate" && (
                     <>
-                      <span className="text-xs sm:text-sm font-bold tracking-tight">
+                      <span className={`text-xs sm:text-sm font-bold tracking-tight ${valueColor}`}>
                         {m.winRate !== null ? `${m.winRate.toFixed(0)}%` : "0%"}
                       </span>
-                      <span className="mt-0.5 text-[10px] font-medium opacity-90">
-                        {m.trades} trades
+                      <span className="mt-0.5 text-[10px] font-medium text-muted-foreground/90">
+                        {m.trades} {m.trades === 1 ? "trade" : "trades"}
                       </span>
                     </>
                   )}
 
                   {metric === "trades" && (
                     <>
-                      <span className="text-sm sm:text-base font-bold tracking-tight">
+                      <span className="text-sm sm:text-base font-bold tracking-tight text-foreground">
                         {m.trades}
                       </span>
-                      <span className="text-[10px] font-medium opacity-90">
-                        trades
+                      <span className="text-[10px] font-medium text-muted-foreground/90">
+                        {m.trades === 1 ? "trade" : "trades"}
                       </span>
                     </>
                   )}

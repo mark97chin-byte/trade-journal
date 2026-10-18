@@ -709,7 +709,7 @@ export function HistoricalReplay({
                   onClick={() => onTimeframeChange(res)}
                   className={`rounded px-2 py-0.5 font-medium transition ${
                     activeResolution === res
-                      ? "bg-foreground text-background font-semibold shadow-2xs shadow-sm"
+                      ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs shadow-sm"
                       : "text-muted-foreground hover:bg-muted hover:text-foreground"
                   }`}
                 >
@@ -719,7 +719,7 @@ export function HistoricalReplay({
               <button
                 type="button"
                 onClick={() => setShowCustomModal(true)}
-                className="rounded px-2 py-0.5 text-[11px] font-semibold text-muted-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10"
+                className="rounded px-2 py-0.5 text-[11px] font-semibold text-muted-foreground hover:bg-secondary text-foreground border border-border font-semibold shadow-2xs/10"
                 title="Create custom timeframe (e.g. 2m, 45m, 8h)"
               >
                 + Custom
@@ -791,7 +791,7 @@ export function HistoricalReplay({
                 <ChevronLeft />
               </Button>
               <Button
-                className="min-w-24 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-white text-white"
+                className="min-w-24 bg-secondary text-foreground border border-border font-semibold shadow-2xs hover:bg-slate-700 dark:hover:bg-white text-white"
                 disabled={history.bars.length <= 1}
                 onClick={() => {
                   if (complete) setCount(Math.max(1, entryBarIndex - 2));
@@ -845,7 +845,7 @@ export function HistoricalReplay({
             <div className="relative w-full py-2 flex items-center">
               {/* Shaded trade window */}
               <div
-                className="absolute h-2.5 rounded bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/25 border border-indigo-400/40 pointer-events-none"
+                className="absolute h-2.5 rounded bg-secondary text-foreground border border-border font-semibold shadow-2xs/25 border border-indigo-400/40 pointer-events-none"
                 style={{
                   left: `${entryPct}%`,
                   width: `${tradeSpanPct}%`,
@@ -916,7 +916,7 @@ export function HistoricalReplay({
                 </Button>
                 <Button
                   size="sm"
-                  className="bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:bg-slate-700 dark:hover:bg-white text-white"
+                  className="bg-secondary text-foreground border border-border font-semibold shadow-2xs hover:bg-slate-700 dark:hover:bg-white text-white"
                   onClick={handleApplyCustomTf}
                 >
                   Apply

@@ -1949,7 +1949,7 @@ export function RichEditor({
             <button
               type="button"
               onClick={() => setNewTemplateModal(true)}
-              className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-transparent px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10 transition-colors"
+              className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-transparent px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary text-foreground border border-border font-medium/10 transition-colors"
             >
               <Plus className="h-3 w-3" />
               <span>Add template</span>
@@ -2616,7 +2616,7 @@ export function RichEditor({
 
         {/* SELECTED IMAGE RESIZE & CAPTION BAR */}
         {selectedImg && !readOnly && (
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-500/30 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/10 px-3 py-1.5 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-500/30 bg-secondary text-foreground border border-border font-medium/10 px-3 py-1.5 text-xs">
             <span className="text-[11px] font-medium text-foreground">
               Image selected:
             </span>
@@ -2629,7 +2629,7 @@ export function RichEditor({
                     selectedImg.style.width = w;
                     emitChange();
                   }}
-                  className="rounded bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:text-white"
+                  className="rounded bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-secondary text-foreground border border-border font-medium hover:text-white"
                 >
                   {w}
                 </button>
@@ -2652,7 +2652,7 @@ export function RichEditor({
                     }
                   }
                 }}
-                className="rounded bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 hover:text-white"
+                className="rounded bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-secondary text-foreground border border-border font-medium hover:text-white"
               >
                 + Caption
               </button>
@@ -2773,7 +2773,7 @@ export function RichEditor({
                 width: dropIndicator.rect.width,
                 height: 3,
               }}
-              className="pointer-events-none absolute z-40 rounded-full bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900 shadow-[0_0_10px_#6366f1]"
+              className="pointer-events-none absolute z-40 rounded-full bg-secondary text-foreground border border-border font-medium shadow-[0_0_10px_#6366f1]"
             />
           )}
 

@@ -305,8 +305,8 @@ function PlaybookDetailContent() {
       <svg viewBox={`0 0 ${width} ${height}`} className="w-full h-auto overflow-visible">
         <defs>
           <linearGradient id="pbEquityGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stopColor="#10b981" stopOpacity="0.45" />
-            <stop offset="100%" stopColor="#10b981" stopOpacity="0.02" />
+            <stop offset="0%" stopColor="var(--profit-fill, #0ca30c)" stopOpacity="0.45" />
+            <stop offset="100%" stopColor="var(--profit-fill, #0ca30c)" stopOpacity="0.02" />
           </linearGradient>
         </defs>
 
@@ -458,7 +458,7 @@ function PlaybookDetailContent() {
                       cy="16"
                       r="12"
                       fill="none"
-                      stroke="#10b981"
+                      stroke="var(--profit-fill, #0ca30c)"
                       strokeWidth="3.5"
                       strokeDasharray={`${(s.winRate / 100) * 75.4} 75.4`}
                     />

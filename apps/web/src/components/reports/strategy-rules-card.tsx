@@ -323,7 +323,7 @@ export function StrategyRulesCard({
               return (
                 <span
                   key={rk}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/40 bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/15 px-2.5 py-0.5 text-[11px] font-medium text-foreground"
+                  className="inline-flex items-center gap-1.5 rounded-full border border-indigo-500/40 bg-secondary text-foreground border border-border font-semibold shadow-2xs/15 px-2.5 py-0.5 text-[11px] font-medium text-foreground"
                 >
                   <span className="max-w-[220px] truncate">{ruleText}</span>
                   <button
@@ -341,12 +341,12 @@ export function StrategyRulesCard({
           {/* 3-Column Comparison Cards */}
           <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
             {/* 1. When Selected Rules Followed */}
-            <div className="rounded-xl border border-emerald-500/30 bg-[#0d0f14] p-4 space-y-2">
+            <div className="rounded-xl border border-profit/30 bg-[#0d0f14] p-4 space-y-2">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold text-emerald-400">
+                <span className="text-xs font-semibold text-profit">
                   When Selected Rules Followed
                 </span>
-                <span className="rounded bg-emerald-500/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300 tabular-nums">
+                <span className="rounded bg-profit/15 px-2 py-0.5 text-[10px] font-bold text-emerald-300 tabular-nums">
                   {combinationComparison.followed.count} trades
                 </span>
               </div>
@@ -360,7 +360,7 @@ export function StrategyRulesCard({
                   <span
                     className={`ml-auto inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-semibold tabular-nums ${
                       combinationComparison.deltaVsNotFollowed > 0
-                        ? "bg-emerald-500/20 text-emerald-300"
+                        ? "bg-profit/20 text-emerald-300"
                         : combinationComparison.deltaVsNotFollowed < 0
                         ? "bg-rose-500/20 text-rose-300"
                         : "bg-secondary text-muted-foreground"
@@ -378,7 +378,7 @@ export function StrategyRulesCard({
                   <span
                     className={`font-semibold tabular-nums ${
                       combinationComparison.followed.netPnl >= 0
-                        ? "text-emerald-400"
+                        ? "text-profit"
                         : "text-rose-400"
                     }`}
                   >
@@ -408,7 +408,7 @@ export function StrategyRulesCard({
                 <span className="text-xs font-semibold text-rose-400">
                   When Rules NOT Followed
                 </span>
-                <span className="rounded bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold text-rose-300 tabular-nums">
+                <span className="rounded bg-loss/15 px-2 py-0.5 text-[10px] font-bold text-rose-300 tabular-nums">
                   {combinationComparison.notFollowed.count} trades
                 </span>
               </div>
@@ -426,7 +426,7 @@ export function StrategyRulesCard({
                   <span
                     className={`font-semibold tabular-nums ${
                       combinationComparison.notFollowed.netPnl >= 0
-                        ? "text-emerald-400"
+                        ? "text-profit"
                         : "text-rose-400"
                     }`}
                   >
@@ -474,7 +474,7 @@ export function StrategyRulesCard({
                   <span
                     className={`font-semibold tabular-nums ${
                       combinationComparison.baseline.netPnl >= 0
-                        ? "text-emerald-400"
+                        ? "text-profit"
                         : "text-rose-400"
                     }`}
                   >
@@ -551,7 +551,7 @@ export function StrategyRulesCard({
                   onClick={() => toggleRuleSelection(r.ruleKey)}
                   className={`cursor-pointer transition-colors ${
                     isSelected
-                      ? "bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/15 hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/20"
+                      ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs/15 hover:bg-secondary text-foreground border border-border font-semibold shadow-2xs/20"
                       : "hover:bg-secondary/20"
                   }`}
                 >
@@ -594,7 +594,7 @@ export function StrategyRulesCard({
                       <div className="h-1.5 w-20 overflow-hidden rounded-full bg-secondary">
                         <div
                           className={`h-full ${
-                            f.winRate >= 50 ? "bg-emerald-500" : "bg-rose-500"
+                            f.winRate >= 50 ? "bg-profit" : "bg-rose-500"
                           }`}
                           style={{ width: `${Math.min(100, f.winRate)}%` }}
                         />
@@ -611,9 +611,9 @@ export function StrategyRulesCard({
                       <span
                         className={`inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[11px] font-semibold ${
                           r.winRateDelta > 0.05
-                            ? "bg-emerald-500/15 text-emerald-400"
+                            ? "bg-profit/15 text-profit"
                             : r.winRateDelta < -0.05
-                            ? "bg-rose-500/15 text-rose-400"
+                            ? "bg-loss/15 text-rose-400"
                             : "text-muted-foreground"
                         }`}
                       >
@@ -634,7 +634,7 @@ export function StrategyRulesCard({
                   <td
                     className={`py-3 text-right font-semibold tabular-nums ${
                       f.netPnl > 0
-                        ? "text-emerald-400"
+                        ? "text-profit"
                         : f.netPnl < 0
                         ? "text-rose-400"
                         : "text-muted-foreground"
