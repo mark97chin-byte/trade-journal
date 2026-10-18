@@ -204,7 +204,12 @@ export function JournalEntryEditor({
   const [lessonsLearned, setLessonsLearned] = useState(
     initialEntry.lessonsLearned || ""
   );
-  const [notionUrl, setNotionUrl] = useState<string | null>(initialEntry.notionUrl);
+  const [notionUrl, setNotionUrl] = useState<string | null>(
+    initialEntry.notionUrl ||
+      (initialEntry.notionPageId
+        ? `https://www.notion.so/${initialEntry.notionPageId.replace(/-/g, "")}`
+        : null)
+  );
 
   const [checklist, setChecklist] = useState<Record<string, boolean>>(() => {
     try {
@@ -244,7 +249,12 @@ export function JournalEntryEditor({
     setDayProfile(initialEntry.dayProfile || "");
     setKeyLevels(initialEntry.keyLevels || "");
     setLessonsLearned(initialEntry.lessonsLearned || "");
-    setNotionUrl(initialEntry.notionUrl);
+    setNotionUrl(
+      initialEntry.notionUrl ||
+        (initialEntry.notionPageId
+          ? `https://www.notion.so/${initialEntry.notionPageId.replace(/-/g, "")}`
+          : null)
+    );
     try {
       setChecklist(JSON.parse(initialEntry.checklistJson || "{}"));
     } catch {
@@ -641,17 +651,16 @@ export function JournalEntryEditor({
             </span>
           )}
 
-          {notionUrl && (
-            <a
-              href={notionUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-secondary/50 px-2.5 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition"
-            >
-              <span>Open in Notion</span>
-              <ExternalLink className="w-3.5 h-3.5" />
-            </a>
-          )}
+          <a
+            href={notionUrl || "https://www.notion.so"}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition"
+            title={notionUrl ? "Open linked page in Notion" : "Open Notion"}
+          >
+            <span>Open in Notion</span>
+            <ExternalLink className="w-3.5 h-3.5" />
+          </a>
 
           <button
             type="button"
@@ -853,23 +862,6 @@ export function JournalEntryEditor({
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <div className="flex items-center gap-1.5">
-                  <span className="text-[11px] text-muted-foreground mr-1">
-                    Templates:
-                  </span>
-                  {Object.entries(NOTION_HTML_TEMPLATES).map(([k, tpl]) => (
-                    <button
-                      key={k}
-                      type="button"
-                      onClick={() => insertTemplateHtml(k)}
-                      className="inline-flex items-center gap-1 rounded-md border border-border/60 bg-[#181b26] hover:bg-secondary text-foreground border border-border font-medium/15 hover:border-indigo-500/40 px-2 py-1 text-[11px] font-medium text-foreground transition"
-                    >
-                      <Sparkles className="w-3 h-3 text-muted-foreground" />
-                      <span>{tpl.label.split(" ")[0]}</span>
-                    </button>
-                  ))}
-                </div>
-
                 <VoiceNote
                   onPrepare={() => noteEditorRef.current?.focus()}
                   onText={(text) => {

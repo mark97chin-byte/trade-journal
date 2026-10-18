@@ -2577,13 +2577,12 @@ export function RichEditor({
                   </div>
                 )}
               </div>
-            </div>
 
-            {/* Right Controls: Undo, Redo, Fullscreen */}
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => exec("undo")}
+              {/* Right Controls: Undo, Redo, Fullscreen inline on same row */}
+              <div className="ml-auto flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => exec("undo")}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
                 title="Undo"
               >
@@ -2610,6 +2609,7 @@ export function RichEditor({
                   <Maximize2 className="h-3.5 w-3.5" />
                 )}
               </button>
+              </div>
             </div>
           </div>
         )}

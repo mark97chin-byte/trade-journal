@@ -416,10 +416,10 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
           {!leftCollapsed && !rightCollapsed && (
             <div
               onMouseDown={handleMouseDown}
-              className="hidden lg:flex w-2 cursor-col-resize items-center justify-center hover:bg-slate-800 dark:bg-slate-200 text-white dark:text-slate-900/30 transition-colors group z-10"
+              className="hidden lg:flex w-2 cursor-col-resize items-center justify-center bg-transparent hover:bg-white/[0.03] transition-colors group z-10"
               title="Drag to resize split"
             >
-              <div className="h-12 w-1 rounded-full bg-border/60 group-hover:bg-indigo-400 transition-colors" />
+              <div className="h-12 w-0.5 rounded-full bg-border/20 group-hover:bg-indigo-500/50 transition-colors" />
             </div>
           )}
 
