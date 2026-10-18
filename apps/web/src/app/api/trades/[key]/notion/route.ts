@@ -1,16 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { db, trades } from "@/db";
 import { pullFromNotionPage, pushHtmlToNotionPage } from "@/server/notion-sync";
 
+function ensureNotionColumns() {
+  try {
+    db.run(sql`ALTER TABLE trades ADD COLUMN notion_page_id TEXT`);
+  } catch {}
+  try {
+    db.run(sql`ALTER TABLE trades ADD COLUMN notion_url TEXT`);
+  } catch {}
+}
+
 async function resolveTrade(decodedKey: string, token: string) {
-  const row = db.select().from(trades).where(eq(trades.key, decodedKey)).get() as any;
+  ensureNotionColumns();
+
+  // Read directly via raw SQL so columns are guaranteed even if schema cache lags
+  const rows = db.all(
+    sql`SELECT key, notes, notion_page_id AS notionPageId, notion_url AS notionUrl FROM trades WHERE key = ${decodedKey} LIMIT 1`
+  ) as any[];
+
+  const row = rows?.[0];
   if (!row) return null;
 
-  let pageId = row.notionPageId || row.notion_page_id;
-  let notionUrl = row.notionUrl || row.notion_url;
+  let pageId: string | null = row.notionPageId || null;
+  let notionUrl: string | null = row.notionUrl || null;
 
-  // Fallback lookup if not cached in SQLite
   const tradesDbId = (
     process.env.NOTION_TRADES_DATABASE_ID ||
     process.env.NOTION_DATABASE_ID ||
@@ -40,10 +55,9 @@ async function resolveTrade(decodedKey: string, token: string) {
         if (page?.id) {
           pageId = page.id;
           notionUrl = page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`;
-          db.update(trades)
-            .set({ notionPageId: pageId, notionUrl } as any)
-            .where(eq(trades.key, decodedKey))
-            .run();
+          db.run(
+            sql`UPDATE trades SET notion_page_id = ${pageId}, notion_url = ${notionUrl} WHERE key = ${decodedKey}`
+          );
         }
       }
     } catch (err) {
@@ -56,29 +70,36 @@ async function resolveTrade(decodedKey: string, token: string) {
 
 export async function GET(
   _req: NextRequest,
-  { params }: { params: Promise<{ key: string }> }
+  context: { params: Promise<{ key: string }> | { key: string } }
 ) {
-  const { key } = await params;
-  const decodedKey = decodeURIComponent(key);
-  const token = process.env.NOTION_TOKEN || "";
-  if (!token) {
-    return NextResponse.json({ error: "Missing NOTION_TOKEN in environment" }, { status: 400 });
-  }
-
   try {
-    const resolved = await resolveTrade(decodedKey, token);
-    if (!resolved || !resolved.pageId) {
+    const resolvedParams = await Promise.resolve(context.params);
+    const decodedKey = decodeURIComponent(resolvedParams.key);
+    const token = process.env.NOTION_TOKEN || "";
+
+    if (!token) {
       return NextResponse.json(
-        { error: "No Notion page found for this trade." },
+        { error: "Missing NOTION_TOKEN in server environment (.env)" },
+        { status: 400 }
+      );
+    }
+
+    const resolved = await resolveTrade(decodedKey, token);
+    if (!resolved) {
+      return NextResponse.json(
+        { error: `Trade '${decodedKey}' not found in local SQLite database.` },
+        { status: 404 }
+      );
+    }
+    if (!resolved.pageId) {
+      return NextResponse.json(
+        { error: `No linked Notion page found in Notion for trade '${decodedKey}'.` },
         { status: 404 }
       );
     }
 
     const html = await pullFromNotionPage(resolved.pageId, token, decodedKey);
-    db.update(trades)
-      .set({ notes: html } as any)
-      .where(eq(trades.key, decodedKey))
-      .run();
+    db.run(sql`UPDATE trades SET notes = ${html} WHERE key = ${decodedKey}`);
 
     return NextResponse.json({
       ok: true,
@@ -87,9 +108,9 @@ export async function GET(
       notionUrl: resolved.notionUrl,
     });
   } catch (err: any) {
-    console.error("Trade Notion pull error:", err);
+    console.error("Trade Notion GET error:", err);
     return NextResponse.json(
-      { error: err?.message || "Failed to pull notes from Notion" },
+      { error: err?.message || String(err) || "Failed to pull notes from Notion" },
       { status: 500 }
     );
   }
@@ -97,32 +118,38 @@ export async function GET(
 
 export async function POST(
   req: NextRequest,
-  { params }: { params: Promise<{ key: string }> }
+  context: { params: Promise<{ key: string }> | { key: string } }
 ) {
-  const { key } = await params;
-  const decodedKey = decodeURIComponent(key);
-  const token = process.env.NOTION_TOKEN || "";
-  if (!token) {
-    return NextResponse.json({ error: "Missing NOTION_TOKEN in environment" }, { status: 400 });
-  }
-
-  const body = await req.json().catch(() => ({}));
-  const notesHtml = typeof body.notes === "string" ? body.notes : "";
-
   try {
-    const resolved = await resolveTrade(decodedKey, token);
-    if (!resolved || !resolved.pageId) {
+    const resolvedParams = await Promise.resolve(context.params);
+    const decodedKey = decodeURIComponent(resolvedParams.key);
+    const token = process.env.NOTION_TOKEN || "";
+
+    if (!token) {
       return NextResponse.json(
-        { error: "No Notion page found for this trade." },
+        { error: "Missing NOTION_TOKEN in server environment (.env)" },
+        { status: 400 }
+      );
+    }
+
+    const body = await req.json().catch(() => ({}));
+    const notesHtml = typeof body.notes === "string" ? body.notes : "";
+
+    const resolved = await resolveTrade(decodedKey, token);
+    if (!resolved) {
+      return NextResponse.json(
+        { error: `Trade '${decodedKey}' not found in local SQLite database.` },
+        { status: 404 }
+      );
+    }
+    if (!resolved.pageId) {
+      return NextResponse.json(
+        { error: `No linked Notion page found in Notion for trade '${decodedKey}'.` },
         { status: 404 }
       );
     }
 
-    db.update(trades)
-      .set({ notes: notesHtml } as any)
-      .where(eq(trades.key, decodedKey))
-      .run();
-
+    db.run(sql`UPDATE trades SET notes = ${notesHtml} WHERE key = ${decodedKey}`);
     await pushHtmlToNotionPage(resolved.pageId, notesHtml, token);
 
     return NextResponse.json({
@@ -131,9 +158,9 @@ export async function POST(
       notionUrl: resolved.notionUrl,
     });
   } catch (err: any) {
-    console.error("Trade Notion sync error:", err);
+    console.error("Trade Notion POST error:", err);
     return NextResponse.json(
-      { error: err?.message || "Failed to sync notes to Notion" },
+      { error: err?.message || String(err) || "Failed to sync notes to Notion" },
       { status: 500 }
     );
   }
