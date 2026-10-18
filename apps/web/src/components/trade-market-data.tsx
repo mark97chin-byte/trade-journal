@@ -497,20 +497,31 @@ export function getEffectiveExecutions(
 
   const bars = history.bars;
   const getCandleAt = (targetMs: number) => {
-    return bars.reduce((prev, curr) =>
-      Math.abs(curr.time - targetMs) < Math.abs(prev.time - targetMs) ? curr : prev
-    );
+    let chosen = bars[0]!;
+    for (let i = 0; i < bars.length; i++) {
+      const b = bars[i]!;
+      if (b.time <= targetMs) {
+        chosen = b;
+      } else {
+        break;
+      }
+    }
+    return chosen;
   };
 
-  // Case A: Multiple recorded executions exist (from DB or parsed from breakdown)
+  // Case A: Multiple recorded executions exist (preserve exact 1m execution price & anchor to containing candle)
   if (executions && executions.length > 0) {
     return executions.map((ex) => {
       const ms = Date.parse(ex.executedAt);
       const bar = getCandleAt(Number.isFinite(ms) ? ms : Date.parse(trade.openedAt));
-      const price = Number(((bar.open + bar.close) / 2).toFixed(2));
+      const validPrice =
+        typeof ex.price === "number" && Number.isFinite(ex.price) && ex.price > 0
+          ? ex.price
+          : Number(((bar.open + bar.close) / 2).toFixed(2));
       return {
         ...ex,
-        price,
+        price: validPrice,
+        barTimeMs: bar.time,
       };
     });
   }
@@ -596,16 +607,15 @@ export function HistoricalReplay({
   );
 
   const findClosestBarIndex = (targetMs: number) => {
-    let closest = 0;
-    let minDiff = Infinity;
+    let containingIdx = 0;
     for (let i = 0; i < history.bars.length; i++) {
-      const diff = Math.abs(history.bars[i]!.time - targetMs);
-      if (diff < minDiff) {
-        minDiff = diff;
-        closest = i;
+      if (history.bars[i]!.time <= targetMs) {
+        containingIdx = i;
+      } else {
+        break;
       }
     }
-    return closest + 1; // 1-based index
+    return containingIdx + 1; // 1-based index of candle containing the 1m execution
   };
 
   const openMs = Date.parse(trade.openedAt);
@@ -1036,7 +1046,7 @@ function ReplayChart({
                 id: `fill-${index}`,
                 paneId: "price",
                 xloc: "bar_time" as const,
-                x: Date.parse(fill.executedAt) + nyShiftMs,
+                x: ((fill as any).barTimeMs ?? Date.parse(fill.executedAt)) + nyShiftMs,
                 y: fill.price,
                 yloc: "price" as const,
                 text: `${fill.side.toUpperCase()} ${fill.quantity}`,

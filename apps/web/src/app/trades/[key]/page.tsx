@@ -10,7 +10,12 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
-  PanelRightOpen,
+    PanelRightOpen,
+  ExternalLink,
+  Download,
+  UploadCloud,
+  Save,
+  Loader2,
 } from "lucide-react";
 import { netReturnOnEntry } from "@luxalgo/journal-core";
 import { FilterBar } from "@/components/filter-bar";
@@ -532,6 +537,20 @@ function Meta({
   );
 }
 
+function cleanLegacyTradeNotes(raw: string | null | undefined): string {
+  if (!raw) return "";
+  return raw
+    .split("\n")
+    .filter((line) => {
+      const s = line.trim();
+      if (s.startsWith("Notion: http")) return false;
+      if (/^\[\d+\]\s+[\d.]+L\s+@/i.test(s)) return false;
+      return true;
+    })
+    .join("\n")
+    .trim();
+}
+
 function AnnotationsCard({
   trade,
   onPatch,
@@ -539,7 +558,7 @@ function AnnotationsCard({
   trade: TradeDetail;
   onPatch: (body: Record<string, unknown>) => Promise<void>;
 }) {
-  const [notes, setNotes] = useState(trade.notes ?? "");
+  const [notes, setNotes] = useState(() => cleanLegacyTradeNotes(trade.notes));
   const noteEditor = useRef<RichEditorHandle>(null);
   const [tags, setTags] = useState((JSON.parse(trade.tagsJson ?? "[]") as string[]).join(", "));
   const [mistakes, setMistakes] = useState(
@@ -547,6 +566,13 @@ function AnnotationsCard({
   );
   const [stopLoss, setStopLoss] = useState(trade.stopLoss?.toString() ?? "");
   const [profitTarget, setProfitTarget] = useState(trade.profitTarget?.toString() ?? "");
+  const [notionUrl, setNotionUrl] = useState<string | null>(
+    (trade as any).notionUrl || (trade as any).notion_url || null
+  );
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [isPulling, setIsPulling] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
+
   const { data: playbookData } = useApi<{ playbooks: { id: string; name: string }[] }>(
     "/api/playbooks"
   );
@@ -556,6 +582,63 @@ function AnnotationsCard({
     flush,
   } = useAutosave(`/api/trades/${encodeURIComponent(trade.key)}`, "PATCH", () => void onPatch({}));
 
+  // Support Ctrl+S / Cmd+S keyboard shortcut to save immediately
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void flush();
+        setSyncMsg("Saved");
+        setTimeout(() => setSyncMsg(null), 2000);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [flush]);
+
+  const handlePullFromNotion = async () => {
+    setIsPulling(true);
+    setSyncMsg("Pulling from Notion...");
+    try {
+      const res = await fetch(`/api/trades/${encodeURIComponent(trade.key)}/notion`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to pull from Notion");
+      if (typeof data.notes === "string") {
+        setNotes(data.notes);
+      }
+      if (data.notionUrl) setNotionUrl(data.notionUrl);
+      setSyncMsg("Pulled from Notion");
+      void onPatch({});
+    } catch (err: any) {
+      setSyncMsg(err?.message || "Error pulling from Notion");
+    } finally {
+      setIsPulling(false);
+      setTimeout(() => setSyncMsg(null), 3500);
+    }
+  };
+
+  const handleSyncToNotion = async () => {
+    setIsSyncing(true);
+    setSyncMsg("Syncing to Notion...");
+    try {
+      await flush();
+      const res = await fetch(`/api/trades/${encodeURIComponent(trade.key)}/notion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ notes }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to sync to Notion");
+      if (data.notionUrl) setNotionUrl(data.notionUrl);
+      setSyncMsg("Synced to Notion");
+    } catch (err: any) {
+      setSyncMsg(err?.message || "Error syncing to Notion");
+    } finally {
+      setIsSyncing(false);
+      setTimeout(() => setSyncMsg(null), 3500);
+    }
+  };
+
   const parseList = (value: string) =>
     value
       .split(",")
@@ -564,8 +647,70 @@ function AnnotationsCard({
 
   return (
     <Card className="border-border/70">
-      <CardHeader className="pb-2">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
         <CardTitle className="text-sm font-bold">Journal this trade</CardTitle>
+
+        {/* Unified Notion + Save Action Bar (Matches Daily Journal) */}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {(syncMsg || saveStatus) && (
+            <span className="mr-1 text-[11px] font-medium text-muted-foreground" role="status">
+              {syncMsg || saveStatus}
+            </span>
+          )}
+
+          {notionUrl && (
+            <a
+              href={notionUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary"
+            >
+              <span>Open in Notion</span>
+              <ExternalLink className="h-3 w-3 opacity-70" />
+            </a>
+          )}
+
+          <button
+            type="button"
+            onClick={handlePullFromNotion}
+            disabled={isPulling || isSyncing}
+            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+          >
+            {isPulling ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Download className="h-3 w-3 opacity-80" />
+            )}
+            <span>Pull from Notion</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={handleSyncToNotion}
+            disabled={isPulling || isSyncing}
+            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+          >
+            {isSyncing ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <UploadCloud className="h-3 w-3 opacity-80" />
+            )}
+            <span>Sync to Notion</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              void flush();
+              setSyncMsg("Saved");
+              setTimeout(() => setSyncMsg(null), 2000);
+            }}
+            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary px-2.5 text-[11px] font-semibold text-foreground shadow-2xs transition-colors hover:bg-secondary/80"
+          >
+            <Save className="h-3 w-3 opacity-80" />
+            <span>Save (Ctrl+S)</span>
+          </button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex items-center justify-between">
@@ -664,29 +809,24 @@ function AnnotationsCard({
               debounced({ notes: value });
             }}
           />
-          <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground">
-            <span role="status">{saveStatus}</span>
-            <Button variant="ghost" size="sm" className="h-6 text-xs" onClick={() => void flush()}>
-              Save now
-            </Button>
+          <div className="mt-2">
+            <ReviewExport
+              containsFinancialData
+              document={{
+                title: `${trade.symbol} · ${trade.direction} review`,
+                subtitle: `${trade.openedAt} · ${trade.currency}`,
+                lines: [
+                  `Status: ${trade.status} | Quantity: ${trade.quantity}`,
+                  `Entry: ${trade.avgEntry} | Exit: ${trade.avgExit ?? "Open"}`,
+                  `Net P&L: ${trade.netPnl.toFixed(2)} | Fees: ${trade.fees.toFixed(2)}`,
+                  `Stop: ${stopLoss || "Unspecified"} | Target: ${profitTarget || "Unspecified"}`,
+                  `Tags: ${tags || "None"} | Mistakes: ${mistakes || "None"}`,
+                  "",
+                  notes,
+                ],
+              }}
+            />
           </div>
-          <ReviewExport
-            containsFinancialData
-            document={{
-              title: `${trade.symbol} · ${trade.direction} review`,
-              subtitle: `${trade.openedAt} · ${trade.currency}`,
-              lines: [
-                `Status: ${trade.status} | Quantity: ${trade.quantity}`,
-                `Entry: ${trade.avgEntry} | Exit: ${trade.avgExit ?? "Open"}`,
-                `Net P&L: ${trade.netPnl.toFixed(2)} | Fees: ${trade.fees.toFixed(2)}`,
-                `Stop: ${stopLoss || "Unspecified"} | Target: ${profitTarget || "Unspecified"}`,
-                `Tags: ${tags || "None"} | Mistakes: ${mistakes || "None"}`,
-                "",
-                notes,
-              ],
-            }}
-          />
-          
         </div>
       </CardContent>
     </Card>

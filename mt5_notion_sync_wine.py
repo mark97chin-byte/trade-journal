@@ -29,7 +29,7 @@ NOTION_DAILY_DB_ID = (
     or ""
 ).replace("-", "")
 
-DAYS_LOOKBACK = int(os.getenv("DAYS_LOOKBACK", 90))
+DAYS_LOOKBACK = int(os.getenv("DAYS_LOOKBACK", 365))
 CLUSTER_WINDOW_SECONDS = int(os.getenv("CLUSTER_WINDOW_SECONDS", 10))
 
 # MT5 brokers operate on "NY Close" time (New York local time + 7 hours year-round).
@@ -165,10 +165,17 @@ def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close
     return mfe_r, mae_r
 
 
-def fetch_reconstructed_trades():
+def fetch_reconstructed_trades(all_history: bool = False):
+    init_mt5()
     # Use wide window to ensure all entry legs of recently closed positions are captured in a single batch
-    utc_to = datetime.now(timezone.utc) + timedelta(days=2)
-    utc_from = utc_to - timedelta(days=DAYS_LOOKBACK + 14)
+    utc_to = datetime.now() + timedelta(days=2)
+    if all_history:
+        utc_from = datetime(2020, 1, 1)
+        cutoff_ts = 0
+        print("[MT5] Unlimited lookback enabled: fetching complete history from account inception...")
+    else:
+        utc_from = utc_to - timedelta(days=DAYS_LOOKBACK + 14)
+        # cutoff_ts defined by lookback mode above
 
     deals = mt5.history_deals_get(utc_from, utc_to)
     if not deals:
@@ -187,7 +194,7 @@ def fetch_reconstructed_trades():
         if getattr(o, "position_id", 0) > 0:
             orders_by_pos[o.position_id].append(o)
 
-    cutoff_ts = int((datetime.now(timezone.utc) - timedelta(days=DAYS_LOOKBACK)).timestamp())
+    cutoff_ts = 0 if all_history else int((datetime.now(timezone.utc) - timedelta(days=DAYS_LOOKBACK)).timestamp())
     positions = {}
 
     for pos_id, pos_deals in deals_by_pos.items():
@@ -493,6 +500,44 @@ def find_daily_journal_page_id(day_slug: str) -> str | None:
     return None
 
 
+
+def wipe_notion_trades_database():
+    """Archives all existing pages in NOTION_TRADES_DB_ID so a fresh import has zero duplicates."""
+    url = f"https://api.notion.com/v1/databases/{NOTION_TRADES_DB_ID}/query"
+    page_ids = []
+    has_more = True
+    start_cursor = None
+
+    while has_more:
+        payload = {"page_size": 100}
+        if start_cursor:
+            payload["start_cursor"] = start_cursor
+        res = session.post(url, json=payload, timeout=15)
+        if res.status_code != 200:
+            break
+        data = res.json()
+        for page in data.get("results", []):
+            if page.get("id"):
+                page_ids.append(page["id"])
+        has_more = data.get("has_more", False)
+        start_cursor = data.get("next_cursor")
+
+    print(f"[Wipe] Archiving {len(page_ids)} existing trade pages in Notion...")
+    for pid in page_ids:
+        for attempt in range(3):
+            r = session.patch(
+                f"https://api.notion.com/v1/pages/{pid}",
+                json={"archived": True},
+                timeout=15,
+            )
+            if r.status_code in (200, 404):
+                break
+            if r.status_code in (409, 429):
+                time.sleep(0.4 * (attempt + 1))
+        time.sleep(0.15)
+    print("[Wipe] Notion Trades database cleared.")
+
+
 def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
     """Saves or self-heals a trade and all its individual MT5 execution legs."""
     cur = conn.cursor()
@@ -508,9 +553,9 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
     else:
         status = "breakeven"
 
-    notes_content = trade.get("partials_breakdown", "")
-    if notion_url:
-        notes_content = f"Notion: {notion_url}\n{notes_content}"
+    # Keep notes empty on import; executions are shown in Executions & Partials
+    # and Notion links are handled by the top Notion action buttons.
+    notes_content = ""
 
     cluster_key = str(trade["cluster_id"])
     account_id = "mt5-main"
@@ -925,18 +970,30 @@ def push_to_notion(trade, available_props, max_retries=3):
 
 
 if __name__ == "__main__":
+    import sys
+    do_wipe = "--wipe" in sys.argv
     init_mt5()
     print(f"Reconstructing trades, partials, and MAE/MFE from MT5 (NY = Broker - {MT5_NY_OFFSET_HOURS}h)...")
-    trade_ideas = fetch_reconstructed_trades()
+    trade_ideas = fetch_reconstructed_trades(all_history=do_wipe)
     mt5.shutdown()
 
     print(f"Reconstructed {len(trade_ideas)} unified trade setups.")
-
-    schema = get_database_properties(NOTION_TRADES_DB_ID)
-    existing = get_existing_cluster_ids()
+    if trade_ideas:
+        sorted_by_date = sorted(trade_ideas, key=lambda x: x["open_time"])
+        print(f"[History Range] Earliest trade: {sorted_by_date[0]['open_time']} | Latest: {sorted_by_date[-1]['open_time']}")
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db_conn = sqlite3.connect(DB_PATH)
+
+    if do_wipe:
+        print("[Wipe] Clearing local SQLite trades and executions tables...")
+        db_conn.execute("DELETE FROM executions;")
+        db_conn.execute("DELETE FROM trades;")
+        db_conn.commit()
+        wipe_notion_trades_database()
+
+    schema = get_database_properties(NOTION_TRADES_DB_ID)
+    existing = {} if do_wipe else get_existing_cluster_ids()
 
     synced_notion_count = 0
     try:

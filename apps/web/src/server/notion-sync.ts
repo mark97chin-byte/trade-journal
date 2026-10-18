@@ -964,3 +964,14 @@ export async function findNotionPageInDb(databaseId: string, token: string, slug
     availableProps: props,
   };
 }
+
+export async function pullFromNotionPage(pageId: string, token: string, slug?: string): Promise<string> {
+  const blocks = await fetchNotionBlocksRecursive(pageId, token);
+  return await notionBlocksToHtml(blocks, slug);
+}
+
+export async function pushHtmlToNotionPage(pageId: string, html: string, token: string): Promise<void> {
+  await clearNotionPageBlocks(pageId, token);
+  const treeNodes = await editorHtmlToNotionTree(html, token);
+  await appendBlocksTreeRecursive(pageId, treeNodes, token);
+}
