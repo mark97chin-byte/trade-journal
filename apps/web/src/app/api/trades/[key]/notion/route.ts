@@ -70,11 +70,11 @@ async function resolveTrade(decodedKey: string, token: string) {
 
 export async function GET(
   _req: NextRequest,
-  context: { params: Promise<{ key: string }> | { key: string } }
+  { params }: { params: Promise<{ key: string }> }
 ) {
   try {
-    const resolvedParams = await Promise.resolve(context.params);
-    const decodedKey = decodeURIComponent(resolvedParams.key);
+    const { key } = await params;
+    const decodedKey = decodeURIComponent(key);
     const token = process.env.NOTION_TOKEN || "";
 
     if (!token) {
@@ -118,11 +118,11 @@ export async function GET(
 
 export async function POST(
   req: NextRequest,
-  context: { params: Promise<{ key: string }> | { key: string } }
+  { params }: { params: Promise<{ key: string }> }
 ) {
   try {
-    const resolvedParams = await Promise.resolve(context.params);
-    const decodedKey = decodeURIComponent(resolvedParams.key);
+    const { key } = await params;
+    const decodedKey = decodeURIComponent(key);
     const token = process.env.NOTION_TOKEN || "";
 
     if (!token) {
