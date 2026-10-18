@@ -1386,7 +1386,10 @@ export function RichEditor({
     if (target.closest(".tz-gutter-controls")) return;
 
     const blockEl = findDraggableBlock(target);
-    if (!blockEl) return;
+    if (!blockEl) {
+      if (!blockMenuOpen) setHoveredBlock(null);
+      return;
+    }
 
     const wrapper = container.parentElement;
     if (!wrapper) return;
@@ -1642,6 +1645,109 @@ export function RichEditor({
       setOpenPopover(null);
       setBlockMenuOpen(false);
       return;
+    }
+
+    // Block-aware ArrowDown / ArrowUp navigation so empty blocks & columns are never skipped
+    if (
+      (e.key === "ArrowDown" || e.key === "ArrowUp") &&
+      !e.shiftKey &&
+      !e.ctrlKey &&
+      !e.metaKey &&
+      !e.altKey &&
+      !slashMenu.open
+    ) {
+      const container = contentRef.current;
+      const sel = window.getSelection();
+      if (container && sel && sel.rangeCount > 0) {
+        const range = sel.getRangeAt(0);
+        const anchorNode = sel.anchorNode;
+        const anchorEl =
+          anchorNode?.nodeType === Node.ELEMENT_NODE
+            ? (anchorNode as HTMLElement)
+            : anchorNode?.parentElement;
+
+        if (anchorEl && container.contains(anchorEl)) {
+          // Collect all visible leaf editable blocks in DOM order
+          const allCandidates = Array.from(
+            container.querySelectorAll<HTMLElement>(
+              "p, h1, h2, h3, blockquote, li, .tz-toggle-title, .tz-check-text, .tz-callout-content, .tz-banner"
+            )
+          ).filter((el) => {
+            // Skip elements inside collapsed toggles
+            const closedToggleBody = el.closest('.tz-toggle-body[style*="display: none"], .tz-toggle-body[style*="display:none"]');
+            if (closedToggleBody) return false;
+            return el.offsetParent !== null;
+          });
+
+          const currentBlock = anchorEl.closest<HTMLElement>(
+            "p, h1, h2, h3, blockquote, li, .tz-toggle-title, .tz-check-text, .tz-callout-content, .tz-banner"
+          );
+
+          if (currentBlock) {
+            const idx = allCandidates.indexOf(currentBlock);
+            if (idx !== -1) {
+              const blockRect = currentBlock.getBoundingClientRect();
+              const caretRect = range.getBoundingClientRect();
+              const isEmptyBlock = !(currentBlock.textContent || "").trim();
+
+              // Check if caret is on the very last visual line (for ArrowDown) or first visual line (for ArrowUp)
+              const atBottomLine =
+                isEmptyBlock ||
+                caretRect.bottom === 0 ||
+                blockRect.bottom - caretRect.bottom < 14;
+              const atTopLine =
+                isEmptyBlock ||
+                caretRect.top === 0 ||
+                caretRect.top - blockRect.top < 14;
+
+              if (e.key === "ArrowDown" && atBottomLine) {
+                const nextBlock = allCandidates[idx + 1];
+                if (nextBlock) {
+                  e.preventDefault();
+                  const nextRange = document.createRange();
+                  nextRange.selectNodeContents(nextBlock);
+                  nextRange.collapse(true);
+                  sel.removeAllRanges();
+                  sel.addRange(nextRange);
+                  nextBlock.scrollIntoView({ block: "nearest" });
+                  rememberSelection();
+                  return;
+                } else {
+                  // At the very last block in the editor: create a new empty paragraph below if current has content
+                  if (!isEmptyBlock) {
+                    e.preventDefault();
+                    const p = document.createElement("p");
+                    p.setAttribute("data-placeholder", "Type '/' for commands...");
+                    p.innerHTML = "<br/>";
+                    container.appendChild(p);
+                    const nextRange = document.createRange();
+                    nextRange.setStart(p, 0);
+                    nextRange.collapse(true);
+                    sel.removeAllRanges();
+                    sel.addRange(nextRange);
+                    rememberSelection();
+                    emitChange();
+                    return;
+                  }
+                }
+              } else if (e.key === "ArrowUp" && atTopLine && idx > 0) {
+                const prevBlock = allCandidates[idx - 1];
+                if (prevBlock) {
+                  e.preventDefault();
+                  const prevRange = document.createRange();
+                  prevRange.selectNodeContents(prevBlock);
+                  prevRange.collapse(false);
+                  sel.removeAllRanges();
+                  sel.addRange(prevRange);
+                  prevBlock.scrollIntoView({ block: "nearest" });
+                  rememberSelection();
+                  return;
+                }
+              }
+            }
+          }
+        }
+      }
     }
 
     const sel = window.getSelection();
@@ -2675,7 +2781,14 @@ export function RichEditor({
         )}
 
         {/* WYSIWYG EDITABLE SURFACE WITH NOTION LINE-BY-LINE BLOCK GUTTER & CONTEXT MENU */}
-        <div className="relative flex-1">
+        <div
+          className="relative flex-1"
+          onMouseLeave={() => {
+            if (!blockMenuOpen && !draggedBlockRef.current) {
+              setHoveredBlock(null);
+            }
+          }}
+        >
           {!readOnly && hoveredBlock && (
             <div
               style={{

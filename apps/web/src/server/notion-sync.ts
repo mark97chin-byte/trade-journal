@@ -239,6 +239,59 @@ async function getAttachmentBuffer(attId: string): Promise<{ buffer: Buffer; mim
 
 const notionFileUploadCache = new Map<string, string>();
 
+async function uploadBufferToNotion(
+  buffer: Buffer,
+  mimeType: string,
+  fileName: string,
+  cacheKey: string,
+  token: string
+): Promise<string | null> {
+  if (!token || !buffer || buffer.length === 0) return null;
+  if (notionFileUploadCache.has(cacheKey)) {
+    return notionFileUploadCache.get(cacheKey)!;
+  }
+
+  try {
+    const createRes = await fetch("https://api.notion.com/v1/file_uploads", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Notion-Version": NOTION_VERSION,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        mode: "single_part",
+        filename: fileName,
+        content_type: mimeType,
+      }),
+    });
+
+    if (!createRes.ok) return null;
+    const uploadObj = await createRes.json();
+    const fileUploadId = uploadObj.id;
+    if (!fileUploadId) return null;
+
+    const formData = new FormData();
+    const blob = new Blob([new Uint8Array(buffer)], { type: mimeType });
+    formData.append("file", blob, fileName);
+
+    const sendRes = await fetch(`https://api.notion.com/v1/file_uploads/${fileUploadId}/send`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Notion-Version": NOTION_VERSION,
+      },
+      body: formData,
+    });
+
+    if (!sendRes.ok) return null;
+    notionFileUploadCache.set(cacheKey, fileUploadId);
+    return fileUploadId;
+  } catch {
+    return null;
+  }
+}
+
 async function uploadToNotionNativeStorage(attId: string, token: string): Promise<string | null> {
   if (!token) return null;
   if (notionFileUploadCache.has(attId)) {
@@ -323,8 +376,8 @@ export async function clearNotionPageBlocks(pageId: string, token: string) {
     } while (cursor);
 
     // Delete sequentially in small batches of 3 with retry on 409/429 to avoid Notion conflict_error
-    for (let i = 0; i < blockIds.length; i += 3) {
-      const batch = blockIds.slice(i, i + 3);
+    for (let i = 0; i < blockIds.length; i += 6) {
+      const batch = blockIds.slice(i, i + 6);
       await Promise.all(
         batch.map(async (id) => {
           for (let attempt = 0; attempt < 3; attempt++) {
@@ -406,12 +459,12 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
       const level = type.slice(-1);
       if (data.is_toggleable || (b.children && b.children.length > 0)) {
         out.push(`
-          <div class="tz-toggle tz-toggle-h${level}${colorClass}" data-notion-type="${type}" data-toggle-type="${type}" data-open="true"${colorAttr}>
+          <div class="tz-toggle tz-toggle-h${level}${colorClass}" data-notion-type="${type}" data-toggle-type="${type}" data-open="false"${colorAttr}>
             <div class="tz-toggle-header">
-              <span class="tz-toggle-btn" contenteditable="false">▾</span>
+              <span class="tz-toggle-btn" contenteditable="false">▸</span>
               <div class="tz-toggle-title"><strong>${textHtml}</strong></div>
             </div>
-            <div class="tz-toggle-body">${childrenHtml || '<p data-placeholder="Empty toggle..."></p>'}</div>
+            <div class="tz-toggle-body" style="display:none">${childrenHtml || '<p data-placeholder="Empty toggle..."><br/></p>'}</div>
           </div>
         `);
       } else if (color && color.endsWith("_background")) {
@@ -423,12 +476,12 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
       }
     } else if (type === "toggle") {
       out.push(`
-        <div class="tz-toggle${colorClass}" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"${colorAttr}>
+        <div class="tz-toggle${colorClass}" data-notion-type="toggle" data-toggle-type="toggle" data-open="false"${colorAttr}>
           <div class="tz-toggle-header">
-            <span class="tz-toggle-btn" contenteditable="false">▾</span>
+            <span class="tz-toggle-btn" contenteditable="false">▸</span>
             <div class="tz-toggle-title"><strong>${textHtml}</strong></div>
           </div>
-          <div class="tz-toggle-body">${childrenHtml || '<p data-placeholder="Empty toggle..."></p>'}</div>
+          <div class="tz-toggle-body" style="display:none">${childrenHtml || '<p data-placeholder="Empty toggle..."><br/></p>'}</div>
         </div>
       `);
     } else if (type === "callout") {
@@ -658,6 +711,34 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
               file_upload: { id: fileUploadId },
             },
           };
+        }
+      }
+
+      if (src.startsWith("data:image/") && token) {
+        const match = src.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/);
+        if (match) {
+          const mimeType = match[1] || "image/webp";
+          const base64Data = match[2] || "";
+          const buf = Buffer.from(base64Data, "base64");
+          const hash = crypto.createHash("sha256").update(buf).digest("hex").slice(0, 16);
+          const ext = mimeType.split("/")[1] || "webp";
+          const fileUploadId = await uploadBufferToNotion(
+            buf,
+            mimeType,
+            `chart-${hash}.${ext}`,
+            `data-${hash}`,
+            token
+          );
+          if (fileUploadId) {
+            return {
+              object: "block",
+              type: "image",
+              image: {
+                type: "file_upload",
+                file_upload: { id: fileUploadId },
+              },
+            };
+          }
         }
       }
 
@@ -911,36 +992,40 @@ export async function appendBlocksTreeRecursive(parentId: string, treeNodes: any
 
     const createdBlocks = resData.results || [];
 
-    for (const item of deferredQueue) {
-      const createdParent = createdBlocks[item.nodeIndex];
-      if (!createdParent?.id) continue;
+    await Promise.all(
+      deferredQueue.map(async (item) => {
+        const createdParent = createdBlocks[item.nodeIndex];
+        if (!createdParent?.id) return;
 
-      if (item.isColumnList) {
-        const colListChildren = await notionFetch(`/blocks/${createdParent.id}/children?page_size=100`, token);
-        const createdColumns = colListChildren.results || [];
+        if (item.isColumnList) {
+          const colListChildren = await notionFetch(`/blocks/${createdParent.id}/children?page_size=100`, token);
+          const createdColumns = colListChildren.results || [];
 
-        for (let cIdx = 0; cIdx < createdColumns.length; cIdx++) {
-          const colId = createdColumns[cIdx]?.id;
-          const originalColBlocks = item.children[cIdx] || [];
-          if (!colId || !originalColBlocks.length) continue;
+          await Promise.all(
+            createdColumns.map(async (colObj: any, cIdx: number) => {
+              const colId = colObj?.id;
+              const originalColBlocks = item.children[cIdx] || [];
+              if (!colId || !originalColBlocks.length) return;
 
-          const hasNested = originalColBlocks.some((b: any) => Array.isArray(b._children) && b._children.length > 0);
-          if (hasNested) {
-            const colBlockResults = await notionFetch(`/blocks/${colId}/children?page_size=100`, token);
-            const createdInsideCol = colBlockResults.results || [];
-            for (let bIdx = 0; bIdx < originalColBlocks.length; bIdx++) {
-              const origBlock = originalColBlocks[bIdx];
-              const createdBlock = createdInsideCol[bIdx];
-              if (origBlock?._children?.length && createdBlock?.id) {
-                await appendBlocksTreeRecursive(createdBlock.id, origBlock._children, token);
+              const hasNested = originalColBlocks.some((b: any) => Array.isArray(b._children) && b._children.length > 0);
+              if (hasNested) {
+                const colBlockResults = await notionFetch(`/blocks/${colId}/children?page_size=100`, token);
+                const createdInsideCol = colBlockResults.results || [];
+                for (let bIdx = 0; bIdx < originalColBlocks.length; bIdx++) {
+                  const origBlock = originalColBlocks[bIdx];
+                  const createdBlock = createdInsideCol[bIdx];
+                  if (origBlock?._children?.length && createdBlock?.id) {
+                    await appendBlocksTreeRecursive(createdBlock.id, origBlock._children, token);
+                  }
+                }
               }
-            }
-          }
+            })
+          );
+        } else {
+          await appendBlocksTreeRecursive(createdParent.id, item.children, token);
         }
-      } else {
-        await appendBlocksTreeRecursive(createdParent.id, item.children, token);
-      }
-    }
+      })
+    );
   }
 }
 
@@ -984,7 +1069,10 @@ export async function pullFromNotionPage(pageId: string, token: string, slug?: s
 }
 
 export async function pushHtmlToNotionPage(pageId: string, html: string, token: string): Promise<void> {
-  await clearNotionPageBlocks(pageId, token);
-  const treeNodes = await editorHtmlToNotionTree(html, token);
+  // Build tree first (which uploads & caches any new images) concurrently with clearing old blocks
+  const [treeNodes] = await Promise.all([
+    editorHtmlToNotionTree(html, token),
+    clearNotionPageBlocks(pageId, token),
+  ]);
   await appendBlocksTreeRecursive(pageId, treeNodes, token);
 }
