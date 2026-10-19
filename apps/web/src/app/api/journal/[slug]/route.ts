@@ -8,6 +8,8 @@ import { queryTrades } from "@/server/trades-query";
 import {
   getJournalEntryWithTrades,
   saveJournalEntry,
+  ensureNotionJournalPageExists,
+  autoPopulateUpcomingJournals,
 } from "@/server/journal-service";
 import {
   getNotionConfig,
@@ -28,6 +30,19 @@ export const GET = handler(async (request: Request, { params }: Params) => {
   const timeZone = getTimeZone();
 
   const { entry, trades: periodTrades, range } = await getJournalEntryWithTrades(slug);
+
+  // Trigger non-blocking Notion page provisioning for this entry + 5 days ahead
+  void (async () => {
+    try {
+      if (!entry.notionPageId) {
+        await ensureNotionJournalPageExists(slug, "prep", entry, range);
+      }
+      if (!entry.reviewNotionPageId) {
+        await ensureNotionJournalPageExists(slug, "review", entry, range);
+      }
+      await autoPopulateUpcomingJournals(5);
+    } catch {}
+  })();
 
   const isDate = /^\d{4}-\d{2}-\d{2}$/.test(slug);
   let legacyMetrics = null;
@@ -72,11 +87,20 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const resolved = await params;
     const slug = resolved.slug || resolved.date || "";
     const body = await req.json();
+    const activeTab: "prep" | "review" = body.activeTab === "review" ? "review" : "prep";
+    const isReview = activeTab === "review";
 
-    const { trades, range } = await getJournalEntryWithTrades(slug);
+    const { entry: existingEntry, trades, range } = await getJournalEntryWithTrades(slug);
     const { token, databaseId } = getNotionConfig(range.periodType);
 
-    // 1. PULL FROM NOTION
+    const targetSlug = isReview ? `${slug}-review` : slug;
+    const baseTitle = body.title || existingEntry.title || range.defaultTitle;
+    const targetTitle = isReview ? baseTitle.replace("Journal", "Review") : baseTitle;
+    const categoryLabel = isReview
+      ? `${range.periodType.toUpperCase()} REVIEW`
+      : range.periodType.toUpperCase();
+
+    // 1. PULL FROM NOTION (Tab-Aware)
     if (body.pullFromNotion) {
       if (!token || !databaseId) {
         return NextResponse.json({
@@ -85,43 +109,57 @@ export async function PUT(req: NextRequest, { params }: Params) {
         });
       }
 
-      let pageId = body.notionPageId;
-      let pageUrl = body.notionUrl;
-      let pageTitle = body.title || range.defaultTitle;
+      let pageId = isReview
+        ? body.reviewNotionPageId || existingEntry.reviewNotionPageId
+        : body.notionPageId || existingEntry.notionPageId;
+      let pageUrl = isReview
+        ? body.reviewNotionUrl || existingEntry.reviewNotionUrl
+        : body.notionUrl || existingEntry.notionUrl;
 
       if (!pageId) {
-        const found = await findNotionPageInDb(databaseId, token, slug, pageTitle);
+        const found = await findNotionPageInDb(databaseId, token, targetSlug, targetTitle);
         if (!found.page) {
-          return NextResponse.json({
-            notionSynced: false,
-            notionError: `No matching page found in Notion for "${slug}". Push to Notion first to create it.`,
-          });
-        }
-        pageId = found.page.id;
-        pageUrl = found.page.url;
-        const titleArr = found.page.properties?.[found.titleProp]?.title;
-        if (titleArr && titleArr.length) {
-          pageTitle = titleArr.map((t: any) => t.plain_text).join("");
+          // Auto-create it if not found
+          const created = await ensureNotionJournalPageExists(slug, activeTab, existingEntry, range);
+          if (!created.pageId) {
+            return NextResponse.json({
+              notionSynced: false,
+              notionError: `No matching Notion page found for "${targetSlug}".`,
+            });
+          }
+          pageId = created.pageId;
+          pageUrl = created.pageUrl;
+        } else {
+          pageId = found.page.id;
+          pageUrl = found.page.url;
         }
       }
 
-      const blocks = await fetchNotionBlocksRecursive(pageId, token);
-      const htmlContent = await notionBlocksToHtml(blocks, slug);
+      const blocks = await fetchNotionBlocksRecursive(pageId!, token);
+      const htmlContent = await notionBlocksToHtml(blocks, targetSlug);
 
-      const entry = await saveJournalEntry(slug, {
-        title: pageTitle,
-        content: htmlContent,
-        notionPageId: pageId,
-        notionUrl: pageUrl,
-      });
+      const entry = await saveJournalEntry(
+        slug,
+        isReview
+          ? {
+              reviewContent: htmlContent,
+              reviewNotionPageId: pageId,
+              reviewNotionUrl: pageUrl,
+            }
+          : {
+              content: htmlContent,
+              notionPageId: pageId,
+              notionUrl: pageUrl,
+            }
+      );
 
-      return NextResponse.json({ entry, notionPulled: true });
+      return NextResponse.json({ entry, notionPulled: true, activeTab });
     }
 
     // 2. SAVE LOCALLY
     let entry = await saveJournalEntry(slug, body);
 
-    // 3. PUSH TO NOTION
+    // 3. PUSH TO NOTION (Tab-Aware: Syncs either Prep Page or Review Page in same Database)
     if (body.syncNotion) {
       if (!token || !databaseId) {
         return NextResponse.json({
@@ -133,27 +171,31 @@ export async function PUT(req: NextRequest, { params }: Params) {
 
       try {
         const netPnl = trades.reduce((acc, t) => acc + t.netPnl, 0);
-        const found = await findNotionPageInDb(databaseId, token, slug, entry.title || slug);
-        const availableProps = found.availableProps;
-        const titlePropName = found.titleProp;
+        const found = await findNotionPageInDb(databaseId, token, targetSlug, targetTitle);
+        const availableProps = found.availableProps || {};
+        const titlePropName = found.titleProp || "Name";
 
         const properties: Record<string, any> = {
           [titlePropName]: {
-            title: [{ text: { content: entry.title || slug } }],
+            title: [{ text: { content: targetTitle } }],
           },
         };
 
         if ("Slug" in availableProps && availableProps["Slug"].type === "rich_text") {
-          properties["Slug"] = { rich_text: [{ text: { content: slug } }] };
+          properties["Slug"] = { rich_text: [{ text: { content: targetSlug } }] };
         }
         if ("Period" in availableProps && availableProps["Period"].type === "select") {
-          properties["Period"] = { select: { name: range.periodType.toUpperCase() } };
+          properties["Period"] = { select: { name: categoryLabel } };
         }
-        if ("HTF Bias" in availableProps && entry.marketBias) {
-          if (availableProps["HTF Bias"].type === "select") {
-            properties["HTF Bias"] = { select: { name: entry.marketBias } };
-          } else if (availableProps["HTF Bias"].type === "rich_text") {
-            properties["HTF Bias"] = { rich_text: [{ text: { content: entry.marketBias } }] };
+        for (const catKey of ["Category", "Type", "Kind", "Tab"]) {
+          if (catKey in availableProps) {
+            if (availableProps[catKey].type === "select") {
+              properties[catKey] = { select: { name: isReview ? "Review" : "Preparation" } };
+            } else if (availableProps[catKey].type === "rich_text") {
+              properties[catKey] = {
+                rich_text: [{ text: { content: isReview ? "Review" : "Preparation" } }],
+              };
+            }
           }
         }
         if ("Net P&L" in availableProps && availableProps["Net P&L"].type === "number") {
@@ -166,9 +208,15 @@ export async function PUT(req: NextRequest, { params }: Params) {
           properties["Open Date"] = { date: { start: range.startDate } };
         }
 
-        const blockTree = await editorHtmlToNotionTree(entry.content);
-        let targetPageId = entry.notionPageId || found.page?.id;
-        let targetPageUrl = found.page?.url || entry.notionUrl;
+        const htmlToSync = isReview ? entry.reviewContent : entry.content;
+        const blockTree = await editorHtmlToNotionTree(htmlToSync, token);
+
+        let targetPageId = isReview
+          ? entry.reviewNotionPageId || found.page?.id
+          : entry.notionPageId || found.page?.id;
+        let targetPageUrl = isReview
+          ? found.page?.url || entry.reviewNotionUrl
+          : found.page?.url || entry.notionUrl;
 
         if (targetPageId) {
           const patchRes = await fetch(`https://api.notion.com/v1/pages/${targetPageId}`, {
@@ -223,12 +271,14 @@ export async function PUT(req: NextRequest, { params }: Params) {
           }
         }
 
-        entry = await saveJournalEntry(slug, {
-          notionPageId: targetPageId,
-          notionUrl: targetPageUrl,
-        });
+        entry = await saveJournalEntry(
+          slug,
+          isReview
+            ? { reviewNotionPageId: targetPageId, reviewNotionUrl: targetPageUrl }
+            : { notionPageId: targetPageId, notionUrl: targetPageUrl }
+        );
 
-        return NextResponse.json({ entry, notionSynced: true });
+        return NextResponse.json({ entry, notionSynced: true, activeTab });
       } catch (syncErr: any) {
         console.error("Notion sync error:", syncErr);
         return NextResponse.json({

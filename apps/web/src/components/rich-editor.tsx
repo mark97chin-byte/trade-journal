@@ -1047,10 +1047,22 @@ export function RichEditor({
   } | null>(null);
 
 
-  // Restored editor state and commands (missing from the supplied component).
   const [templates, setTemplates] = useState<SavedTemplate[]>(DEFAULT_TEMPLATES);
+  const [defaultAssignments, setDefaultAssignments] = useState<Record<string, string>>({
+    day_prep: "tpl-prep",
+    day_review: "tpl-review",
+    week_prep: "tpl-prep",
+    week_review: "tpl-review",
+    month_prep: "tpl-prep",
+    month_review: "tpl-review",
+    quarter_prep: "tpl-prep",
+    quarter_review: "tpl-review",
+    year_prep: "tpl-prep",
+    year_review: "tpl-review",
+  });
   const [newTemplateModal, setNewTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState("");
+  const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
   const [lightbox, setLightbox] = useState<{
     open: boolean;
     images: string[];
@@ -1062,16 +1074,30 @@ export function RichEditor({
   const lastSelectionRef = useRef<Range | null>(null);
 
   useEffect(() => {
-    try {
-      const stored = JSON.parse(localStorage.getItem("tz_custom_note_templates") || "[]");
-      if (Array.isArray(stored)) {
-        const valid = stored.filter((x): x is SavedTemplate =>
-          x && typeof x.id === "string" && typeof x.name === "string" &&
-          typeof x.html === "string" && !["tpl-prep", "tpl-review"].includes(x.id)
-        );
-        setTemplates([...DEFAULT_TEMPLATES, ...valid]);
-      }
-    } catch { /* Invalid saved templates must not prevent editor loading. */ }
+    let mounted = true;
+    fetch("/api/journal/config")
+      .then((r) => r.json())
+      .then((data) => {
+        if (!mounted || !data?.config) return;
+        if (Array.isArray(data.config.templates) && data.config.templates.length > 0) {
+          setTemplates(data.config.templates);
+          localStorage.setItem("tz_custom_note_templates", JSON.stringify(data.config.templates));
+        }
+        if (data.config.defaultTemplates) {
+          setDefaultAssignments((prev) => ({ ...prev, ...data.config.defaultTemplates }));
+        }
+      })
+      .catch(() => {
+        try {
+          const stored = JSON.parse(localStorage.getItem("tz_custom_note_templates") || "null");
+          if (Array.isArray(stored) && stored.length > 0) {
+            setTemplates(stored);
+          }
+        } catch {}
+      });
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   useEffect(() => {
@@ -1897,33 +1923,64 @@ export function RichEditor({
     }
   };
 
+  const persistTemplatesAndDefaults = (
+    nextTemplates: SavedTemplate[],
+    nextDefaults: Record<string, string> = defaultAssignments
+  ) => {
+    setTemplates(nextTemplates);
+    setDefaultAssignments(nextDefaults);
+    try {
+      localStorage.setItem("tz_custom_note_templates", JSON.stringify(nextTemplates));
+    } catch {}
+    void fetch("/api/journal/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        templates: nextTemplates,
+        defaultTemplates: nextDefaults,
+        triggerAutoPopulate: true,
+      }),
+    });
+  };
+
   const handleSaveCustomTemplate = () => {
     const name = newTemplateName.trim();
     if (!name || !contentRef.current) return;
+    if (editingTemplateId) {
+      const next = templates.map((t) =>
+        t.id === editingTemplateId
+          ? { ...t, name, html: contentRef.current?.innerHTML || t.html }
+          : t
+      );
+      persistTemplatesAndDefaults(next);
+      setEditingTemplateId(null);
+      setNewTemplateName("");
+      return;
+    }
     const newTpl: SavedTemplate = {
       id: `tpl-${Date.now()}`,
       name,
       html: contentRef.current.innerHTML,
     };
-    const customOnly = [
-      ...templates.filter(
-        (t) => !t.id.startsWith("tpl-prep") && !t.id.startsWith("tpl-review")
-      ),
-      newTpl,
-    ];
-    localStorage.setItem("tz_custom_note_templates", JSON.stringify(customOnly));
-    setTemplates([...DEFAULT_TEMPLATES, ...customOnly]);
+    persistTemplatesAndDefaults([...templates, newTpl]);
     setNewTemplateName("");
-    setNewTemplateModal(false);
+  };
+
+  const handleUpdateTemplateHtmlFromEditor = (id: string) => {
+    if (!contentRef.current) return;
+    const next = templates.map((t) =>
+      t.id === id ? { ...t, html: contentRef.current?.innerHTML || t.html } : t
+    );
+    persistTemplatesAndDefaults(next);
   };
 
   const handleDeleteTemplate = (id: string) => {
     const next = templates.filter((t) => t.id !== id);
-    setTemplates(next);
-    const customOnly = next.filter(
-      (t) => !t.id.startsWith("tpl-prep") && !t.id.startsWith("tpl-review")
-    );
-    localStorage.setItem("tz_custom_note_templates", JSON.stringify(customOnly));
+    persistTemplatesAndDefaults(next);
+    if (editingTemplateId === id) {
+      setEditingTemplateId(null);
+      setNewTemplateName("");
+    }
   };
 
   const slashItems = [
@@ -2072,23 +2129,28 @@ export function RichEditor({
             <span className="text-[11px] text-muted-foreground mr-1">
               Recently used templates
             </span>
-            {templates.slice(0, 3).map((tpl) => (
+            {templates.map((tpl) => (
               <button
                 key={tpl.id}
                 type="button"
                 onClick={() => insertHtmlAtCursor(tpl.html)}
                 className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card px-2.5 py-1 text-[11px] font-medium text-foreground/90 hover:border-indigo-500/60 hover:text-foreground transition-colors"
+                title="Click to insert template at cursor"
               >
                 <span>{tpl.name}</span>
               </button>
             ))}
             <button
               type="button"
-              onClick={() => setNewTemplateModal(true)}
-              className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-transparent px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary text-foreground border border-border font-medium/10 transition-colors"
+              onClick={() => {
+                setEditingTemplateId(null);
+                setNewTemplateName("");
+                setNewTemplateModal(true);
+              }}
+              className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-transparent px-2.5 py-1 text-[11px] font-medium text-muted-foreground hover:bg-secondary hover:text-foreground transition-colors"
             >
               <Plus className="h-3 w-3" />
-              <span>Add template</span>
+              <span>Manage templates</span>
             </button>
           </div>
         </div>
@@ -3176,70 +3238,184 @@ export function RichEditor({
         </div>
       )}
 
-      {/* SAVE TEMPLATE MODAL */}
+      {/* TEMPLATE MANAGER & DEFAULT AUTO-POPULATE ASSIGNMENT MODAL */}
       {newTemplateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
-          <div className="w-full max-w-sm rounded-xl border border-slate-200 dark:border-border/80 bg-card p-5 space-y-4 shadow-2xl">
-            <div className="flex items-center justify-between">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-xl border border-slate-200 dark:border-border/80 bg-card p-5 space-y-5 shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border/50 pb-3">
               <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
-                <FolderPlus className="h-4 w-4 text-muted-foreground" />
-                <span>Save current note as template</span>
+                <FolderPlus className="h-4 w-4 text-indigo-400" />
+                <span>Template Manager &amp; Default Auto-Population</span>
               </h4>
               <button
                 type="button"
-                onClick={() => setNewTemplateModal(false)}
+                onClick={() => {
+                  setNewTemplateModal(false);
+                  setEditingTemplateId(null);
+                  setNewTemplateName("");
+                }}
                 className="text-muted-foreground hover:text-foreground"
               >
                 <X className="h-4 w-4" />
               </button>
             </div>
 
-            <input
-              type="text"
-              value={newTemplateName}
-              onChange={(e) => setNewTemplateName(e.target.value)}
-              placeholder="e.g., NY Session Prep, ICT PO3 Checklist..."
-              autoFocus
-              className="h-9 w-full rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-indigo-500"
-            />
+            {/* 1. CREATE OR UPDATE TEMPLATE FROM CURRENT EDITOR */}
+            <div className="space-y-2 rounded-lg border border-border/50 bg-[#0d0f14] p-3">
+              <div className="text-[11px] font-semibold text-foreground">
+                {editingTemplateId
+                  ? "Editing Template (saves current editor content into this template)"
+                  : "Save Current Editor Layout as New Template"}
+              </div>
+              <div className="flex gap-2">
+                <input
+                  type="text"
+                  value={newTemplateName}
+                  onChange={(e) => setNewTemplateName(e.target.value)}
+                  placeholder="Template name (e.g., Weekly Multi-Asset Forecast, Daily Session Log)..."
+                  className="h-8 flex-1 rounded-lg border border-border/70 bg-[#141722] px-3 text-xs text-foreground outline-none focus:border-indigo-500"
+                />
+                {editingTemplateId && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setEditingTemplateId(null);
+                      setNewTemplateName("");
+                    }}
+                    className="rounded-lg border border-border/60 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+                  >
+                    Cancel Edit
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={handleSaveCustomTemplate}
+                  className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3.5 py-1 text-xs font-semibold text-white transition"
+                >
+                  {editingTemplateId ? "Update Template" : "Save New Template"}
+                </button>
+              </div>
+            </div>
 
-            {templates.length > 2 && (
-              <div className="space-y-1">
-                <span className="text-[10px] uppercase tracking-wider text-muted-foreground">
-                  Saved custom templates
-                </span>
-                {templates.slice(2).map((t) => (
+            {/* 2. EXISTING TEMPLATES LIST (LOAD / EDIT / OVERWRITE / DELETE) */}
+            <div className="space-y-2">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                Saved Templates ({templates.length}) — Click "Load" to edit in workspace, then "Overwrite"
+              </div>
+              <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                {templates.map((t) => (
                   <div
                     key={t.id}
-                    className="flex items-center justify-between rounded bg-[#0d0f14] px-2.5 py-1.5 text-xs"
+                    className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2 text-xs"
                   >
-                    <span className="truncate">{t.name}</span>
-                    <button
-                      type="button"
-                      onClick={() => handleDeleteTemplate(t.id)}
-                      className="text-rose-400 hover:text-rose-300"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
+                    <span className="font-medium text-foreground truncate max-w-[240px]">
+                      {t.name}
+                    </span>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (contentRef.current) {
+                            contentRef.current.innerHTML = t.html;
+                            emitChange();
+                          }
+                          setEditingTemplateId(t.id);
+                          setNewTemplateName(t.name);
+                        }}
+                        className="rounded border border-border/60 bg-secondary/50 hover:bg-secondary px-2 py-0.5 text-[11px] text-foreground"
+                        title="Load this template into the editor to modify it"
+                      >
+                        Load into Editor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setEditingTemplateId(t.id);
+                          setNewTemplateName(t.name);
+                        }}
+                        className="rounded border border-border/60 bg-secondary/50 hover:bg-secondary px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground"
+                      >
+                        Rename
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUpdateTemplateHtmlFromEditor(t.id)}
+                        className="rounded border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-2 py-0.5 text-[11px] text-indigo-300"
+                        title="Overwrite this template with current editor blocks"
+                      >
+                        Overwrite with Editor
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteTemplate(t.id)}
+                        className="rounded bg-rose-500/15 hover:bg-rose-500/25 p-1 text-rose-400"
+                        title="Delete template"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </button>
+                    </div>
                   </div>
                 ))}
               </div>
-            )}
+            </div>
 
-            <div className="flex justify-end gap-2 pt-1">
+            {/* 3. DEFAULT AUTO-POPULATE ASSIGNMENT PER JOURNAL PERIOD & TAB */}
+            <div className="space-y-2 border-t border-border/50 pt-3">
+              <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                Default Auto-Populate Templates (Used when creating journals 5 days in advance)
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                {(
+                  [
+                    { key: "day_prep", label: "Daily — Session Notes (Prep)" },
+                    { key: "day_review", label: "Daily — End-of-Day Review" },
+                    { key: "week_prep", label: "Weekly — Synthesis & Forecast" },
+                    { key: "week_review", label: "Weekly — End-of-Week Review" },
+                    { key: "month_prep", label: "Monthly — Macro Plan" },
+                    { key: "month_review", label: "Monthly — Review" },
+                    { key: "quarter_prep", label: "Quarterly — Strategy Plan" },
+                    { key: "quarter_review", label: "Quarterly — Review" },
+                    { key: "year_prep", label: "Yearly — System Plan" },
+                    { key: "year_review", label: "Yearly — Annual Review" },
+                  ] as const
+                ).map((slot) => (
+                  <div
+                    key={slot.key}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-border/40 bg-[#0d0f14] px-2.5 py-1.5"
+                  >
+                    <span className="text-[11px] text-muted-foreground truncate">
+                      {slot.label}
+                    </span>
+                    <select
+                      value={defaultAssignments[slot.key] || "none"}
+                      onChange={(e) => {
+                        const nextDefaults = {
+                          ...defaultAssignments,
+                          [slot.key]: e.target.value,
+                        };
+                        persistTemplatesAndDefaults(templates, nextDefaults);
+                      }}
+                      className="rounded border border-border/60 bg-[#181b26] px-2 py-1 text-[11px] text-foreground max-w-[165px]"
+                    >
+                      <option value="none">— Blank —</option>
+                      {templates.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            <div className="flex justify-end pt-2 border-t border-border/40">
               <button
                 type="button"
                 onClick={() => setNewTemplateModal(false)}
-                className="rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+                className="rounded-lg bg-secondary px-4 py-1.5 text-xs font-semibold text-foreground hover:bg-secondary/80"
               >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={handleSaveCustomTemplate}
-                className="rounded-lg bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border px-3.5 py-1.5 text-xs font-semibold text-white"
-              >
-                Save template
+                Done
               </button>
             </div>
           </div>

@@ -12,7 +12,6 @@ import {
   CloudUpload,
   ExternalLink,
   FileText,
-  Sparkles,
   Save,
   CheckSquare,
   Square,
@@ -21,11 +20,16 @@ import {
   TrendingUp,
   ArrowRight,
   ArrowDownToLine,
+  Pencil,
+  Plus,
+  Trash2,
+  Check,
 } from "lucide-react";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
 import { VoiceNote } from "@/components/voice-note";
 import { ReviewExport } from "@/components/review-export";
-import type { JournalEntryRecord } from "@/server/journal-service";
+import { EconomicCalendarCard } from "@/components/journal/economic-calendar-card";
+import type { JournalEntryRecord, PeriodKey } from "@/server/journal-service";
 import type { JournalTrade } from "./journal-view";
 
 interface JournalEntryEditorProps {
@@ -61,131 +65,35 @@ function getMondayStr(dateStr: string): string {
   return mon.toISOString().slice(0, 10);
 }
 
-const DEFAULT_CHECKLIST_ITEMS = [
-  { id: "htf_narrative", label: "Mapped HTF Draw on Liquidity & Daily Relevant Swing" },
-  { id: "session_timing", label: "Waited for key session window / 7H profile alignment" },
-  { id: "purge_confirmation", label: "Waited for liquidity sweep + displacement before entry" },
-  { id: "risk_respected", label: "Sized position properly & respected hard stop loss" },
-  { id: "no_fomo_revenge", label: "Zero impulse, FOMO, or revenge executions" },
-];
-
-const NOTION_HTML_TEMPLATES: Record<string, { label: string; html: string }> = {
-  daily_ict: {
-    label: "Daily Narrative & Execution",
-    html: `
-<div class="tz-callout tz-color-blue_background" data-notion-type="callout" data-notion-color="blue_background" data-icon="🎯">
-  <span class="tz-callout-icon" contenteditable="false">🎯</span>
-  <div class="tz-callout-content">
-    <div><strong>Pre-Market HTF Narrative &amp; Draw on Liquidity (DOL)</strong></div>
-    <div>Map Daily/4H bias, key liquidity pools (PDH/PDL, BSL/SSL), and 7H candle profile expectations.</div>
-  </div>
-</div>
-<div class="tz-column-list" data-notion-type="column_list" data-columns="2">
-  <div class="tz-column" data-notion-type="column">
-    <div class="tz-toggle tz-toggle-h3" data-notion-type="heading_3" data-toggle-type="heading_3" data-open="true">
-      <div class="tz-toggle-header">
-        <span class="tz-toggle-btn" contenteditable="false">▾</span>
-        <div class="tz-toggle-title"><strong>Key Levels &amp; Pools</strong></div>
-      </div>
-      <div class="tz-toggle-body">
-        <ul>
-          <li><strong>Buy-Side Liquidity (BSL):</strong> </li>
-          <li><strong>Sell-Side Liquidity (SSL):</strong> </li>
-          <li><strong>Relevant Swings:</strong> </li>
-        </ul>
-      </div>
-    </div>
-  </div>
-  <div class="tz-column" data-notion-type="column">
-    <div class="tz-toggle tz-toggle-h3" data-notion-type="heading_3" data-toggle-type="heading_3" data-open="true">
-      <div class="tz-toggle-header">
-        <span class="tz-toggle-btn" contenteditable="false">▾</span>
-        <div class="tz-toggle-title"><strong>Session Delivery Triggers</strong></div>
-      </div>
-      <div class="tz-toggle-body">
-        <ul>
-          <li><strong>Judas / Sweep:</strong> </li>
-          <li><strong>Entry Model (MMXM / Purge):</strong> </li>
-          <li><strong>Partials Target Plan:</strong> </li>
-        </ul>
-      </div>
-    </div>
-  </div>
-</div>
-<hr class="tz-divider" data-notion-type="divider" />
-<div class="tz-toggle tz-toggle-h2" data-notion-type="heading_2" data-toggle-type="heading_2" data-open="true">
-  <div class="tz-toggle-header">
-    <span class="tz-toggle-btn" contenteditable="false">▾</span>
-    <div class="tz-toggle-title"><strong>📝 Post-Session Audit &amp; Psychology</strong></div>
-  </div>
-  <div class="tz-toggle-body">
-    <p><strong>What went exactly according to plan:</strong> </p>
-    <p><strong>Where did hesitation or execution friction occur:</strong> </p>
-    <p><strong>One concrete rule adjustment for tomorrow:</strong> </p>
-  </div>
-</div>
-<p><br/></p>
-`,
-  },
-  weekly_review: {
-    label: "Weekly Edge Synthesis",
-    html: `
-<div class="tz-callout tz-color-purple_background" data-notion-type="callout" data-notion-color="purple_background" data-icon="📊">
-  <span class="tz-callout-icon" contenteditable="false">📊</span>
-  <div class="tz-callout-content">
-    <div><strong>Weekly Edge &amp; Execution Synthesis</strong></div>
-    <div>Review performance distribution, system adherence, and primary session observations.</div>
-  </div>
-</div>
-<div class="tz-column-list" data-notion-type="column_list" data-columns="2">
-  <div class="tz-column" data-notion-type="column">
-    <h3>🏆 A+ Setups Taken</h3>
-    <div class="tz-check-row" data-notion-type="to_do">
-      <input type="checkbox" class="tz-inline-checkbox" checked="checked" />
-      <div class="tz-check-text">Followed higher timeframe DOL</div>
-    </div>
-    <div class="tz-check-row" data-notion-type="to_do">
-      <input type="checkbox" class="tz-inline-checkbox" checked="checked" />
-      <div class="tz-check-text">Respected session timing windows</div>
-    </div>
-  </div>
-  <div class="tz-column" data-notion-type="column">
-    <h3>⚠️ Areas for Refinement</h3>
-    <p>Document any off-plan trades, drawdown drivers, or scaling mistakes...</p>
-  </div>
-</div>
-<hr class="tz-divider" data-notion-type="divider" />
-<div class="tz-toggle tz-toggle-h2" data-notion-type="heading_2" data-toggle-type="heading_2" data-open="true">
-  <div class="tz-toggle-header">
-    <span class="tz-toggle-btn" contenteditable="false">▾</span>
-    <div class="tz-toggle-title"><strong>🎯 Primary Goal for Next Week</strong></div>
-  </div>
-  <div class="tz-toggle-body">
-    <p>Key discipline filter to carry into the upcoming week...</p>
-  </div>
-</div>
-<p><br/></p>
-`,
-  },
-  mistake_audit: {
-    label: "Error / Tilt Audit",
-    html: `
-<div class="tz-callout tz-color-red_background" data-notion-type="callout" data-notion-color="red_background" data-icon="🚨">
-  <span class="tz-callout-icon" contenteditable="false">🚨</span>
-  <div class="tz-callout-content">
-    <div><strong>Execution Error &amp; Tilt Root-Cause Audit</strong></div>
-    <div>Isolate system losses from unforced psychological errors.</div>
-  </div>
-</div>
-<blockquote class="tz-quote" data-notion-type="quote">
-  <div><strong>Root Cause:</strong> Was this a valid system loss or a rule violation (FOMO, over-leverage, boredom)?</div>
-</blockquote>
-<p><strong>Market Condition During Trade:</strong> </p>
-<p><strong>Emotional Trigger Preceding Entry:</strong> </p>
-<p><strong>If-Then Rule to Prevent Recurrence:</strong> </p>
-<p><br/></p>
-`,
-  },
+const FALLBACK_PERIOD_CHECKLISTS: Record<PeriodKey, Array<{ id: string; label: string }>> = {
+  day: [
+    { id: "htf_narrative", label: "Mapped HTF Draw on Liquidity & Daily Relevant Swing" },
+    { id: "session_timing", label: "Waited for key session window / 7H profile alignment" },
+    { id: "purge_confirmation", label: "Waited for liquidity sweep + displacement before entry" },
+    { id: "risk_respected", label: "Sized position properly & respected hard stop loss" },
+    { id: "no_fomo_revenge", label: "Zero impulse, FOMO, or revenge executions" },
+  ],
+  week: [
+    { id: "wk_econ_calendar", label: "Reviewed ForexFactory high-impact USD news & holidays" },
+    { id: "wk_htf_dol", label: "Mapped Weekly / Monthly Draw on Liquidity across ES, NQ, Gold, DXY" },
+    { id: "wk_smt_levels", label: "Identified key intermarket SMT & Weekly opening range levels" },
+    { id: "wk_risk_cap", label: "Defined weekly max drawdown limit & A+ session focus" },
+  ],
+  month: [
+    { id: "mo_macro_review", label: "Audited Monthly candle closures & quarterly dealing ranges" },
+    { id: "mo_edge_stats", label: "Reviewed win rate, R-distribution, and playbook expectancy" },
+    { id: "mo_mistake_audit", label: "Categorized top execution errors & updated rule filters" },
+  ],
+  quarter: [
+    { id: "q_macro_shift", label: "Evaluated quarterly macro regime & seasonal tendencies" },
+    { id: "q_prop_alloc", label: "Reviewed account allocation, payouts, and drawdown buffers" },
+    { id: "q_system_refinement", label: "Refined core Playbook criteria based on 90-day sample" },
+  ],
+  year: [
+    { id: "yr_full_audit", label: "Completed full annual performance & tax/payout reconciliation" },
+    { id: "yr_edge_evolution", label: "Documented highest-expectancy setups & eliminated low-EV habits" },
+    { id: "yr_goals_next", label: "Established capital & process milestones for the upcoming year" },
+  ],
 };
 
 export function JournalEntryEditor({
@@ -196,28 +104,86 @@ export function JournalEntryEditor({
   const router = useRouter();
   const noteEditorRef = useRef<RichEditorHandle>(null);
 
+  const [activeTab, setActiveTab] = useState<"prep" | "review">("prep");
   const [title, setTitle] = useState(initialEntry.title);
   const [content, setContent] = useState(initialEntry.content);
-  const [marketBias, setMarketBias] = useState(initialEntry.marketBias || "Neutral");
-  const [dayProfile, setDayProfile] = useState(initialEntry.dayProfile || "");
-  const [keyLevels, setKeyLevels] = useState(initialEntry.keyLevels || "");
+  const [reviewContent, setReviewContent] = useState(
+    initialEntry.reviewContent || ""
+  );
   const [lessonsLearned, setLessonsLearned] = useState(
     initialEntry.lessonsLearned || ""
   );
+
   const [notionUrl, setNotionUrl] = useState<string | null>(
     initialEntry.notionUrl ||
       (initialEntry.notionPageId
         ? `https://www.notion.so/${initialEntry.notionPageId.replace(/-/g, "")}`
         : null)
   );
+  const [reviewNotionUrl, setReviewNotionUrl] = useState<string | null>(
+    initialEntry.reviewNotionUrl ||
+      (initialEntry.reviewNotionPageId
+        ? `https://www.notion.so/${initialEntry.reviewNotionPageId.replace(/-/g, "")}`
+        : null)
+  );
 
-  const [checklist, setChecklist] = useState<Record<string, boolean>>(() => {
+  // Per-period customizable DEFAULT checklist definitions + Entry-specific custom items
+  const [periodChecklists, setPeriodChecklists] = useState<
+    Record<PeriodKey, Array<{ id: string; label: string }>>
+  >(FALLBACK_PERIOD_CHECKLISTS);
+  const [editingChecklist, setEditingChecklist] = useState(false);
+  const [newDefaultItemText, setNewDefaultItemText] = useState("");
+  const [newLocalItemText, setNewLocalItemText] = useState("");
+
+  useEffect(() => {
+    fetch("/api/journal/config?autopopulate=1")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.config?.checklists) {
+          setPeriodChecklists((prev) => ({ ...prev, ...data.config.checklists }));
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  const currentChecklistDefs = useMemo(
+    () => periodChecklists[range.periodType] || FALLBACK_PERIOD_CHECKLISTS[range.periodType],
+    [periodChecklists, range.periodType]
+  );
+
+  const persistPeriodChecklistDefs = (
+    nextItems: Array<{ id: string; label: string }>
+  ) => {
+    const nextMap = {
+      ...periodChecklists,
+      [range.periodType]: nextItems,
+    };
+    setPeriodChecklists(nextMap);
+    void fetch("/api/journal/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ checklists: nextMap }),
+    });
+  };
+
+  const [checklist, setChecklist] = useState<Record<string, any>>(() => {
     try {
       return JSON.parse(initialEntry.checklistJson || "{}");
     } catch {
       return {};
     }
   });
+
+  const entryCustomItems: Array<{ id: string; label: string }> = useMemo(() => {
+    return Array.isArray(checklist._customItems) ? checklist._customItems : [];
+  }, [checklist._customItems]);
+
+  const updateEntryCustomItems = (nextCustom: Array<{ id: string; label: string }>) => {
+    setChecklist((prev) => ({
+      ...prev,
+      _customItems: nextCustom,
+    }));
+  };
 
   const [scores, setScores] = useState<{
     planAdherence: number;
@@ -245,14 +211,18 @@ export function JournalEntryEditor({
   useEffect(() => {
     setTitle(initialEntry.title);
     setContent(initialEntry.content);
-    setMarketBias(initialEntry.marketBias || "Neutral");
-    setDayProfile(initialEntry.dayProfile || "");
-    setKeyLevels(initialEntry.keyLevels || "");
+    setReviewContent(initialEntry.reviewContent || "");
     setLessonsLearned(initialEntry.lessonsLearned || "");
     setNotionUrl(
       initialEntry.notionUrl ||
         (initialEntry.notionPageId
           ? `https://www.notion.so/${initialEntry.notionPageId.replace(/-/g, "")}`
+          : null)
+    );
+    setReviewNotionUrl(
+      initialEntry.reviewNotionUrl ||
+        (initialEntry.reviewNotionPageId
+          ? `https://www.notion.so/${initialEntry.reviewNotionPageId.replace(/-/g, "")}`
           : null)
     );
     try {
@@ -271,11 +241,9 @@ export function JournalEntryEditor({
     } catch {}
   }, [initialEntry]);
 
-  // Persist and reuse active date anchor across Day / Week / Month / Quarter / Year
   const [activeAnchor, setActiveAnchor] = useState<string>(range.anchorDate);
 
   useEffect(() => {
-    // If we are on a day or week page, this is our authoritative active anchor
     if (range.periodType === "day" || range.periodType === "week") {
       setActiveAnchor(range.anchorDate);
       try {
@@ -284,28 +252,22 @@ export function JournalEntryEditor({
       return;
     }
 
-    // When on month, quarter, or year, check if we have a saved anchor from our previous daily browsing
     try {
       const saved = localStorage.getItem("tz_active_journal_anchor");
       if (saved && /^\d{4}-\d{2}-\d{2}$/.test(saved)) {
-        // If the saved anchor belongs to the same year/month as this view, keep it
         const currentYear = range.anchorDate.slice(0, 4);
-        if (range.periodType === "year") {
-          // If viewing year-2026, keep saved anchor if it's in 2026
-          if (saved.startsWith(currentYear)) {
-            setActiveAnchor(saved);
-            return;
-          }
-        } else if (range.periodType === "month") {
-          // If viewing month-2026-09, keep saved anchor if it's in 2026-09
-          const currentMonth = range.anchorDate.slice(0, 7);
-          if (saved.startsWith(currentMonth)) {
-            setActiveAnchor(saved);
-            return;
-          }
+        if (range.periodType === "year" && saved.startsWith(currentYear)) {
+          setActiveAnchor(saved);
+          return;
+        } else if (
+          range.periodType === "month" &&
+          saved.startsWith(range.anchorDate.slice(0, 7))
+        ) {
+          setActiveAnchor(saved);
+          return;
         } else if (range.periodType === "quarter") {
-          const currentYear = range.anchorDate.slice(0, 4);
-          const qNum = Math.floor((parseInt(range.anchorDate.slice(5, 7), 10) - 1) / 3) + 1;
+          const qNum =
+            Math.floor((parseInt(range.anchorDate.slice(5, 7), 10) - 1) / 3) + 1;
           const savedMonth = parseInt(saved.slice(5, 7), 10);
           const savedQ = Math.floor((savedMonth - 1) / 3) + 1;
           if (saved.startsWith(currentYear) && savedQ === qNum) {
@@ -464,18 +426,33 @@ export function JournalEntryEditor({
     return Math.round((sum / 20) * 100);
   }, [scores]);
 
-  const sectionTitle = useMemo(() => {
+  const tabLabels = useMemo(() => {
     switch (range.periodType) {
       case "week":
-        return "Weekly Synthesis & Edge Review";
+        return {
+          prep: "Weekly Synthesis & Forecast",
+          review: "Weekly Review",
+        };
       case "month":
-        return "Monthly Performance & Macro Review";
+        return {
+          prep: "Monthly Macro Plan",
+          review: "Monthly Review",
+        };
       case "quarter":
-        return "Quarterly Milestone & Strategy Review";
+        return {
+          prep: "Quarterly Strategy Plan",
+          review: "Quarterly Review",
+        };
       case "year":
-        return "Annual Trading Performance & System Audit";
+        return {
+          prep: "Annual System Plan",
+          review: "Annual Review",
+        };
       default:
-        return "Daily Session Notes & Execution Review";
+        return {
+          prep: "Daily Session Notes",
+          review: "Daily Review",
+        };
     }
   }, [range.periodType]);
 
@@ -491,17 +468,24 @@ export function JournalEntryEditor({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           pullFromNotion: true,
+          activeTab,
           notionPageId: initialEntry.notionPageId,
+          reviewNotionPageId: initialEntry.reviewNotionPageId,
           title,
         }),
       });
       const data = await res.json();
       if (data.notionPulled && data.entry) {
         setTitle(data.entry.title);
-        setContent(data.entry.content);
-        if (data.entry.notionUrl) setNotionUrl(data.entry.notionUrl);
+        if (activeTab === "review") {
+          setReviewContent(data.entry.reviewContent || "");
+          if (data.entry.reviewNotionUrl) setReviewNotionUrl(data.entry.reviewNotionUrl);
+        } else {
+          setContent(data.entry.content || "");
+          if (data.entry.notionUrl) setNotionUrl(data.entry.notionUrl);
+        }
         setEditorKey((k) => k + 1);
-        setSaveStatus("Pulled latest content from Notion!");
+        setSaveStatus(`Pulled ${activeTab === "review" ? "Review" : "Notes"} from Notion!`);
       } else {
         setSaveStatus(data.notionError || "Could not pull from Notion");
       }
@@ -510,7 +494,13 @@ export function JournalEntryEditor({
     } finally {
       setPullingNotion(false);
     }
-  }, [initialEntry.slug, initialEntry.notionPageId, title]);
+  }, [
+    initialEntry.slug,
+    initialEntry.notionPageId,
+    initialEntry.reviewNotionPageId,
+    activeTab,
+    title,
+  ]);
 
   const handleSave = useCallback(
     async (syncNotion = false) => {
@@ -525,30 +515,34 @@ export function JournalEntryEditor({
           body: JSON.stringify({
             title,
             content,
-            marketBias,
-            dayProfile,
-            keyLevels,
+            reviewContent,
             lessonsLearned,
             checklistJson: JSON.stringify(checklist),
             scoresJson: JSON.stringify(scores),
             rating: processScorePct,
             syncNotion,
+            activeTab,
           }),
         });
         const data = await res.json();
         if (data.entry?.notionUrl) {
           setNotionUrl(data.entry.notionUrl);
         }
+        if (data.entry?.reviewNotionUrl) {
+          setReviewNotionUrl(data.entry.reviewNotionUrl);
+        }
         if (syncNotion) {
           if (data.notionSynced) {
-            setSaveStatus("Saved & Synced to Notion!");
+            setSaveStatus(
+              `Saved & Synced ${activeTab === "review" ? "Review Page" : "Prep Page"} to Notion!`
+            );
           } else {
             setSaveStatus(data.notionError || "Saved locally (Notion sync skipped)");
           }
         } else {
           setSaveStatus("Saved to database");
         }
-      } catch (e: any) {
+      } catch {
         setSaveStatus("Error saving journal");
       } finally {
         setSaving(false);
@@ -559,13 +553,12 @@ export function JournalEntryEditor({
       initialEntry.slug,
       title,
       content,
-      marketBias,
-      dayProfile,
-      keyLevels,
+      reviewContent,
       lessonsLearned,
       checklist,
       scores,
       processScorePct,
+      activeTab,
     ]
   );
 
@@ -573,22 +566,14 @@ export function JournalEntryEditor({
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        handleSave(false);
+        void handleSave(false);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
-  const insertTemplateHtml = (key: string) => {
-    const tpl = NOTION_HTML_TEMPLATES[key];
-    if (!tpl) return;
-    if (noteEditorRef.current?.insertHtml) {
-      noteEditorRef.current.insertHtml(tpl.html);
-    } else {
-      setContent((prev) => (prev ? `${prev}<br/>${tpl.html}` : tpl.html));
-    }
-  };
+  const activeNotionLink = activeTab === "review" ? reviewNotionUrl : notionUrl;
 
   return (
     <div className="space-y-6 pb-12">
@@ -632,7 +617,7 @@ export function JournalEntryEditor({
                   href={link.href}
                   className={`px-2.5 py-1 rounded-lg text-xs font-semibold transition ${
                     isActive
-                      ? "bg-secondary text-foreground border border-border font-medium text-foreground shadow"
+                      ? "bg-secondary text-foreground border border-border font-medium shadow"
                       : "text-muted-foreground hover:text-foreground"
                   }`}
                 >
@@ -652,13 +637,19 @@ export function JournalEntryEditor({
           )}
 
           <a
-            href={notionUrl || "https://www.notion.so"}
+            href={activeNotionLink || "https://www.notion.so"}
             target="_blank"
             rel="noreferrer"
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition"
-            title={notionUrl ? "Open linked page in Notion" : "Open Notion"}
+            title={
+              activeNotionLink
+                ? `Open ${activeTab === "review" ? "Review" : "Prep"} page in Notion`
+                : "Open Notion"
+            }
           >
-            <span>Open in Notion</span>
+            <span>
+              Open {activeTab === "review" ? "Review" : ""} in Notion
+            </span>
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
 
@@ -667,13 +658,13 @@ export function JournalEntryEditor({
             onClick={handlePullFromNotion}
             disabled={pullingNotion || syncingNotion || saving}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition disabled:opacity-50"
-            title="Pull blocks & notes from Notion into this journal"
+            title={`Pull ${activeTab === "review" ? "Review" : "Prep"} blocks from Notion`}
           >
             <ArrowDownToLine className="h-3.5 w-3.5" />
             <span>{pullingNotion ? "Pulling..." : "Pull from Notion"}</span>
           </button>
           <button
-            onClick={() => handleSave(true)}
+            onClick={() => void handleSave(true)}
             disabled={syncingNotion || saving}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition disabled:opacity-50"
           >
@@ -682,9 +673,9 @@ export function JournalEntryEditor({
           </button>
 
           <button
-            onClick={() => handleSave(false)}
+            onClick={() => void handleSave(false)}
             disabled={saving || syncingNotion}
-            className="inline-flex items-center gap-1.5 rounded-lg bg-secondary text-foreground border border-border font-medium hover:bg-secondary text-foreground border border-border font-medium px-3.5 py-1.5 text-xs font-semibold text-foreground shadow transition disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg bg-secondary text-foreground border border-border font-semibold hover:bg-secondary/80 px-3.5 py-1.5 text-xs shadow transition disabled:opacity-50"
           >
             <Save className="w-3.5 h-3.5" />
             <span>{saving ? "Saving..." : "Save (Ctrl+S)"}</span>
@@ -707,7 +698,7 @@ export function JournalEntryEditor({
 
           <div className="flex items-center gap-4 text-sm">
             <div>
-              <span className="text-xs text-muted-foreground mr-1.5">Net P&L:</span>
+              <span className="text-xs text-muted-foreground mr-1.5">Net P&amp;L:</span>
               <span
                 className={`font-bold ${
                   stats.netPnl >= 0 ? "text-profit" : "text-loss"
@@ -726,7 +717,7 @@ export function JournalEntryEditor({
                 {stats.totalR > 0 ? `+${stats.totalR.toFixed(2)}R` : `${stats.totalR.toFixed(2)}R`}
               </span>
             </div>
-            <div className="px-2.5 py-0.5 rounded-full bg-secondary text-foreground border border-border font-medium/15 border border-indigo-500/30 text-xs font-semibold text-foreground">
+            <div className="px-2.5 py-0.5 rounded-full bg-secondary border border-indigo-500/30 text-xs font-semibold text-foreground">
               Process Score: {processScorePct}%
             </div>
           </div>
@@ -737,7 +728,7 @@ export function JournalEntryEditor({
             {stats.curvePts.length > 1 ? (
               <div className="space-y-2">
                 <div className="flex justify-between text-[10px] text-muted-foreground">
-                  <span>Intraday / Period P&L Curve</span>
+                  <span>Intraday / Period P&amp;L Curve</span>
                   <span>
                     Peak: {fmtCurrency(stats.maxPeak)} | Low: {fmtCurrency(stats.maxDd)}
                   </span>
@@ -812,7 +803,7 @@ export function JournalEntryEditor({
               </div>
             </div>
             <div>
-              <div className="text-muted-foreground text-[10px]">Gross P&L</div>
+              <div className="text-muted-foreground text-[10px]">Gross P&amp;L</div>
               <div
                 className={`font-semibold text-sm ${
                   stats.grossPnl >= 0 ? "text-profit" : "text-loss"
@@ -853,12 +844,33 @@ export function JournalEntryEditor({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         <div className="lg:col-span-8 space-y-4">
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-4">
+            {/* DUAL TAB HEADER: PREP/SYNTHESIS TAB vs END-OF-PERIOD REVIEW TAB */}
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-border/40">
-              <div className="flex items-center gap-2">
-                <FileText className="w-4 h-4 text-muted-foreground" />
-                <h2 className="text-sm font-bold text-foreground">
-                  {sectionTitle}
-                </h2>
+              <div className="flex items-center gap-1.5 rounded-xl bg-[#0d0f14] p-1 border border-border/60">
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("prep")}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                    activeTab === "prep"
+                      ? "bg-secondary text-foreground border border-border shadow"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <FileText className="w-3.5 h-3.5 text-indigo-400" />
+                  <span>{tabLabels.prep}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab("review")}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
+                    activeTab === "review"
+                      ? "bg-secondary text-foreground border border-border shadow"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>{tabLabels.review}</span>
+                </button>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
@@ -868,6 +880,8 @@ export function JournalEntryEditor({
                     const formatted = ` ${text}`;
                     if (noteEditorRef.current?.insertText) {
                       noteEditorRef.current.insertText(formatted);
+                    } else if (activeTab === "review") {
+                      setReviewContent((prev) => `${prev || ""}${formatted}`);
                     } else {
                       setContent((prev) => `${prev || ""}${formatted}`);
                     }
@@ -876,58 +890,25 @@ export function JournalEntryEditor({
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              <div>
-                <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-                  HTF Market Bias
-                </label>
-                <select
-                  value={marketBias}
-                  onChange={(e) => setMarketBias(e.target.value)}
-                  className="w-full rounded-lg border border-border/60 bg-[#181b26] px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                >
-                  <option value="Bullish">Bullish (Expansion Higher)</option>
-                  <option value="Bearish">Bearish (Expansion Lower)</option>
-                  <option value="Neutral">Neutral / Two-Sided Range</option>
-                  <option value="Reversal">HTF Reversal / Sweep</option>
-                </select>
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-                  Session / Day Profile
-                </label>
-                <input
-                  value={dayProfile}
-                  onChange={(e) => setDayProfile(e.target.value)}
-                  placeholder="e.g. London Manipulation -> NY AM Continuation"
-                  className="w-full rounded-lg border border-border/60 bg-[#181b26] px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1">
-                  Key Draw on Liquidity / Levels
-                </label>
-                <input
-                  value={keyLevels}
-                  onChange={(e) => setKeyLevels(e.target.value)}
-                  placeholder="e.g. US500 7785 BSL / 7760 SSL"
-                  className="w-full rounded-lg border border-border/60 bg-[#181b26] px-2.5 py-1.5 text-xs text-foreground focus:outline-none focus:ring-1 focus:ring-indigo-500"
-                />
-              </div>
-            </div>
-
-            {/* FULL NOTION RICH EDITOR */}
+            {/* FULL NOTION RICH EDITOR (Switches cleanly between Prep and Review tabs) */}
             <div className="pt-1">
-              <RichEditor key={editorKey}
+              <RichEditor
+                key={`${editorKey}-${activeTab}`}
                 editorRef={noteEditorRef}
-                value={content}
-                onChange={setContent}
-                minHeight={460}
-                ownerType="day"
-                ownerId={initialEntry.slug}
-                placeholder="Type '/' for Notion blocks (toggles, columns, callouts, images) or paste screenshots (Ctrl+V)..."
+                value={activeTab === "review" ? reviewContent : content}
+                onChange={activeTab === "review" ? setReviewContent : setContent}
+                minHeight={480}
+                ownerType={range.periodType}
+                ownerId={
+                  activeTab === "review"
+                    ? `${initialEntry.slug}-review`
+                    : initialEntry.slug
+                }
+                placeholder={
+                  activeTab === "review"
+                    ? `Write your ${tabLabels.review} here, or type '/' for Notion blocks...`
+                    : "Type '/' for Notion blocks (toggles, columns, callouts, images) or paste screenshots (Ctrl+V)..."
+                }
               />
             </div>
 
@@ -947,26 +928,26 @@ export function JournalEntryEditor({
               <ReviewExport
                 containsFinancialData
                 document={{
-                  title: `${initialEntry.title || range.defaultTitle}`,
+                  title: `${initialEntry.title || range.defaultTitle} (${
+                    activeTab === "review" ? tabLabels.review : tabLabels.prep
+                  })`,
                   subtitle: `${range.periodType.toUpperCase()} (${range.startDate} to ${range.endDate})`,
                   lines: [
                     `Trades: ${stats.total} | Win Rate: ${stats.winRate}%`,
                     `Net P&L: ${fmtCurrency(stats.netPnl)} | Realized R: ${stats.totalR.toFixed(2)}R`,
-                    `HTF Bias: ${marketBias} | Profile: ${dayProfile || "Unspecified"}`,
-                    `Key DOL: ${keyLevels || "Unspecified"}`,
                     `Focus: ${lessonsLearned || "None"}`,
                     "",
-                    content,
+                    activeTab === "review" ? reviewContent : content,
                   ],
                 }}
               />
-              {/* Legacy attachment drawer removed: images are managed inline in the block editor */}
             </div>
           </div>
         </div>
 
-        {/* RIGHT SIDEBAR */}
+        {/* RIGHT SIDEBAR: SCORECARD -> ECONOMIC CALENDAR -> EDITABLE TRADING PLAN CHECKLIST */}
         <div className="lg:col-span-4 space-y-4">
+          {/* 1. EXECUTION & PROCESS SCORECARD */}
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-3.5">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-border/40 pb-2.5">
               <div className="flex items-center gap-2">
@@ -1022,43 +1003,314 @@ export function JournalEntryEditor({
             ))}
           </div>
 
+          {/* 2. FOREXFACTORY ECONOMIC CALENDAR (DAILY & WEEKLY JOURNALS) */}
+          <EconomicCalendarCard
+            periodType={range.periodType}
+            startDate={range.startDate}
+            endDate={range.endDate}
+            anchorDate={range.anchorDate}
+          />
+
+          {/* 3. PER-PERIOD DEFAULT + ENTRY-SPECIFIC TRADING PLAN CHECKLIST */}
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-3">
-            <div className="flex items-center gap-2 border-b border-slate-200 dark:border-border/40 pb-2.5">
-              <ShieldCheck className="w-4 h-4 text-profit" />
-              <h3 className="text-sm font-bold text-foreground">
-                Trading Plan Checklist
-              </h3>
+            <div className="flex items-center justify-between border-b border-slate-200 dark:border-border/40 pb-2.5">
+              <div className="flex items-center gap-2">
+                <ShieldCheck className="w-4 h-4 text-profit" />
+                <h3 className="text-sm font-bold text-foreground">
+                  Trading Plan Checklist ({range.periodType.toUpperCase()})
+                </h3>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => setEditingChecklist((e) => !e)}
+                className={`inline-flex items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium transition ${
+                  editingChecklist
+                    ? "bg-indigo-600 text-white"
+                    : "text-muted-foreground hover:text-foreground hover:bg-secondary/60"
+                }`}
+                title="Manage Default rules vs rules specific to this entry"
+              >
+                {editingChecklist ? (
+                  <>
+                    <Check className="w-3 h-3" />
+                    <span>Done</span>
+                  </>
+                ) : (
+                  <>
+                    <Pencil className="w-3 h-3" />
+                    <span>Manage</span>
+                  </>
+                )}
+              </button>
             </div>
 
-            <div className="space-y-2">
-              {DEFAULT_CHECKLIST_ITEMS.map((item) => {
-                const checked = !!checklist[item.id];
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    onClick={() =>
-                      setChecklist((prev) => ({
-                        ...prev,
-                        [item.id]: !prev[item.id],
-                      }))
-                    }
-                    className={`w-full flex items-start gap-2.5 p-2 rounded-lg border text-left text-xs transition ${
-                      checked
-                        ? "border-profit/20 bg-emerald-950/20 text-foreground"
-                        : "border-slate-200 dark:border-border/40 bg-[#161924]/40 text-muted-foreground hover:text-foreground"
-                    }`}
-                  >
-                    {checked ? (
-                      <CheckSquare className="w-4 h-4 text-profit shrink-0 mt-0.5" />
-                    ) : (
-                      <Square className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
-                    )}
-                    <span className="leading-snug">{item.label}</span>
-                  </button>
-                );
-              })}
-            </div>
+            {editingChecklist ? (
+              <div className="space-y-4">
+                {/* SECTION A: PERMANENT DEFAULT RULES FOR THIS PERIOD TYPE */}
+                <div className="space-y-2">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
+                    Default {range.periodType} Rules (Appear on every {range.periodType})
+                  </div>
+                  {currentChecklistDefs.map((item, idx) => (
+                    <div key={item.id} className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={item.label}
+                        onChange={(e) => {
+                          const updated = currentChecklistDefs.map((it, i) =>
+                            i === idx ? { ...it, label: e.target.value } : it
+                          );
+                          persistPeriodChecklistDefs(updated);
+                        }}
+                        className="h-8 flex-1 rounded-lg border border-border/60 bg-[#161924] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Move from Default to This Entry Only
+                          const nextDefaults = currentChecklistDefs.filter((_, i) => i !== idx);
+                          persistPeriodChecklistDefs(nextDefaults);
+                          updateEntryCustomItems([...entryCustomItems, item]);
+                        }}
+                        className="rounded-lg border border-border/60 bg-secondary/50 hover:bg-secondary px-2 py-1 text-[10px] font-medium text-muted-foreground hover:text-foreground shrink-0"
+                        title={`Make specific to this ${range.periodType} only`}
+                      >
+                        Only This {range.periodType}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = currentChecklistDefs.filter((_, i) => i !== idx);
+                          persistPeriodChecklistDefs(next);
+                        }}
+                        className="rounded-lg bg-rose-500/15 hover:bg-rose-500/25 p-1.5 text-rose-400 shrink-0"
+                        title="Delete default rule"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+
+                  <div className="flex items-center gap-1.5 pt-1">
+                    <input
+                      type="text"
+                      value={newDefaultItemText}
+                      onChange={(e) => setNewDefaultItemText(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && newDefaultItemText.trim()) {
+                          e.preventDefault();
+                          persistPeriodChecklistDefs([
+                            ...currentChecklistDefs,
+                            {
+                              id: `${range.periodType}_def_${Date.now()}`,
+                              label: newDefaultItemText.trim(),
+                            },
+                          ]);
+                          setNewDefaultItemText("");
+                        }
+                      }}
+                      placeholder={`Add new default ${range.periodType} rule...`}
+                      className="h-8 flex-1 rounded-lg border border-dashed border-indigo-500/40 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        if (!newDefaultItemText.trim()) return;
+                        persistPeriodChecklistDefs([
+                          ...currentChecklistDefs,
+                          {
+                            id: `${range.periodType}_def_${Date.now()}`,
+                            label: newDefaultItemText.trim(),
+                          },
+                        ]);
+                        setNewDefaultItemText("");
+                      }}
+                      className="inline-flex h-8 items-center gap-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-2.5 text-xs font-semibold text-white shrink-0"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>Add Default</span>
+                    </button>
+                  </div>
+                </div>
+
+                {/* SECTION B: ENTRY-SPECIFIC RULES (ONLY FOR THIS SPECIFIC DATE/PERIOD) */}
+                <div className="space-y-2 border-t border-border/40 pt-3">
+                  <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-400">
+                    Specific to This {range.periodType} Only ({initialEntry.slug})
+                  </div>
+                  {entryCustomItems.length === 0 && (
+                    <div className="text-[11px] text-muted-foreground italic">
+                      No custom items added specifically for this {range.periodType} yet.
+                    </div>
+                  )}
+                  {entryCustomItems.map((item, idx) => (
+                    <div key={item.id} className="flex items-center gap-1.5">
+                      <input
+                        type="text"
+                        value={item.label}
+                        onChange={(e) => {
+                          const updated = entryCustomItems.map((it, i) =>
+                            i === idx ? { ...it, label: e.target.value } : it
+                          );
+                          updateEntryCustomItems(updated);
+                        }}
+                        className="h-8 flex-1 rounded-lg border border-border/60 bg-[#161924] px-2.5 text-xs text-foreground outline-none focus:border-emerald-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          // Promote to permanent Default for this periodType
+                          const nextCustom = entryCustomItems.filter((_, i) => i !== idx);
+                          updateEntryCustomItems(nextCustom);
+                          persistPeriodChecklistDefs([...currentChecklistDefs, item]);
+                        }}
+                        className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-2 py-1 text-[10px] font-medium text-indigo-300 shrink-0"
+                        title={`Promote to Default for all ${range.periodType}s`}
+                      >
+                        Make Default
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const next = entryCustomItems.filter((_, i) => i !== idx);
+                          updateEntryCustomItems(next);
+                        }}
+                        className="rounded-lg bg-rose-500/15 hover:bg-rose-500/25 p-1.5 text-rose-400 shrink-0"
+                        title="Remove from this entry"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {/* Render Default Period Items */}
+                {currentChecklistDefs.map((item) => {
+                  const checked = !!checklist[item.id];
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() =>
+                        setChecklist((prev) => ({
+                          ...prev,
+                          [item.id]: !prev[item.id],
+                        }))
+                      }
+                      className={`w-full flex items-start justify-between gap-2.5 p-2 rounded-lg border text-left text-xs transition ${
+                        checked
+                          ? "border-profit/20 bg-emerald-950/20 text-foreground"
+                          : "border-slate-200 dark:border-border/40 bg-[#161924]/40 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <div className="flex items-start gap-2.5">
+                        {checked ? (
+                          <CheckSquare className="w-4 h-4 text-profit shrink-0 mt-0.5" />
+                        ) : (
+                          <Square className="w-4 h-4 text-muted-foreground shrink-0 mt-0.5" />
+                        )}
+                        <span className="leading-snug">{item.label}</span>
+                      </div>
+                      <span className="shrink-0 rounded bg-white/[0.04] px-1.5 py-0.5 text-[9px] font-medium text-muted-foreground">
+                        Default
+                      </span>
+                    </button>
+                  );
+                })}
+
+                {/* Render Entry-Specific Items */}
+                {entryCustomItems.map((item) => {
+                  const checked = !!checklist[item.id];
+                  return (
+                    <div
+                      key={item.id}
+                      className={`group flex items-start justify-between gap-2 p-2 rounded-lg border text-left text-xs transition ${
+                        checked
+                          ? "border-profit/20 bg-emerald-950/20 text-foreground"
+                          : "border-indigo-500/25 bg-indigo-950/10 text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setChecklist((prev) => ({
+                            ...prev,
+                            [item.id]: !prev[item.id],
+                          }))
+                        }
+                        className="flex flex-1 items-start gap-2.5 text-left"
+                      >
+                        {checked ? (
+                          <CheckSquare className="w-4 h-4 text-profit shrink-0 mt-0.5" />
+                        ) : (
+                          <Square className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
+                        )}
+                        <span className="leading-snug">{item.label}</span>
+                      </button>
+
+                      <div className="flex items-center gap-1 shrink-0">
+                        <span className="rounded bg-indigo-500/15 px-1.5 py-0.5 text-[9px] font-medium text-indigo-300">
+                          This {range.periodType}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateEntryCustomItems(
+                              entryCustomItems.filter((i) => i.id !== item.id)
+                            )
+                          }
+                          className="opacity-0 group-hover:opacity-100 p-0.5 text-muted-foreground hover:text-rose-400 transition"
+                          title={`Remove from this ${range.periodType}`}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })}
+
+                {/* Quick-Add Input for This Specific Day/Week/Month/Quarter/Year */}
+                <div className="flex items-center gap-1.5 pt-1">
+                  <input
+                    type="text"
+                    value={newLocalItemText}
+                    onChange={(e) => setNewLocalItemText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && newLocalItemText.trim()) {
+                        e.preventDefault();
+                        const newItem = {
+                          id: `custom_${Date.now()}`,
+                          label: newLocalItemText.trim(),
+                        };
+                        updateEntryCustomItems([...entryCustomItems, newItem]);
+                        setNewLocalItemText("");
+                      }
+                    }}
+                    placeholder={`+ Add item for this ${range.periodType} only (press Enter then Save)...`}
+                    className="h-7 flex-1 rounded-lg border border-dashed border-border/50 bg-transparent px-2.5 text-[11px] text-foreground placeholder:text-muted-foreground/60 outline-none focus:border-indigo-500/60"
+                  />
+                  {newLocalItemText.trim() && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newItem = {
+                          id: `custom_${Date.now()}`,
+                          label: newLocalItemText.trim(),
+                        };
+                        updateEntryCustomItems([...entryCustomItems, newItem]);
+                        setNewLocalItemText("");
+                      }}
+                      className="h-7 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-2.5 text-[11px] font-semibold text-white"
+                    >
+                      Add
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
           </div>
         </div>
       </div>
@@ -1156,7 +1408,7 @@ export function JournalEntryEditor({
                       <td className="py-2.5 px-2.5 text-right">
                         <Link
                           href={`/trades/${t.key}`}
-                          className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground border border-border font-medium/10 hover:bg-secondary text-foreground border border-border font-medium/20 border border-indigo-500/30 px-2.5 py-1 text-[11px] font-semibold text-foreground transition"
+                          className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground border border-indigo-500/30 px-2.5 py-1 text-[11px] font-semibold transition hover:bg-secondary/80"
                         >
                           <span>Replay</span>
                           <ArrowRight className="w-3 h-3" />
@@ -1170,7 +1422,7 @@ export function JournalEntryEditor({
           </div>
         ) : (
           <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-slate-200 dark:border-border/40 rounded-lg">
-            No trades executed during this period. You can still record your market observations and HTF narrative above.
+            No trades executed during this period.
           </div>
         )}
       </div>
