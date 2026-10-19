@@ -519,6 +519,19 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
       out.push(`<ol><li>${textHtml}${childrenHtml}</li></ol>`);
     } else if (type === "divider") {
       out.push(`<hr class="tz-divider" data-notion-type="divider" />`);
+    } else if (type === "button" || (type === "callout" && data.icon?.emoji === "🔘")) {
+      const btnLabel = textHtml || "Insert Block";
+      const templateHtml = childrenHtml || `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="false"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▸</span><div class="tz-toggle-title"><strong>New Item</strong></div></div><div class="tz-toggle-body" style="display:none"><p><br/></p></div></div>`;
+      const encodedPayload = Buffer.from(templateHtml, "utf-8").toString("base64");
+      out.push(`
+        <div class="tz-notion-btn-wrapper" data-notion-type="button" data-btn-label="${btnLabel.replace(/"/g, "&quot;")}" data-btn-payload="${encodedPayload}" contenteditable="false">
+          <button type="button" class="tz-notion-action-btn">
+            <span class="tz-notion-btn-icon">＋</span>
+            <span class="tz-notion-btn-text">${btnLabel}</span>
+          </button>
+          <button type="button" class="tz-notion-btn-config" title="Configure button label &amp; spawned blocks">⚙</button>
+        </div>
+      `);
     } else if (type === "column_list") {
       const cols = b.children || [];
       const colDivs: string[] = [];
@@ -687,7 +700,33 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
     const el = node as HTMLElement;
     const tag = el.tagName?.toUpperCase();
 
-    if (tag === "STYLE" || tag === "SCRIPT" || tag === "BUTTON" || el.classList.contains("tz-add-ticker-btn")) {
+    if (el.classList.contains("tz-notion-btn-wrapper") || el.classList.contains("tz-add-ticker-btn")) {
+      const label =
+        el.getAttribute("data-btn-label") ||
+        el.querySelector(".tz-notion-btn-text")?.text?.trim() ||
+        el.text?.replace("⚙", "")?.replace("＋", "")?.trim() ||
+        "Insert Block";
+      const payloadB64 = el.getAttribute("data-btn-payload") || "";
+      let childBlocks: any[] = [];
+      if (payloadB64) {
+        try {
+          const decodedHtml = Buffer.from(payloadB64, "base64").toString("utf-8");
+          childBlocks = await editorHtmlToNotionTree(decodedHtml, token);
+        } catch {}
+      }
+      return {
+        object: "block",
+        type: "callout",
+        callout: {
+          icon: { type: "emoji", emoji: "🔘" },
+          color: "gray_background",
+          rich_text: toRichText(label),
+        },
+        ...(childBlocks.length > 0 ? { _children: childBlocks } : {}),
+      };
+    }
+
+    if (tag === "STYLE" || tag === "SCRIPT" || tag === "BUTTON") {
       return null;
     }
 

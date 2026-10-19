@@ -24,11 +24,14 @@ import {
   Plus,
   Trash2,
   Check,
+  PanelRightClose,
+  PanelRightOpen,
 } from "lucide-react";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
 import { VoiceNote } from "@/components/voice-note";
 import { ReviewExport } from "@/components/review-export";
 import { EconomicCalendarCard } from "@/components/journal/economic-calendar-card";
+import { PeriodReviewCompanionCard } from "@/components/journal/period-review-companion-card";
 import type { JournalEntryRecord, PeriodKey } from "@/server/journal-service";
 import type { JournalTrade } from "./journal-view";
 
@@ -207,6 +210,48 @@ export function JournalEntryEditor({
   const [saving, setSaving] = useState(false);
   const [syncingNotion, setSyncingNotion] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
+
+  // Draggable 2-column split ratio (saved in localStorage so user can widen Review Companion)
+  const [leftWidth, setLeftWidth] = useState<number>(64);
+  const [rightCollapsed, setRightCollapsed] = useState<boolean>(false);
+  const isDraggingSplitRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    try {
+      const savedRatio = localStorage.getItem("tz_journal_split_ratio");
+      if (savedRatio) {
+        const num = Number(savedRatio);
+        if (num >= 30 && num <= 80) setLeftWidth(num);
+      }
+    } catch {}
+  }, []);
+
+  const handleSplitMouseDown = () => {
+    isDraggingSplitRef.current = true;
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+
+    const onMouseMove = (e: MouseEvent) => {
+      if (!isDraggingSplitRef.current) return;
+      const totalWidth = window.innerWidth;
+      const newPct = Math.max(32, Math.min(78, (e.clientX / totalWidth) * 100));
+      setLeftWidth(Math.round(newPct * 10) / 10);
+    };
+
+    const onMouseUp = () => {
+      isDraggingSplitRef.current = false;
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      try {
+        localStorage.setItem("tz_journal_split_ratio", String(leftWidth));
+      } catch {}
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
 
   useEffect(() => {
     setTitle(initialEntry.title);
@@ -573,6 +618,157 @@ export function JournalEntryEditor({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
+  // Zero-lag background autosave (1.5s debounce) + immediate keepalive flush on page leave/unmount
+  const latestPayloadRef = useRef({
+    slug: initialEntry.slug,
+    title,
+    content,
+    reviewContent,
+    lessonsLearned,
+    checklistJson: JSON.stringify(checklist),
+    scoresJson: JSON.stringify(scores),
+    rating: processScorePct,
+    activeTab,
+  });
+
+  const lastSavedSnapshotRef = useRef<string>("");
+  const isDirtyRef = useRef<boolean>(false);
+
+  useEffect(() => {
+    const initialSnap = JSON.stringify({
+      title: initialEntry.title,
+      content: initialEntry.content,
+      reviewContent: initialEntry.reviewContent || "",
+      lessonsLearned: initialEntry.lessonsLearned || "",
+      checklistJson: initialEntry.checklistJson || "{}",
+      scoresJson: initialEntry.scoresJson || "{}",
+    });
+    lastSavedSnapshotRef.current = initialSnap;
+    isDirtyRef.current = false;
+  }, [initialEntry]);
+
+  useEffect(() => {
+    const currentSnap = JSON.stringify({
+      title,
+      content,
+      reviewContent,
+      lessonsLearned,
+      checklistJson: JSON.stringify(checklist),
+      scoresJson: JSON.stringify(scores),
+    });
+
+    latestPayloadRef.current = {
+      slug: initialEntry.slug,
+      title,
+      content,
+      reviewContent,
+      lessonsLearned,
+      checklistJson: JSON.stringify(checklist),
+      scoresJson: JSON.stringify(scores),
+      rating: processScorePct,
+      activeTab,
+    };
+
+    if (currentSnap === lastSavedSnapshotRef.current) {
+      isDirtyRef.current = false;
+      return;
+    }
+
+    isDirtyRef.current = true;
+    const timer = setTimeout(async () => {
+      if (!isDirtyRef.current) return;
+      const payload = latestPayloadRef.current;
+      try {
+        const res = await fetch(`/api/journal/${payload.slug}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: payload.title,
+            content: payload.content,
+            reviewContent: payload.reviewContent,
+            lessonsLearned: payload.lessonsLearned,
+            checklistJson: payload.checklistJson,
+            scoresJson: payload.scoresJson,
+            rating: payload.rating,
+            syncNotion: false,
+            activeTab: payload.activeTab,
+          }),
+        });
+        if (res.ok) {
+          lastSavedSnapshotRef.current = currentSnap;
+          isDirtyRef.current = false;
+          setSaveStatus("Auto-saved");
+        }
+      } catch {}
+    }, 1500);
+
+    return () => clearTimeout(timer);
+  }, [
+    initialEntry.slug,
+    title,
+    content,
+    reviewContent,
+    lessonsLearned,
+    checklist,
+    scores,
+    processScorePct,
+    activeTab,
+  ]);
+
+  const flushUnsavedImmediately = useCallback(() => {
+    if (!isDirtyRef.current) return;
+    const payload = latestPayloadRef.current;
+    isDirtyRef.current = false;
+    try {
+      void fetch(`/api/journal/${payload.slug}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: payload.title,
+          content: payload.content,
+          reviewContent: payload.reviewContent,
+          lessonsLearned: payload.lessonsLearned,
+          checklistJson: payload.checklistJson,
+          scoresJson: payload.scoresJson,
+          rating: payload.rating,
+          syncNotion: false,
+          activeTab: payload.activeTab,
+        }),
+        keepalive: true,
+      });
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    const onBeforeUnload = () => flushUnsavedImmediately();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") {
+        flushUnsavedImmediately();
+      }
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    return () => {
+      window.removeEventListener("beforeunload", onBeforeUnload);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      flushUnsavedImmediately();
+    };
+  }, [flushUnsavedImmediately]);
+
+  const jumpToToday = () => {
+    flushUnsavedImmediately();
+    const nyToday = new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(new Date());
+    try {
+      localStorage.setItem("tz_active_journal_anchor", nyToday);
+    } catch {}
+    router.push(`/journal/${nyToday}`);
+  };
+
   const activeNotionLink = activeTab === "review" ? reviewNotionUrl : notionUrl;
 
   return (
@@ -607,6 +803,16 @@ export function JournalEntryEditor({
               <ChevronRight className="w-4 h-4" />
             </button>
           </div>
+
+          <button
+            type="button"
+            onClick={jumpToToday}
+            title="Jump immediately to Today's Daily Journal"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 px-3 py-1.5 text-xs font-semibold text-indigo-300 transition shadow-2xs"
+          >
+            <Calendar className="w-3.5 h-3.5 text-indigo-400" />
+            <span>Today</span>
+          </button>
 
           <div className="flex flex-wrap items-center rounded-xl bg-secondary/50 p-1 border border-border/60">
             {hierarchyLinks.map((link) => {
@@ -840,9 +1046,15 @@ export function JournalEntryEditor({
         </div>
       </div>
 
-      {/* NOTES WORKSPACE */}
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        <div className="lg:col-span-8 space-y-4">
+      {/* NOTES WORKSPACE (DRAGGABLE RESIZABLE 2-COLUMN SPLIT) */}
+      <div className="flex flex-col lg:flex-row gap-0 relative items-stretch">
+        <div
+          style={{
+            width: rightCollapsed ? "100%" : `${leftWidth}%`,
+            flexShrink: 0,
+          }}
+          className="w-full lg:w-auto space-y-4 pr-0 lg:pr-3 min-w-[320px]"
+        >
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-4">
             {/* DUAL TAB HEADER: PREP/SYNTHESIS TAB vs END-OF-PERIOD REVIEW TAB */}
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200 dark:border-border/40">
@@ -945,8 +1157,26 @@ export function JournalEntryEditor({
           </div>
         </div>
 
-        {/* RIGHT SIDEBAR: SCORECARD -> ECONOMIC CALENDAR -> EDITABLE TRADING PLAN CHECKLIST */}
-        <div className="lg:col-span-4 space-y-4">
+        {/* DRAGGABLE VERTICAL SPLIT RESIZER HANDLE */}
+        {!rightCollapsed && (
+          <div
+            onMouseDown={handleSplitMouseDown}
+            className="hidden lg:flex w-2.5 cursor-col-resize items-center justify-center bg-transparent hover:bg-indigo-500/15 transition-colors group z-10 select-none"
+            title="Drag left or right to resize Review Companion & Sidebar width"
+          >
+            <div className="h-16 w-1 rounded-full bg-border/40 group-hover:bg-indigo-400 transition-colors" />
+          </div>
+        )}
+
+        {/* RIGHT SIDEBAR: REVIEW COMPANION -> SCORECARD -> ECONOMIC CALENDAR -> CHECKLIST */}
+        {!rightCollapsed && (
+          <div
+            style={{
+              width: `calc(${100 - leftWidth}% - 10px)`,
+              flexShrink: 0,
+            }}
+            className="w-full lg:w-auto space-y-4 pl-0 lg:pl-3 min-w-[300px] mt-6 lg:mt-0"
+          >
           {/* 1. EXECUTION & PROCESS SCORECARD */}
           <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-3.5">
             <div className="flex items-center justify-between border-b border-slate-200 dark:border-border/40 pb-2.5">
@@ -1003,7 +1233,25 @@ export function JournalEntryEditor({
             ))}
           </div>
 
-          {/* 2. FOREXFACTORY ECONOMIC CALENDAR (DAILY & WEEKLY JOURNALS) */}
+          {/* 2. REVIEW COMPANION CARD: SUB-PERIOD NOTES FLICKER & TRADE REFLECTION WIZARD */}
+          {activeTab === "review" && (
+            <PeriodReviewCompanionCard
+              periodType={range.periodType}
+              startDate={range.startDate}
+              endDate={range.endDate}
+              anchorDate={range.anchorDate}
+              trades={trades}
+              onInsertReflectionHtml={(html) => {
+                if (noteEditorRef.current?.insertHtml) {
+                  noteEditorRef.current.insertHtml(html);
+                } else {
+                  setReviewContent((prev) => (prev ? `${prev}${html}` : html));
+                }
+              }}
+            />
+          )}
+
+          {/* 3. FOREXFACTORY ECONOMIC CALENDAR (DAILY & WEEKLY JOURNALS) */}
           <EconomicCalendarCard
             periodType={range.periodType}
             startDate={range.startDate}
@@ -1313,6 +1561,7 @@ export function JournalEntryEditor({
             )}
           </div>
         </div>
+        )}
       </div>
 
       {/* EXECUTED TRADES TABLE */}

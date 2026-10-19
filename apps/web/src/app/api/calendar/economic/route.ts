@@ -24,7 +24,6 @@ interface CanonicalMapping {
   requiresForecast?: boolean;
 }
 
-// Strict EXACT-TITLE map (no loose substring .includes() that catch "Weekly" or sub-series)
 const EXACT_TV_TO_FF_MAP: Record<string, CanonicalMapping> = {
   // Inflation (CPI / PPI / PCE)
   "core inflation rate mom": { title: "Core CPI m/m", impact: "High" },
@@ -47,7 +46,7 @@ const EXACT_TV_TO_FF_MAP: Record<string, CanonicalMapping> = {
   "retail sales control group mom": { title: "Core Retail Sales m/m", impact: "High" },
   "retail sales mom": { title: "Retail Sales m/m", impact: "High" },
 
-  // Labor Market (Monthly NFP, ADP, JOLTS, Weekly Jobless Claims)
+  // Labor Market
   "non farm payrolls": { title: "Non-Farm Employment Change", impact: "High" },
   "unemployment rate": { title: "Unemployment Rate", impact: "High" },
   "average hourly earnings mom": { title: "Average Hourly Earnings m/m", impact: "High" },
@@ -57,8 +56,8 @@ const EXACT_TV_TO_FF_MAP: Record<string, CanonicalMapping> = {
 
   // PMIs & Regional Fed Indexes
   "ism manufacturing pmi": { title: "ISM Manufacturing PMI", impact: "High" },
-  "ism services pmi": { title: "ISM Services PMI", impact: "High" },
-  "ism non-manufacturing pmi": { title: "ISM Services PMI", impact: "High" },
+  "ism services pmi": { title: "ISM Services PMI", impact: "Medium" },
+  "ism non-manufacturing pmi": { title: "ISM Services PMI", impact: "Medium" },
   "s&p global manufacturing pmi flash": { title: "Flash Manufacturing PMI", impact: "Medium" },
   "s&p global services pmi flash": { title: "Flash Services PMI", impact: "Medium" },
   "philadelphia fed manufacturing index": { title: "Philly Fed Manufacturing Index", impact: "Medium" },
@@ -67,19 +66,16 @@ const EXACT_TV_TO_FF_MAP: Record<string, CanonicalMapping> = {
   "chicago pmi": { title: "Chicago PMI", impact: "Medium" },
   "richmond fed manufacturing index": { title: "Richmond Manufacturing Index", impact: "Medium" },
 
-  // GDP, Consumer Confidence & Sentiment
+  // GDP & Consumer Confidence
   "gdp growth rate qoq adv": { title: "Advance GDP q/q", impact: "High" },
   "gdp growth rate qoq 2nd est": { title: "Prelim GDP q/q", impact: "High" },
   "gdp growth rate qoq final": { title: "Final GDP q/q", impact: "High" },
   "cb consumer confidence": { title: "CB Consumer Confidence", impact: "High" },
-  "michigan consumer sentiment prelim": { title: "Prelim UoM Consumer Sentiment", impact: "Medium" },
-  "michigan consumer sentiment final": { title: "Revised UoM Consumer Sentiment", impact: "Medium" },
-  "michigan inflation expectations prelim": { title: "Prelim UoM Inflation Expectations", impact: "Medium" },
-  "michigan inflation expectations final": { title: "Revised UoM Inflation Expectations", impact: "Medium" },
 
   // FOMC & Central Bank
   "fed interest rate decision": { title: "Federal Funds Rate", impact: "High" },
-  "fomc minutes": { title: "FOMC Meeting Minutes", impact: "Medium" },
+  "fomc minutes": { title: "FOMC Meeting Minutes", impact: "High" },
+  "fomc meeting minutes": { title: "FOMC Meeting Minutes", impact: "High" },
   "fomc statement": { title: "FOMC Statement", impact: "High" },
   "fomc press conference": { title: "FOMC Press Conference", impact: "High" },
   "fed chair powell speaks": { title: "Fed Chair Powell Speaks", impact: "High" },
@@ -91,35 +87,95 @@ const EXACT_TV_TO_FF_MAP: Record<string, CanonicalMapping> = {
   "pending home sales mom": { title: "Pending Home Sales m/m", impact: "Medium" },
 };
 
-function matchForexFactoryStrict(rawTitle: string, country: string, hasForecast: boolean): CanonicalMapping | null {
-  if (country !== "USD") return null;
+// Permanent FOMC Board Governors & NY Fed Vice Chair tracked by ForexFactory as "FOMC Member <Name> Speaks"
+const FOMC_VOTING_GOVERNORS = [
+  "waller",
+  "bowman",
+  "jefferson",
+  "williams",
+  "cook",
+  "kugler",
+  "barr",
+  "miram",
+];
 
-  // Strip trailing month/quarter parentheticals like " (Sep)" or " (Q3)" before exact lookup
+function matchForexFactoryStrict(
+  rawTitle: string,
+  country: string,
+  hasForecast: boolean,
+  nyDate: string
+): CanonicalMapping | null {
   const cleaned = rawTitle
     .trim()
-    .replace(/\s*\((?:Janert{}Febert{}Marert{}Aprert{}Mayert{}Junert{}Julert{}Augert{}Sepert{}Octert{}Novert{}Decert{}Q[1-4])[^)]*\)\s*$/i, "")
+    .replace(/\s*\((?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec|Q[1-4])[^)]*\)\s*$/i, "")
     .trim();
   const lower = cleaned.toLowerCase();
 
-  // Never allow any "weekly" sub-series (except Initial Jobless Claims which is in EXACT_TV_TO_FF_MAP)
+  if (lower.includes("opec") && lower.includes("jmmc")) {
+    return { title: "OPEC-JMMC Meetings", impact: "Medium" };
+  }
+
+  if (country !== "USD") return null;
+
+  // Never allow any "weekly" sub-series (like ADP Employment Change Weekly)
   if (lower.includes("weekly")) {
     return null;
   }
 
+  // 1. University of Michigan (UoM) Consumer Sentiment & Inflation Expectations
+  // Mid-month release (day <= 20) is "Prelim", end-of-month (day > 20) is "Revised"
+  const dayOfMonth = parseInt(nyDate.slice(8, 10), 10) || 15;
+  const uomPrefix = lower.includes("prelim")
+    ? "Prelim"
+    : lower.includes("final") || lower.includes("revised")
+    ? "Revised"
+    : dayOfMonth <= 20
+    ? "Prelim"
+    : "Revised";
+
+  if (lower.includes("michigan consumer sentiment") || lower.includes("uom consumer sentiment")) {
+    return { title: `${uomPrefix} UoM Consumer Sentiment`, impact: "Medium" };
+  }
+  if (
+    lower.includes("michigan inflation expectations") ||
+    lower.includes("michigan 1-year inflation") ||
+    lower.includes("uom inflation expectations")
+  ) {
+    return { title: `${uomPrefix} UoM Inflation Expectations`, impact: "Medium" };
+  }
+
+  // 2. US President Speeches ("President Trump Speaks")
+  if (lower.includes("trump") && (lower.includes("speak") || lower.includes("speech") || lower.includes("address"))) {
+    return { title: "President Trump Speaks", impact: "Medium" };
+  }
+
+  // 3. Fed Chair Speeches
+  if (
+    (lower.includes("fed chair") || lower.includes("fed chairman") || lower.includes("powell") || lower.includes("warsh")) &&
+    (lower.includes("speaks") || lower.includes("speech") || lower.includes("testifies") || lower.includes("testimony"))
+  ) {
+    if (lower.includes("warsh")) return { title: "Fed Chair Warsh Speaks", impact: "High" };
+    if (lower.includes("powell")) return { title: "Fed Chair Powell Speaks", impact: "High" };
+    return { title: cleaned, impact: "High" };
+  }
+
+  // 4. FOMC Voting Governors ("Fed Waller Speech" -> "FOMC Member Waller Speaks")
+  if (lower.startsWith("fed ") || lower.includes("fomc member") || lower.includes("speech") || lower.includes("speaks")) {
+    for (const gov of FOMC_VOTING_GOVERNORS) {
+      if (lower.includes(gov)) {
+        const capName = gov.charAt(0).toUpperCase() + gov.slice(1);
+        return { title: `FOMC Member ${capName} Speaks`, impact: "Medium" };
+      }
+    }
+  }
+
+  // 5. Exact dictionary lookup
   const exact = EXACT_TV_TO_FF_MAP[lower];
   if (exact) {
     if (exact.requiresForecast && !hasForecast) {
       return null;
     }
     return exact;
-  }
-
-  // Allow Fed Chair speeches dynamically
-  if (
-    (lower.includes("fed chair") || lower.includes("fed chairman")) &&
-    (lower.includes("speaks") || lower.includes("speech") || lower.includes("testifies"))
-  ) {
-    return { title: cleaned, impact: "High" };
   }
 
   return null;
@@ -185,7 +241,6 @@ async function fetchFromTradingView(startDate: string, endDate: string): Promise
 
       const rawTitle = String(item.title).trim();
 
-      // Bank Holidays
       if (item.type === "holiday" || item.importance === -2) {
         const holidayKey = `${nyDate}_USD_Bank_Holiday`;
         if (!seenKeys.has(holidayKey)) {
@@ -206,8 +261,11 @@ async function fetchFromTradingView(startDate: string, endDate: string): Promise
         continue;
       }
 
-      const hasForecast = item.forecast !== null && item.forecast !== undefined && String(item.forecast).trim() !== "";
-      const mapping = matchForexFactoryStrict(rawTitle, "USD", hasForecast);
+      const hasForecast =
+        item.forecast !== null &&
+        item.forecast !== undefined &&
+        String(item.forecast).trim() !== "";
+      const mapping = matchForexFactoryStrict(rawTitle, "USD", hasForecast, nyDate);
       if (!mapping) continue;
 
       const dedupKey = `${nyDate}_USD_${mapping.title}`;
@@ -339,7 +397,6 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 1. Official FairEconomy (ForexFactory) live feed for current week
     const ffEvents = await fetchFromFairEconomy(startDate, endDate);
     if (ffEvents.length > 0) {
       ffEvents.sort((a, b) => a.date.localeCompare(b.date) || a.timestampIso.localeCompare(b.timestampIso));
@@ -352,7 +409,6 @@ export async function GET(req: NextRequest) {
       });
     }
 
-    // 2. Strict Exact-Title ForexFactory map for past/future weeks
     const tvEvents = await fetchFromTradingView(startDate, endDate);
     tvEvents.sort((a, b) => a.date.localeCompare(b.date) || a.timestampIso.localeCompare(b.timestampIso));
 

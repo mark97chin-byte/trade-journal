@@ -144,7 +144,8 @@ blockquote {
 .tz-rich-content .tz-banner,
 .tz-rich-content .tz-check-row,
 .tz-rich-content .tz-figure,
-.tz-rich-content .tz-code-block {
+.tz-rich-content .tz-code-block,
+.tz-rich-content .tz-notion-btn-wrapper {
   position: relative;
   min-height: 1.65em;
   margin-top: 2px;
@@ -265,6 +266,58 @@ blockquote {
   border-color: rgba(99, 102, 241, 0.45);
   color: #ffffff;
 }
+
+/* Notion Interactive Button Block */
+.tz-notion-btn-wrapper {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  margin: 0.45rem 0;
+  user-select: none;
+}
+.tz-notion-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.32rem 0.75rem;
+  border-radius: 0.45rem;
+  border: 1px solid rgba(99, 102, 241, 0.38);
+  background: rgba(99, 102, 241, 0.12);
+  color: #e0e7ff;
+  font-size: 0.78rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+.tz-notion-action-btn:hover {
+  background: rgba(99, 102, 241, 0.24);
+  border-color: rgba(99, 102, 241, 0.65);
+  color: #ffffff;
+}
+.tz-notion-btn-config {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.55rem;
+  height: 1.55rem;
+  border-radius: 0.375rem;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  background: rgba(255, 255, 255, 0.04);
+  color: #94a3b8;
+  font-size: 0.75rem;
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 0.15s, background 0.15s;
+}
+.tz-notion-btn-wrapper:hover .tz-notion-btn-config {
+  opacity: 1;
+}
+.tz-notion-btn-config:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #ffffff;
+}
+
 /* Empty Quote Placeholder */
 .tz-quote div:empty:before,
 blockquote:empty:before {
@@ -343,7 +396,8 @@ blockquote {
 .tz-rich-content .tz-banner,
 .tz-rich-content .tz-check-row,
 .tz-rich-content .tz-figure,
-.tz-rich-content .tz-code-block {
+.tz-rich-content .tz-code-block,
+.tz-rich-content .tz-notion-btn-wrapper {
   position: relative;
   min-height: 1.65em;
   margin-top: 2px;
@@ -1273,6 +1327,16 @@ export function RichEditor({
     if (equation !== null) insertHtmlAtCursor(`<div class="tz-equation" data-notion-type="equation"><span class="tz-equation-symbol">∑</span><span>${escapeHtml(equation)}</span></div>`);
   };
 
+  const insertNotionButtonBlock = () => {
+    const label = window.prompt("Button label (e.g., + Add Asset Toggle, + Add Trade Section):", "+ Add Asset Toggle");
+    if (!label) return;
+    const defaultSpawnHtml = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Asset / Section</strong></div></div><div class="tz-toggle-body"><p data-placeholder="Type notes or paste chart..."><br/></p></div></div>`;
+    const payloadB64 = typeof window !== "undefined" ? window.btoa(unescape(encodeURIComponent(defaultSpawnHtml))) : "";
+    insertHtmlAtCursor(
+      `<div class="tz-notion-btn-wrapper" data-notion-type="button" data-btn-label="${escapeHtml(label)}" data-btn-payload="${payloadB64}" contenteditable="false"><button type="button" class="tz-notion-action-btn"><span class="tz-notion-btn-icon">＋</span><span class="tz-notion-btn-text">${escapeHtml(label)}</span></button><button type="button" class="tz-notion-btn-config" title="Configure button label &amp; spawned blocks">⚙</button></div><p><br/></p>`
+    );
+  };
+
   const openLightboxForImage = (src: string) => {
     const images = Array.from(contentRef.current?.querySelectorAll("img") || []).map(img => img.src);
     const index = images.indexOf(src);
@@ -1286,6 +1350,70 @@ export function RichEditor({
   };
   const handleEditorClick = (e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
+    const actionBtn = target.closest(".tz-notion-action-btn");
+    if (actionBtn && !readOnly) {
+      e.preventDefault();
+      e.stopPropagation();
+      const wrapper = actionBtn.closest(".tz-notion-btn-wrapper") as HTMLElement | null;
+      if (wrapper) {
+        const payloadB64 = wrapper.getAttribute("data-btn-payload") || "";
+        let spawnHtml = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Section</strong></div></div><div class="tz-toggle-body"><p><br/></p></div></div>`;
+        if (payloadB64) {
+          try {
+            spawnHtml = decodeURIComponent(escape(window.atob(payloadB64)));
+          } catch {}
+        }
+        const temp = document.createElement("template");
+        temp.innerHTML = spawnHtml;
+        wrapper.after(temp.content);
+        emitChange();
+      }
+      return;
+    }
+
+    const configBtn = target.closest(".tz-notion-btn-config");
+    if (configBtn && !readOnly) {
+      e.preventDefault();
+      e.stopPropagation();
+      const wrapper = configBtn.closest(".tz-notion-btn-wrapper") as HTMLElement | null;
+      if (wrapper) {
+        const currentLabel = wrapper.getAttribute("data-btn-label") || "+ Add Block";
+        const nextLabel = window.prompt(
+          "Edit Button Label (or type 'DELETE' to remove button):",
+          currentLabel
+        );
+        if (nextLabel === null) return;
+        if (nextLabel.trim().toUpperCase() === "DELETE") {
+          wrapper.remove();
+          emitChange();
+          return;
+        }
+        wrapper.setAttribute("data-btn-label", nextLabel.trim());
+        const textSpan = wrapper.querySelector(".tz-notion-btn-text");
+        if (textSpan) textSpan.textContent = nextLabel.trim();
+
+        const presetChoice = window.prompt(
+          "Choose what this button spawns when clicked:\n1 = Collapsible Toggle\n2 = 2-Column Layout\n3 = Callout Box\n4 = To-Do Checklist\n(Leave blank to keep current)",
+          ""
+        );
+        let newSpawn = "";
+        if (presetChoice === "1") {
+          newSpawn = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Toggle</strong></div></div><div class="tz-toggle-body"><p><br/></p></div></div>`;
+        } else if (presetChoice === "2") {
+          newSpawn = `<div class="tz-column-list" data-notion-type="column_list" data-columns="2"><div class="tz-column" data-notion-type="column"><p><br/></p></div><div class="tz-column" data-notion-type="column"><p><br/></p></div></div>`;
+        } else if (presetChoice === "3") {
+          newSpawn = `<div class="tz-callout tz-color-blue_background" data-notion-type="callout" data-notion-color="blue_background" data-icon="💡"><span class="tz-callout-icon" contenteditable="false">💡</span><div class="tz-callout-content"><p>Note...</p></div></div>`;
+        } else if (presetChoice === "4") {
+          newSpawn = `<div class="tz-check-row" data-notion-type="to_do"><input type="checkbox" class="tz-inline-checkbox"/><div class="tz-check-text">To-do item</div></div>`;
+        }
+        if (newSpawn) {
+          wrapper.setAttribute("data-btn-payload", window.btoa(unescape(encodeURIComponent(newSpawn))));
+        }
+        emitChange();
+      }
+      return;
+    }
+
     const toggle = target.closest(".tz-toggle-btn");
     if (toggle) {
       e.preventDefault();
@@ -2025,6 +2153,11 @@ export function RichEditor({
       action: insertQuoteBlock,
     },
     {
+      label: "Notion Button",
+      desc: "Interactive button that spawns blocks when clicked (syncs with Notion)",
+      action: insertNotionButtonBlock,
+    },
+    {
       label: "Divider",
       desc: "Horizontal section separator",
       action: insertDivider,
@@ -2756,6 +2889,22 @@ export function RichEditor({
                         <div className="font-semibold">Web Bookmark</div>
                         <div className="text-[10px] text-muted-foreground">
                           TradingView or Notion link card
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setOpenPopover(null);
+                        insertNotionButtonBlock();
+                      }}
+                      className="flex w-full items-center gap-2.5 rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/50"
+                    >
+                      <Plus className="h-4 w-4 text-indigo-400 shrink-0" />
+                      <div>
+                        <div className="font-semibold">Notion Button Block</div>
+                        <div className="text-[10px] text-muted-foreground">
+                          Clickable block spawner (bridges with Notion)
                         </div>
                       </div>
                     </button>
