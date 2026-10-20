@@ -49,7 +49,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
+import { RichEditor, Markdown, type RichEditorHandle } from "@/components/rich-editor";
 import { ReviewExport } from "@/components/review-export";
 import { RuleChecklist } from "@/components/rule-checklist";
 import { TradeTagsEditor } from "@/components/tags/trade-tags-editor";
@@ -83,6 +83,8 @@ interface TradeDetail {
   durationMs: number | null;
   exitsJson: string;
   notes: string | null;
+  review_notes?: string | null;
+  reviewNotes?: string | null;
   tagsJson: string | null;
   mistakesJson: string | null;
   playbookId: string | null;
@@ -374,6 +376,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
               className="space-y-4 pr-0 lg:pr-3 min-w-[280px]"
             >
               <AnnotationsCard key={trade.key} trade={trade} onPatch={patch} />
+              <TradePeriodCompanion openedAt={trade.openedAt} />
               <RuleChecklist tradeKey={trade.key} playbookId={trade.playbookId} />
 
               <Card>
@@ -551,6 +554,180 @@ function cleanLegacyTradeNotes(raw: string | null | undefined): string {
     .trim();
 }
 
+
+function getMondayOfDate(dateStr: string): string {
+  const d = new Date(`${dateStr}T12:00:00Z`);
+  if (isNaN(d.getTime())) return dateStr;
+  const day = d.getUTCDay();
+  const diff = d.getUTCDate() - day + (day === 0 ? -6 : 1);
+  const mon = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), diff));
+  return mon.toISOString().slice(0, 10);
+}
+
+function TradePeriodCompanion({ openedAt }: { openedAt: string }) {
+  const dateStr = (openedAt || new Date().toISOString()).slice(0, 10);
+  const mondayStr = getMondayOfDate(dateStr);
+  const monthKey = dateStr.slice(0, 7);
+  const yr = dateStr.slice(0, 4);
+  const qNum = Math.floor((parseInt(dateStr.slice(5, 7), 10) - 1) / 3) + 1;
+
+  const periods = useMemo(
+    () => [
+      { id: "day", label: `Daily (${dateStr.slice(5)})`, slug: dateStr },
+      { id: "week", label: `Weekly (${mondayStr.slice(5)})`, slug: `week-${mondayStr}` },
+      { id: "month", label: `Monthly (${monthKey})`, slug: `month-${monthKey}` },
+      { id: "quarter", label: `Quarterly (${yr}-Q${qNum})`, slug: `quarter-${yr}-Q${qNum}` },
+    ],
+    [dateStr, mondayStr, monthKey, yr, qNum]
+  );
+
+  const [selectedSlug, setSelectedSlug] = useState<string>(dateStr);
+  const [subTab, setSubTab] = useState<"prep" | "review">("prep");
+  const [expanded, setExpanded] = useState<boolean>(false);
+  const [entryData, setEntryData] = useState<{
+    title: string;
+    content: string;
+    reviewContent: string;
+    lessonsLearned: string;
+  } | null>(null);
+  const [loading, setLoading] = useState<boolean>(false);
+
+  useEffect(() => {
+    setLoading(true);
+    fetch(`/api/journal/${encodeURIComponent(selectedSlug)}`)
+      .then((r) => r.json())
+      .then((res) => {
+        const entry = res?.data?.entry || res?.entry;
+        if (entry) {
+          setEntryData({
+            title: entry.title || selectedSlug,
+            content: entry.content || "",
+            reviewContent: entry.reviewContent || "",
+            lessonsLearned: entry.lessonsLearned || "",
+          });
+        } else {
+          setEntryData(null);
+        }
+      })
+      .catch(() => setEntryData(null))
+      .finally(() => setLoading(false));
+  }, [selectedSlug]);
+
+  return (
+    <Card className="border-indigo-500/30 bg-[#12141d]">
+      <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
+        <div className="flex items-center gap-2">
+          <CardTitle className="text-sm font-bold">
+            HTF &amp; Daily Journal Companion
+          </CardTitle>
+          <button
+            type="button"
+            onClick={() => setExpanded((v) => !v)}
+            className="rounded border border-border/60 bg-secondary/40 hover:bg-secondary px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground hover:text-foreground transition"
+          >
+            {expanded ? "Compact" : "Expand Height"}
+          </button>
+        </div>
+
+        <a
+          href={`/journal/${selectedSlug}`}
+          className="inline-flex items-center gap-1 text-[11px] text-indigo-400 hover:underline font-medium"
+        >
+          <span>Open Journal</span>
+          <ExternalLink className="h-3 w-3" />
+        </a>
+      </CardHeader>
+      <CardContent className="space-y-2.5">
+        {/* Period Switcher Pills */}
+        <div className="flex flex-wrap items-center gap-1">
+          {periods.map((p) => (
+            <button
+              key={p.slug}
+              type="button"
+              onClick={() => setSelectedSlug(p.slug)}
+              className={`rounded-lg px-2.5 py-1 text-[11px] font-semibold transition ${
+                selectedSlug === p.slug
+                  ? "bg-indigo-600 text-white shadow"
+                  : "bg-[#181b26] text-muted-foreground hover:text-foreground border border-border/50"
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+
+        {/* Prep vs Review Sub-Tab */}
+        <div className="rounded-lg border border-border/60 bg-[#0d0f14] p-3 space-y-2">
+          <div className="flex items-center justify-between border-b border-border/40 pb-1.5">
+            <div className="flex items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setSubTab("prep")}
+                className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${
+                  subTab === "prep"
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Synthesis / Prep Notes
+              </button>
+              <button
+                type="button"
+                onClick={() => setSubTab("review")}
+                className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${
+                  subTab === "review"
+                    ? "bg-secondary text-foreground"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Period Review
+              </button>
+            </div>
+            <span className="text-[10px] text-muted-foreground font-mono">
+              {selectedSlug}
+            </span>
+          </div>
+
+          {entryData?.lessonsLearned && (
+            <div className="rounded bg-indigo-950/25 border border-indigo-500/30 px-2.5 py-1 text-[11px] text-indigo-200">
+              <span className="font-bold uppercase text-[9px] tracking-wider text-indigo-400 mr-1.5">
+                Key Focus:
+              </span>
+              {entryData.lessonsLearned}
+            </div>
+          )}
+
+          <div
+            style={{ height: expanded ? "520px" : "260px", minHeight: "140px" }}
+            className="resize-y overflow-y-auto pr-1 text-xs"
+          >
+            {loading ? (
+              <div className="py-6 text-center text-muted-foreground">
+                Loading {selectedSlug} journal...
+              </div>
+            ) : subTab === "prep" ? (
+              entryData?.content && entryData.content.replace(/<[^>]+>/g, "").trim() ? (
+                <Markdown content={entryData.content} className="!p-0" />
+              ) : (
+                <div className="py-6 text-center text-muted-foreground italic text-[11px]">
+                  No Prep/Synthesis notes recorded for {selectedSlug}.
+                </div>
+              )
+            ) : entryData?.reviewContent &&
+              entryData.reviewContent.replace(/<[^>]+>/g, "").trim() ? (
+              <Markdown content={entryData.reviewContent} className="!p-0" />
+            ) : (
+              <div className="py-6 text-center text-muted-foreground italic text-[11px]">
+                No Review notes recorded for {selectedSlug}.
+              </div>
+            )}
+          </div>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 function AnnotationsCard({
   trade,
   onPatch,
@@ -558,7 +735,11 @@ function AnnotationsCard({
   trade: TradeDetail;
   onPatch: (body: Record<string, unknown>) => Promise<void>;
 }) {
+  const [activeNoteTab, setActiveNoteTab] = useState<"setup" | "review">("setup");
   const [notes, setNotes] = useState(() => cleanLegacyTradeNotes(trade.notes));
+  const [reviewNotes, setReviewNotes] = useState(
+    () => trade.review_notes || trade.reviewNotes || ""
+  );
   const noteEditor = useRef<RichEditorHandle>(null);
   const [tags, setTags] = useState((JSON.parse(trade.tagsJson ?? "[]") as string[]).join(", "));
   const [mistakes, setMistakes] = useState(
@@ -802,24 +983,61 @@ function AnnotationsCard({
         />
 
         <div>
-          <div className="mb-1 flex items-center justify-between">
-            <label className="text-[11px] text-muted-foreground">Notes</label>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-2">
+            <div className="flex items-center gap-1 rounded-xl bg-[#0d0f14] p-1 border border-border/60">
+              <button
+                type="button"
+                onClick={() => setActiveNoteTab("setup")}
+                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                  activeNoteTab === "setup"
+                    ? "bg-secondary text-foreground border border-border shadow"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Execution &amp; Setup Notes
+              </button>
+              <button
+                type="button"
+                onClick={() => setActiveNoteTab("review")}
+                className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
+                  activeNoteTab === "review"
+                    ? "bg-secondary text-foreground border border-border shadow"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                Trade Review
+              </button>
+            </div>
+
             <VoiceNote
               onPrepare={() => noteEditor.current?.focus()}
               onText={(text) => {
-                const next = notes ? `${notes} ${text}` : text;
-                setNotes(next);
-                debounced({ notes: next });
+                if (activeNoteTab === "review") {
+                  const next = reviewNotes ? `${reviewNotes} ${text}` : text;
+                  setReviewNotes(next);
+                  debounced({ reviewNotes: next });
+                } else {
+                  const next = notes ? `${notes} ${text}` : text;
+                  setNotes(next);
+                  debounced({ notes: next });
+                }
               }}
             />
           </div>
           <RichEditor
+            key={`${trade.key}-${activeNoteTab}`}
             editorRef={noteEditor}
-            value={notes}
+            value={activeNoteTab === "review" ? reviewNotes : notes}
             onChange={(value) => {
-              setNotes(value);
-              debounced({ notes: value });
+              if (activeNoteTab === "review") {
+                setReviewNotes(value);
+                debounced({ reviewNotes: value });
+              } else {
+                setNotes(value);
+                debounced({ notes: value });
+              }
             }}
+            companionNode={<TradePeriodCompanion openedAt={trade.openedAt} />}
           />
           <div className="mt-2">
             <ReviewExport

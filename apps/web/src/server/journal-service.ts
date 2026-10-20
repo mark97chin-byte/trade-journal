@@ -25,6 +25,7 @@ export interface DBJournalTrade {
   mfe_r: number | null;
   partials_breakdown: string | null;
   notes: string | null;
+  review_notes?: string | null;
   tags_json: string | null;
 }
 
@@ -239,24 +240,39 @@ export function getDefaultTemplateHtml(
   return found?.html || "";
 }
 
-export async function getJournalTrades() {
+export async function getJournalTrades(startDate?: string, endDate?: string) {
   const finalPath = resolveDbPath();
   if (!fs.existsSync(finalPath)) {
     console.warn("journal.db not found at", finalPath);
     return [];
   }
 
-  const db = new Database(finalPath, { readonly: true });
+  const db = new Database(finalPath);
   try {
-    const rows = db
-      .prepare(
-        `SELECT key, symbol, direction, opened_at, closed_at, net_pnl, gross_pnl, fees, quantity,
-                avg_entry, avg_exit, realized_r, mae_r, mfe_r, partials_breakdown, notes, tags_json
+    try {
+      db.exec(`ALTER TABLE trades ADD COLUMN review_notes TEXT DEFAULT ''`);
+    } catch {}
+
+    const hasRange = Boolean(startDate && endDate);
+    const sql = hasRange
+      ? `SELECT key, symbol, direction, opened_at, closed_at, net_pnl, gross_pnl, fees, quantity,
+                avg_entry, avg_exit, realized_r, mae_r, mfe_r, partials_breakdown, notes, review_notes, tags_json
          FROM trades
          WHERE status != 'open'
+           AND substr(opened_at, 1, 10) >= ?
+           AND substr(opened_at, 1, 10) <= ?
          ORDER BY opened_at DESC`
-      )
-      .all() as DBJournalTrade[];
+      : `SELECT key, symbol, direction, opened_at, closed_at, net_pnl, gross_pnl, fees, quantity,
+                avg_entry, avg_exit, realized_r, mae_r, mfe_r, partials_breakdown, notes, review_notes, tags_json
+         FROM trades
+         WHERE status != 'open'
+         ORDER BY opened_at DESC`;
+
+    const rows = (
+      hasRange
+        ? db.prepare(sql).all(startDate, endDate)
+        : db.prepare(sql).all()
+    ) as DBJournalTrade[];
 
     return rows.map((r) => {
       let tags: string[] = [];
@@ -281,6 +297,7 @@ export async function getJournalTrades() {
         mfeR: r.mfe_r ?? null,
         partialsBreakdown: r.partials_breakdown ?? null,
         notes: r.notes ?? null,
+        reviewNotes: r.review_notes ?? null,
         tags,
       };
     });
@@ -372,13 +389,8 @@ export function parseSlugRange(slug: string): {
 export async function getJournalEntryWithTrades(slug: string) {
   const finalPath = resolveDbPath();
   const range = parseSlugRange(slug);
-  const allTrades = await getJournalTrades();
+  const periodTrades = await getJournalTrades(range.startDate, range.endDate);
   const cfg = getJournalConfig();
-
-  const periodTrades = allTrades.filter((t) => {
-    const d = t.openedAt.slice(0, 10);
-    return d >= range.startDate && d <= range.endDate;
-  });
 
   const defaultPrepHtml = getDefaultTemplateHtml(range.periodType, "prep", cfg);
   const defaultReviewHtml = getDefaultTemplateHtml(range.periodType, "review", cfg);

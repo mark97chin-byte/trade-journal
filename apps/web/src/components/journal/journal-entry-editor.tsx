@@ -1116,6 +1116,24 @@ export function JournalEntryEditor({
                     ? `${initialEntry.slug}-review`
                     : initialEntry.slug
                 }
+                companionNode={
+                  <PeriodReviewCompanionCard
+                    periodType={range.periodType}
+                    startDate={range.startDate}
+                    endDate={range.endDate}
+                    anchorDate={range.anchorDate}
+                    trades={trades}
+                    onInsertReflectionHtml={(html) => {
+                      if (noteEditorRef.current?.insertHtml) {
+                        noteEditorRef.current.insertHtml(html);
+                      } else if (activeTab === "review") {
+                        setReviewContent((prev) => (prev ? `${prev}${html}` : html));
+                      } else {
+                        setContent((prev) => (prev ? `${prev}${html}` : html));
+                      }
+                    }}
+                  />
+                }
                 placeholder={
                   activeTab === "review"
                     ? `Write your ${tabLabels.review} here, or type '/' for Notion blocks...`

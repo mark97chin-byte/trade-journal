@@ -387,7 +387,7 @@ export function RunningPnlChart({
               y1={zeroY}
               x2={width - padding.right}
               y2={zeroY}
-              stroke="#334155"
+              stroke="currentColor" className="text-slate-200/80 dark:text-slate-800/70"
               strokeDasharray="3 3"
               strokeWidth="1.5"
             />
@@ -414,7 +414,7 @@ export function RunningPnlChart({
                       y1={y}
                       x2={width - padding.right}
                       y2={y}
-                      stroke="#1e293b"
+                      stroke="currentColor" className="text-slate-200/80 dark:text-slate-800/70"
                       strokeWidth="1"
                     />
                     <text
@@ -522,7 +522,7 @@ export function RunningPnlChart({
                   y1={padding.top}
                   x2={getX(hoverIndex)}
                   y2={height - padding.bottom}
-                  stroke="#94a3b8"
+                  stroke="currentColor" className="text-slate-300 dark:text-slate-700"
                   strokeWidth="1"
                   strokeDasharray="3 3"
                 />

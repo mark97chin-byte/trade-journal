@@ -373,6 +373,8 @@ export async function clearNotionPageBlocks(pageId: string, token: string) {
       const qs = cursor ? `?page_size=100&start_cursor=${cursor}` : `?page_size=100`;
       const existing = await notionFetch(`/blocks/${pageId}/children${qs}`, token);
       for (const b of existing.results || []) {
+        // Keep native Notion automation buttons intact so syncing never deletes them in Notion
+        if (b?.type === "button") continue;
         if (b?.id) blockIds.push(b.id);
       }
       cursor = existing.has_more ? existing.next_cursor : undefined;
@@ -519,17 +521,23 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
       out.push(`<ol><li>${textHtml}${childrenHtml}</li></ol>`);
     } else if (type === "divider") {
       out.push(`<hr class="tz-divider" data-notion-type="divider" />`);
-    } else if (type === "button" || (type === "callout" && data.icon?.emoji === "🔘")) {
-      const btnLabel = textHtml || "Insert Block";
-      const templateHtml = childrenHtml || `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="false"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▸</span><div class="tz-toggle-title"><strong>New Item</strong></div></div><div class="tz-toggle-body" style="display:none"><p><br/></p></div></div>`;
+    } else if (
+      type === "button" ||
+      type === "unsupported" ||
+      (type === "callout" && data.icon?.emoji === "🔘")
+    ) {
+      const btnLabel = textHtml || "Add Section (Notion Button)";
+      const defaultToggleHtml = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Section</strong></div></div><div class="tz-toggle-body"><p><br/></p></div></div>`;
+      const templateHtml = childrenHtml || defaultToggleHtml;
       const encodedPayload = Buffer.from(templateHtml, "utf-8").toString("base64");
+      const blockIdAttr = b.id ? ` data-notion-block-id="${b.id}"` : "";
       out.push(`
-        <div class="tz-notion-btn-wrapper" data-notion-type="button" data-btn-label="${btnLabel.replace(/"/g, "&quot;")}" data-btn-payload="${encodedPayload}" contenteditable="false">
+        <div class="tz-notion-btn-wrapper" data-notion-type="button"${blockIdAttr} data-btn-label="${btnLabel.replace(/"/g, "&quot;")}" data-btn-payload="${encodedPayload}" contenteditable="false">
           <button type="button" class="tz-notion-action-btn">
             <span class="tz-notion-btn-icon">＋</span>
             <span class="tz-notion-btn-text">${btnLabel}</span>
           </button>
-          <button type="button" class="tz-notion-btn-config" title="Configure button label &amp; spawned blocks">⚙</button>
+          <button type="button" class="tz-notion-btn-config" title="Configure button label &amp; template to spawn">⚙</button>
         </div>
       `);
     } else if (type === "column_list") {

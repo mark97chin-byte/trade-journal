@@ -69,6 +69,7 @@ export interface RichEditorProps {
   readOnly?: boolean;
   ownerType?: string;
   ownerId?: string;
+  companionNode?: React.ReactNode;
   [key: string]: any;
 }
 
@@ -328,240 +329,6 @@ blockquote:empty:before {
 .dark .tz-quote div:empty:before,
 .dark blockquote:empty:before {
   color: #64748b;
-}
-
-
-/* High-Contrast Legible Editor Typography (Light & Dark Mode) */
-.tz-rich-content,
-.tz-rich-content p,
-.tz-rich-content span,
-.tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
-.tz-rich-content li,
-.tz-rich-content em,
-.tz-rich-content strong {
-  color: #0f172a;
-}
-.dark .tz-rich-content,
-.dark .tz-rich-content p,
-.dark .tz-rich-content span,
-.dark .tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
-.dark .tz-rich-content li,
-.dark .tz-rich-content em,
-.dark .tz-rich-content strong {
-  color: #f8fafc;
-}
-
-/* Toggles & Toggle Headings Text Contrast */
-.tz-toggle-title {
-  color: #0f172a !important;
-  font-weight: 700 !important;
-}
-.dark .tz-toggle-title {
-  color: #f8fafc !important;
-}
-.tz-toggle-body {
-  color: #1e293b !important;
-}
-.dark .tz-toggle-body {
-  color: #e2e8f0 !important;
-}
-
-/* Quotes */
-.tz-quote,
-blockquote {
-  border-left: 3px solid #6366f1 !important;
-  color: #334155 !important;
-  font-style: italic;
-  padding-left: 0.75rem;
-}
-.dark .tz-quote,
-.dark blockquote {
-  color: #cbd5e1 !important;
-}
-
-.tz-rich-content {
-  position: relative;
-  padding-left: 3rem !important;
-  padding-right: 1rem !important;
-}
-.tz-rich-content p,
-.tz-rich-content h1,
-.tz-rich-content h2,
-.tz-rich-content h3,
-.tz-rich-content ul,
-.tz-rich-content ol,
-.tz-rich-content blockquote,
-.tz-rich-content .tz-toggle,
-.tz-rich-content .tz-callout,
-.tz-rich-content .tz-banner,
-.tz-rich-content .tz-check-row,
-.tz-rich-content .tz-figure,
-.tz-rich-content .tz-code-block,
-.tz-rich-content .tz-notion-btn-wrapper {
-  position: relative;
-  min-height: 1.65em;
-  margin-top: 2px;
-  margin-bottom: 2px;
-  padding: 2px 4px;
-  border-radius: 4px;
-  transition: background-color 0.1s ease;
-}
-.tz-block-hovered {
-  background-color: rgba(255, 255, 255, 0.025);
-}
-.tz-block-dragging {
-  opacity: 0.35;
-}
-.tz-column-list {
-  display: flex;
-  flex-direction: row;
-  gap: 1.25rem;
-  margin: 0.65rem 0;
-  width: 100%;
-  align-items: stretch;
-}
-.tz-column {
-  flex: 1;
-  min-width: 0;
-  border: 1px dashed rgba(255, 255, 255, 0.09) !important;
-  background: rgba(255, 255, 255, 0.01) !important;
-  border-radius: 0.5rem;
-  padding: 0.45rem 0.65rem 0.45rem 2.2rem !important;
-  position: relative;
-  transition: border-color 0.15s, background 0.15s;
-}
-.tz-column:hover,
-.tz-column:focus-within {
-  border-color: rgba(99, 102, 241, 0.35) !important;
-  background: rgba(255, 255, 255, 0.02) !important;
-}
-
-
-/* High-Contrast Legible Editor Typography (Light & Dark Mode) */
-.tz-rich-content,
-.tz-rich-content p,
-.tz-rich-content span,
-.tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
-.tz-rich-content li,
-.tz-rich-content em,
-.tz-rich-content strong {
-  color: #0f172a;
-}
-.dark .tz-rich-content,
-.dark .tz-rich-content p,
-.dark .tz-rich-content span,
-.dark .tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
-.dark .tz-rich-content li,
-.dark .tz-rich-content em,
-.dark .tz-rich-content strong {
-  color: #f8fafc;
-}
-
-/* Toggles & Toggle Headings Text Contrast */
-.tz-toggle-title {
-  color: #0f172a !important;
-  font-weight: 700 !important;
-}
-.dark .tz-toggle-title {
-  color: #f8fafc !important;
-}
-.tz-toggle-body {
-  color: #1e293b !important;
-}
-.dark .tz-toggle-body {
-  color: #e2e8f0 !important;
-}
-
-/* Quotes */
-.tz-quote,
-blockquote {
-  border-left: 3px solid #6366f1 !important;
-  color: #334155 !important;
-  font-style: italic;
-  padding-left: 0.75rem;
-}
-.dark .tz-quote,
-.dark blockquote {
-  color: #cbd5e1 !important;
-}
-
-.tz-rich-content {
-  position: relative;
-  padding-left: 2.6rem !important;
-}
-.tz-rich-content > *,
-.tz-column > *,
-.tz-toggle-body > * {
-  position: relative;
-  transition: background-color 0.12s ease;
-  border-radius: 0.25rem;
-}
-.tz-block-dragging {
-  opacity: 0.35;
-}
-/* Subtle hover outline on columns only when hovered or focused (clean like Notion) */
-.tz-column {
-  flex: 1;
-  min-width: 0;
-  border: 1px solid transparent !important;
-  background: transparent !important;
-  border-radius: 0.45rem;
-  padding: 0.35rem 0.65rem;
-  transition: border-color 0.15s, background 0.15s;
-}
-.tz-column-list:hover > .tz-column,
-.tz-column:focus-within {
-  border-color: rgba(255, 255, 255, 0.1) !important;
-  background: rgba(255, 255, 255, 0.015) !important;
-}
-
-
-/* High-Contrast Legible Editor Typography (Light & Dark Mode) */
-.tz-rich-content,
-.tz-rich-content p,
-.tz-rich-content span,
-.tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
-.tz-rich-content li,
-.tz-rich-content em,
-.tz-rich-content strong {
-  color: #0f172a;
-}
-.dark .tz-rich-content,
-.dark .tz-rich-content p,
-.dark .tz-rich-content span,
-.dark .tz-rich-content div:not(.tz-banner):not(.tz-callout):not(.tz-column-list),
-.dark .tz-rich-content li,
-.dark .tz-rich-content em,
-.dark .tz-rich-content strong {
-  color: #f8fafc;
-}
-
-/* Toggles & Toggle Headings Text Contrast */
-.tz-toggle-title {
-  color: #0f172a !important;
-  font-weight: 700 !important;
-}
-.dark .tz-toggle-title {
-  color: #f8fafc !important;
-}
-.tz-toggle-body {
-  color: #1e293b !important;
-}
-.dark .tz-toggle-body {
-  color: #e2e8f0 !important;
-}
-
-/* Quotes */
-.tz-quote,
-blockquote {
-  border-left: 3px solid #6366f1 !important;
-  color: #334155 !important;
-  font-style: italic;
-  padding-left: 0.75rem;
-}
-.dark .tz-quote,
-.dark blockquote {
-  color: #cbd5e1 !important;
 }
 
 .tz-rich-content {
@@ -857,6 +624,22 @@ blockquote {
   font-size: 0.78rem;
   color: #94a3b8;
 }
+
+/* Multi-Block Lasso / Marquee Selection */
+.tz-block-selected {
+  background-color: rgba(99, 102, 241, 0.14) !important;
+  outline: 1px solid rgba(99, 102, 241, 0.45) !important;
+  border-radius: 0.35rem;
+}
+.tz-lasso-rect {
+  position: fixed;
+  pointer-events: none;
+  z-index: 9999;
+  border: 1px solid rgba(99, 102, 241, 0.75);
+  background-color: rgba(99, 102, 241, 0.15);
+  border-radius: 0.25rem;
+}
+
 /* Official Notion 10 Text Colors */
 .tz-color-default { color: #f1f5f9; }
 .tz-color-gray { color: #94a3b8 !important; }
@@ -990,6 +773,41 @@ const DEFAULT_TEMPLATES: SavedTemplate[] = [
   },
 ];
 
+let _cachedTemplatesMemory: SavedTemplate[] | null = null;
+let _cachedDefaultsMemory: Record<string, string> | null = null;
+
+function getInitialTemplatesSync(): SavedTemplate[] {
+  if (_cachedTemplatesMemory && _cachedTemplatesMemory.length > 0) {
+    return _cachedTemplatesMemory;
+  }
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem("tz_custom_note_templates");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          _cachedTemplatesMemory = parsed;
+          return parsed;
+        }
+      }
+    } catch {}
+  }
+  return [];
+}
+
+function getRecentTemplateIdsSync(): string[] {
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem("tz_recent_template_ids");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {}
+  }
+  return [];
+}
+
 function repairCorruptedHtml(input: string): string {
   if (!input) return "";
   let s = input;
@@ -1061,6 +879,7 @@ export function RichEditor({
   readOnly = false,
   ownerType = "editor",
   ownerId = "inline-note",
+  companionNode,
 }: RichEditorProps) {
   const contentRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -1071,6 +890,11 @@ export function RichEditor({
   const [fontFamily, setFontFamily] = useState<string>("Arial");
   const [fontSize, setFontSize] = useState<number>(15);
   const [fullscreen, setFullscreen] = useState<boolean>(false);
+  const [isMounted, setIsMounted] = useState<boolean>(false);
+
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
 
   const [openPopover, setOpenPopover] = useState<
     null | "block" | "font" | "color" | "align" | "insert"
@@ -1101,7 +925,18 @@ export function RichEditor({
   } | null>(null);
 
 
-  const [templates, setTemplates] = useState<SavedTemplate[]>(DEFAULT_TEMPLATES);
+  const [templates, setTemplates] = useState<SavedTemplate[]>(getInitialTemplatesSync);
+  const [recentTemplateIds, setRecentTemplateIds] = useState<string[]>(getRecentTemplateIdsSync);
+  const [fullscreenCompanionOpen, setFullscreenCompanionOpen] = useState<boolean>(false);
+  const [fullscreenSplitWidth, setFullscreenSplitWidth] = useState<number>(62);
+  const [isEditorEmpty, setIsEditorEmpty] = useState<boolean>(() => {
+    const stripped = (value || "").replace(/<[^>]+>/g, "").trim();
+    return !stripped && !(value || "").includes("<img") && !(value || "").includes("tz-toggle") && !(value || "").includes("tz-callout");
+  });
+  const selectedBlocksRef = useRef<Set<HTMLElement>>(new Set());
+  const [selectedBlocksCount, setSelectedBlocksCount] = useState<number>(0);
+  const [lassoRect, setLassoRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
+  const emitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [defaultAssignments, setDefaultAssignments] = useState<Record<string, string>>({
     day_prep: "tpl-prep",
     day_review: "tpl-review",
@@ -1129,15 +964,24 @@ export function RichEditor({
 
   useEffect(() => {
     let mounted = true;
+    if (_cachedTemplatesMemory && _cachedTemplatesMemory.length > 0) {
+      setTemplates(_cachedTemplatesMemory);
+      if (_cachedDefaultsMemory) {
+        setDefaultAssignments((prev) => ({ ...prev, ..._cachedDefaultsMemory! }));
+      }
+      return;
+    }
     fetch("/api/journal/config")
       .then((r) => r.json())
       .then((data) => {
         if (!mounted || !data?.config) return;
         if (Array.isArray(data.config.templates) && data.config.templates.length > 0) {
+          _cachedTemplatesMemory = data.config.templates;
           setTemplates(data.config.templates);
           localStorage.setItem("tz_custom_note_templates", JSON.stringify(data.config.templates));
         }
         if (data.config.defaultTemplates) {
+          _cachedDefaultsMemory = data.config.defaultTemplates;
           setDefaultAssignments((prev) => ({ ...prev, ...data.config.defaultTemplates }));
         }
       })
@@ -1163,6 +1007,26 @@ export function RichEditor({
         (readOnly ? "" : '<p data-placeholder="Type / for commands..."><br/></p>');
       lastEmittedRef.current = value;
       didInitializeRef.current = true;
+      setIsEditorEmpty(checkEditorIsEmpty(editor));
+
+      // Hydrate any pulled Notion Button blocks from localStorage button registry
+      try {
+        const btnRegistry = JSON.parse(localStorage.getItem("tz_notion_btn_registry") || "{}");
+        editor.querySelectorAll<HTMLElement>(".tz-notion-btn-wrapper").forEach((btnWrap, idx) => {
+          const blockId = btnWrap.getAttribute("data-notion-block-id") || `${ownerId}_btn_${idx}`;
+          const saved = btnRegistry[blockId];
+          if (saved) {
+            if (saved.label) {
+              btnWrap.setAttribute("data-btn-label", saved.label);
+              const tSpan = btnWrap.querySelector(".tz-notion-btn-text");
+              if (tSpan) tSpan.textContent = saved.label;
+            }
+            if (saved.payload) {
+              btnWrap.setAttribute("data-btn-payload", saved.payload);
+            }
+          }
+        });
+      } catch {}
     }
   }, [value, readOnly]);
 
@@ -1193,14 +1057,42 @@ export function RichEditor({
     sel.addRange(range);
   };
 
-  const emitChange = () => {
-    const html = contentRef.current?.innerHTML;
-    if (html === undefined || readOnly) return;
-    if (html !== lastEmittedRef.current) {
-      lastEmittedRef.current = html;
-      onChange(html);
+  const checkEditorIsEmpty = useCallback((el: HTMLElement | null) => {
+    if (!el) return true;
+    const text = (el.textContent || "").replace(/\u200B/g, "").trim();
+    if (text.length > 0) return false;
+    if (
+      el.querySelector(
+        "img, .tz-toggle, .tz-callout, .tz-column-list, .tz-check-row, .tz-banner, .tz-notion-btn-wrapper, table, hr"
+      )
+    ) {
+      return false;
     }
-  };
+    return true;
+  }, []);
+
+  const emitChange = useCallback((immediate = false) => {
+    const editor = contentRef.current;
+    if (!editor || readOnly) return;
+    setIsEditorEmpty(checkEditorIsEmpty(editor));
+
+    const flushHtml = () => {
+      const html = contentRef.current?.innerHTML;
+      if (html === undefined || readOnly) return;
+      if (html !== lastEmittedRef.current) {
+        lastEmittedRef.current = html;
+        onChange(html);
+      }
+    };
+
+    if (immediate) {
+      if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
+      flushHtml();
+    } else {
+      if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
+      emitTimerRef.current = setTimeout(flushHtml, 90);
+    }
+  }, [onChange, readOnly, checkEditorIsEmpty]);
 
   const insertHtmlAtCursor = (html: string) => {
     if (readOnly || !contentRef.current) return;
@@ -1392,8 +1284,9 @@ export function RichEditor({
         const textSpan = wrapper.querySelector(".tz-notion-btn-text");
         if (textSpan) textSpan.textContent = nextLabel.trim();
 
+        const tplLines = templates.map((t, i) => `T${i + 1} = Template: ${t.name}`).join("\n");
         const presetChoice = window.prompt(
-          "Choose what this button spawns when clicked:\n1 = Collapsible Toggle\n2 = 2-Column Layout\n3 = Callout Box\n4 = To-Do Checklist\n(Leave blank to keep current)",
+          `Choose what this button spawns when clicked:\n1 = Collapsible Toggle\n2 = 2-Column Layout\n3 = Callout Box\n4 = To-Do Checklist\n${tplLines}\n(Leave blank to keep current)`,
           ""
         );
         let newSpawn = "";
@@ -1406,10 +1299,26 @@ export function RichEditor({
         } else if (presetChoice === "4") {
           newSpawn = `<div class="tz-check-row" data-notion-type="to_do"><input type="checkbox" class="tz-inline-checkbox"/><div class="tz-check-text">To-do item</div></div>`;
         }
+        if (presetChoice && /^T\d+$/i.test(presetChoice.trim())) {
+          const tIdx = parseInt(presetChoice.trim().slice(1), 10) - 1;
+          if (templates[tIdx]) {
+            newSpawn = templates[tIdx].html;
+          }
+        }
         if (newSpawn) {
           wrapper.setAttribute("data-btn-payload", window.btoa(unescape(encodeURIComponent(newSpawn))));
         }
-        emitChange();
+        // Save button config into tz_notion_btn_registry so future Notion pulls remember its label & template
+        try {
+          const blockId = wrapper.getAttribute("data-notion-block-id") || `${ownerId}_btn_0`;
+          const reg = JSON.parse(localStorage.getItem("tz_notion_btn_registry") || "{}");
+          reg[blockId] = {
+            label: nextLabel.trim(),
+            payload: wrapper.getAttribute("data-btn-payload") || "",
+          };
+          localStorage.setItem("tz_notion_btn_registry", JSON.stringify(reg));
+        } catch {}
+        emitChange(true);
       }
       return;
     }
@@ -1561,8 +1470,79 @@ export function RichEditor({
     return null;
   };
 
+  const clearSelectedBlocks = useCallback(() => {
+    if (selectedBlocksRef.current.size === 0) return;
+    selectedBlocksRef.current.forEach((el) => el.classList.remove("tz-block-selected"));
+    selectedBlocksRef.current.clear();
+    setSelectedBlocksCount(0);
+  }, []);
+
+  const handleSurfaceMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (readOnly || e.button !== 0) return;
+    const target = e.target as HTMLElement;
+    if (target.closest(".tz-gutter-controls") || target.closest("button") || target.closest("input")) return;
+
+    const container = contentRef.current;
+    if (!container) return;
+    const containerRect = container.getBoundingClientRect();
+
+    // Start rectangle drag selection if clicking in the left gutter/margin (first 44px) or holding Alt key
+    const clickedInGutter = e.clientX - containerRect.left < 44 || target === container;
+    if (!clickedInGutter && !e.altKey) {
+      if (selectedBlocksRef.current.size > 0 && !target.closest(".tz-block-selected")) {
+        clearSelectedBlocks();
+      }
+      return;
+    }
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let hasDragged = false;
+
+    const onMouseMove = (moveEv: MouseEvent) => {
+      const dx = Math.abs(moveEv.clientX - startX);
+      const dy = Math.abs(moveEv.clientY - startY);
+      if (!hasDragged && dx < 6 && dy < 6) return;
+      hasDragged = true;
+      window.getSelection()?.removeAllRanges();
+
+      const left = Math.min(startX, moveEv.clientX);
+      const top = Math.min(startY, moveEv.clientY);
+      const width = Math.max(4, Math.abs(moveEv.clientX - startX));
+      const height = Math.max(4, Math.abs(moveEv.clientY - startY));
+      setLassoRect({ left, top, width, height });
+
+      const right = left + width;
+      const bottom = top + height;
+
+      const children = Array.from(container.children) as HTMLElement[];
+      const nextSelected = new Set<HTMLElement>();
+      for (const child of children) {
+        const r = child.getBoundingClientRect();
+        const intersects = r.left < right && r.right > left && r.top < bottom && r.bottom > top;
+        if (intersects) {
+          child.classList.add("tz-block-selected");
+          nextSelected.add(child);
+        } else {
+          child.classList.remove("tz-block-selected");
+        }
+      }
+      selectedBlocksRef.current = nextSelected;
+      setSelectedBlocksCount(nextSelected.size);
+    };
+
+    const onMouseUp = () => {
+      window.removeEventListener("mousemove", onMouseMove);
+      window.removeEventListener("mouseup", onMouseUp);
+      setLassoRect(null);
+    };
+
+    window.addEventListener("mousemove", onMouseMove);
+    window.addEventListener("mouseup", onMouseUp);
+  };
+
   const handleEditorMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (readOnly || draggedBlockRef.current || blockMenuOpen) return;
+    if (readOnly || draggedBlockRef.current || blockMenuOpen || lassoRect) return;
     const container = contentRef.current;
     if (!container) return;
 
@@ -1571,9 +1551,12 @@ export function RichEditor({
 
     const blockEl = findDraggableBlock(target);
     if (!blockEl) {
-      if (!blockMenuOpen) setHoveredBlock(null);
+      if (hoveredBlock !== null) setHoveredBlock(null);
       return;
     }
+
+    // Avoid redundant 60fps React re-renders if already hovering the exact same block
+    if (hoveredBlock?.el === blockEl) return;
 
     const wrapper = container.parentElement;
     if (!wrapper) return;
@@ -1668,21 +1651,30 @@ export function RichEditor({
     if (!dragged || !dropIndicator) return;
 
     const { targetEl, zone } = dropIndicator;
-    if (targetEl === dragged || dragged.contains(targetEl)) return;
+    const blocksToMove =
+      selectedBlocksRef.current.has(dragged) && selectedBlocksRef.current.size > 1
+        ? Array.from(selectedBlocksRef.current)
+        : [dragged];
 
-    // If dropped directly into a column container
+    if (blocksToMove.some((b) => b === targetEl || b.contains(targetEl))) return;
+
+    const fragment = document.createDocumentFragment();
+    blocksToMove.forEach((b) => {
+      b.classList.remove("tz-block-dragging");
+      fragment.appendChild(b);
+    });
+
     if (targetEl.classList.contains("tz-column")) {
-      targetEl.appendChild(dragged);
+      targetEl.appendChild(fragment);
     } else if (zone === "top") {
-      targetEl.parentNode?.insertBefore(dragged, targetEl);
+      targetEl.parentNode?.insertBefore(fragment, targetEl);
     } else {
-      targetEl.parentNode?.insertBefore(dragged, targetEl.nextSibling);
+      targetEl.parentNode?.insertBefore(fragment, targetEl.nextSibling);
     }
 
-    dragged.classList.remove("tz-block-dragging");
     draggedBlockRef.current = null;
     setDropIndicator(null);
-    emitChange();
+    emitChange(true);
   };
 
   const handleAddBlockBelowHovered = () => {
@@ -1706,15 +1698,19 @@ export function RichEditor({
     emitChange();
   };
 
-  // Block Action Menu Operations (Delete, Duplicate, Turn Into)
+  // Block Action Menu Operations (Supports single block OR multi-selected lasso blocks)
   const deleteHoveredBlock = () => {
     if (!hoveredBlock?.el) return;
     const el = hoveredBlock.el;
     const parent = el.parentElement;
-    el.remove();
+    if (selectedBlocksRef.current.has(el) && selectedBlocksRef.current.size > 1) {
+      selectedBlocksRef.current.forEach((b) => b.remove());
+      clearSelectedBlocks();
+    } else {
+      el.remove();
+    }
     setBlockMenuOpen(false);
     setHoveredBlock(null);
-    // Ensure a column or editor never becomes completely unclickable
     if (parent && parent.classList.contains("tz-column") && parent.children.length === 0) {
       const p = document.createElement("p");
       p.setAttribute("data-placeholder", "Column...");
@@ -1722,15 +1718,28 @@ export function RichEditor({
       parent.appendChild(p);
     }
     ensureLineBlocks();
-    emitChange();
+    emitChange(true);
   };
 
   const duplicateHoveredBlock = () => {
     if (!hoveredBlock?.el) return;
-    const clone = hoveredBlock.el.cloneNode(true) as HTMLElement;
-    hoveredBlock.el.parentNode?.insertBefore(clone, hoveredBlock.el.nextSibling);
+    const el = hoveredBlock.el;
+    if (selectedBlocksRef.current.has(el) && selectedBlocksRef.current.size > 1) {
+      const list = Array.from(selectedBlocksRef.current);
+      const last = list[list.length - 1]!;
+      const frag = document.createDocumentFragment();
+      list.forEach((b) => {
+        const c = b.cloneNode(true) as HTMLElement;
+        c.classList.remove("tz-block-selected");
+        frag.appendChild(c);
+      });
+      last.parentNode?.insertBefore(frag, last.nextSibling);
+    } else {
+      const clone = el.cloneNode(true) as HTMLElement;
+      el.parentNode?.insertBefore(clone, el.nextSibling);
+    }
     setBlockMenuOpen(false);
-    emitChange();
+    emitChange(true);
   };
 
   const turnHoveredBlockInto = (kind: string) => {
@@ -1828,6 +1837,16 @@ export function RichEditor({
       setSlashMenu((s) => ({ ...s, open: false }));
       setOpenPopover(null);
       setBlockMenuOpen(false);
+      clearSelectedBlocks();
+      return;
+    }
+
+    if ((e.key === "Backspace" || e.key === "Delete") && selectedBlocksRef.current.size > 1) {
+      e.preventDefault();
+      selectedBlocksRef.current.forEach((b) => b.remove());
+      clearSelectedBlocks();
+      ensureLineBlocks();
+      emitChange(true);
       return;
     }
 
@@ -2051,10 +2070,40 @@ export function RichEditor({
     }
   };
 
+  const recordRecentTemplate = (tplId: string) => {
+    const nextRecent = [tplId, ...recentTemplateIds.filter((id) => id !== tplId)].slice(0, 3);
+    setRecentTemplateIds(nextRecent);
+    try {
+      localStorage.setItem("tz_recent_template_ids", JSON.stringify(nextRecent));
+    } catch {}
+  };
+
+  const applyTemplateToEditor = (tpl: SavedTemplate) => {
+    recordRecentTemplate(tpl.id);
+    insertHtmlAtCursor(tpl.html);
+    setIsEditorEmpty(false);
+  };
+
+  const recentThreeTemplates = React.useMemo(() => {
+    if (!templates.length) return [];
+    const ordered: SavedTemplate[] = [];
+    for (const id of recentTemplateIds) {
+      const found = templates.find((t) => t.id === id);
+      if (found && !ordered.some((o) => o.id === found.id)) ordered.push(found);
+    }
+    for (const t of templates) {
+      if (ordered.length >= 3) break;
+      if (!ordered.some((o) => o.id === t.id)) ordered.push(t);
+    }
+    return ordered.slice(0, 3);
+  }, [templates, recentTemplateIds]);
+
   const persistTemplatesAndDefaults = (
     nextTemplates: SavedTemplate[],
     nextDefaults: Record<string, string> = defaultAssignments
   ) => {
+    _cachedTemplatesMemory = nextTemplates;
+    _cachedDefaultsMemory = nextDefaults;
     setTemplates(nextTemplates);
     setDefaultAssignments(nextDefaults);
     try {
@@ -2237,8 +2286,9 @@ export function RichEditor({
   return (
     <div
       className={`${
-        fullscreen ? "fixed inset-0 z-[9999] bg-background flex flex-col h-screen w-screen overflow-y-auto p-4 md:p-8"
-          : "relative"
+        fullscreen
+          ? "fixed inset-0 z-[9999] bg-background flex flex-col h-screen w-screen overflow-hidden p-3 md:p-6"
+          : "relative flex flex-col"
       } ${className}`}
     >
       <style dangerouslySetInnerHTML={{ __html: EDITOR_CSS }} />
@@ -2255,18 +2305,15 @@ export function RichEditor({
         }}
       />
 
-      {/* RECENTLY USED TEMPLATES BAR */}
+      {/* TOP 3 RECENT TEMPLATES BAR (NO CLUTTER LABEL, ZERO FLASH) */}
       {!readOnly && (
-        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs">
+        <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs shrink-0">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="text-[11px] text-muted-foreground mr-1">
-              Recently used templates
-            </span>
-            {templates.map((tpl) => (
+            {isMounted && recentThreeTemplates.map((tpl) => (
               <button
                 key={tpl.id}
                 type="button"
-                onClick={() => insertHtmlAtCursor(tpl.html)}
+                onClick={() => applyTemplateToEditor(tpl)}
                 className="inline-flex items-center gap-1 rounded-full border border-border/60 bg-card px-2.5 py-1 text-[11px] font-medium text-foreground/90 hover:border-indigo-500/60 hover:text-foreground transition-colors"
                 title="Click to insert template at cursor"
               >
@@ -2286,14 +2333,30 @@ export function RichEditor({
               <span>Manage templates</span>
             </button>
           </div>
+          {isMounted && selectedBlocksCount > 1 && (
+            <div className="flex items-center gap-2 text-[11px] text-indigo-300 bg-indigo-500/15 border border-indigo-500/30 px-2.5 py-0.5 rounded-full">
+              <span>{selectedBlocksCount} blocks selected (Drag ⋮⋮ to move all, or press Delete)</span>
+              <button
+                type="button"
+                onClick={clearSelectedBlocks}
+                className="text-muted-foreground hover:text-white"
+              >
+                ✕
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* MAIN EDITOR CONTAINER */}
-      <div className="flex-1 rounded-xl border border-border/60 bg-[#0d0f14] shadow-inner overflow-visible shrink-0">
-        {/* TOP TOOLBAR */}
+      {/* MAIN EDITOR CONTAINER (STICKY TOOLBAR IN BOTH NORMAL & FULLSCREEN MODES) */}
+      <div
+        className={`flex-1 flex flex-col rounded-xl border border-border/60 bg-[#0d0f14] shadow-inner ${
+          fullscreen ? "min-h-0 overflow-hidden" : "overflow-visible"
+        }`}
+      >
+        {/* TOP TOOLBAR (STICKY SO IT ALWAYS FOLLOWS SCROLL) */}
         {!readOnly && (
-          <div className="flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c] px-2.5 py-1.5 text-xs">
+          <div className="sticky top-0 z-40 shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c]/95 backdrop-blur-md px-2.5 py-1.5 text-xs rounded-t-xl">
             <div className="flex flex-wrap items-center gap-1">
               {/* 1. Block / Heading / Toggle Heading Selector */}
               <div className="relative">
@@ -2944,6 +3007,28 @@ export function RichEditor({
                 <Redo2 className="h-3.5 w-3.5" />
               </button>
               <div className="mx-0.5 h-4 w-px bg-border/40" />
+              {companionNode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!fullscreen) {
+                      setFullscreen(true);
+                      setFullscreenCompanionOpen(true);
+                    } else {
+                      setFullscreenCompanionOpen((o) => !o);
+                    }
+                  }}
+                  className={`flex h-7 items-center gap-1 rounded-md border px-2 text-[11px] font-semibold transition ${
+                    fullscreen && fullscreenCompanionOpen
+                      ? "border-indigo-500/60 bg-indigo-600 text-white"
+                      : "border-border/60 bg-[#181b26] text-muted-foreground hover:text-foreground"
+                  }`}
+                  title="Toggle Review Companion Split-Screen in Fullscreen"
+                >
+                  <Columns2 className="h-3.5 w-3.5" />
+                  <span className="hidden sm:inline">Companion Split</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setFullscreen(!fullscreen)}
@@ -3021,15 +3106,69 @@ export function RichEditor({
           </div>
         )}
 
+        {/* LASSO SELECTION RECTANGLE */}
+        {lassoRect && (
+          <div
+            style={{
+              left: lassoRect.left,
+              top: lassoRect.top,
+              width: lassoRect.width,
+              height: lassoRect.height,
+            }}
+            className="tz-lasso-rect"
+          />
+        )}
+
+        {/* SPLIT BODY: EDITOR SURFACE + OPTIONAL FULLSCREEN REVIEW COMPANION SPLIT */}
+        <div className={`flex-1 flex flex-col lg:flex-row ${fullscreen ? "min-h-0 overflow-hidden" : ""}`}>
         {/* WYSIWYG EDITABLE SURFACE WITH NOTION LINE-BY-LINE BLOCK GUTTER & CONTEXT MENU */}
         <div
-          className="relative flex-1"
+          onMouseDown={handleSurfaceMouseDown}
+          style={{
+            width:
+              fullscreen && fullscreenCompanionOpen && companionNode
+                ? `${fullscreenSplitWidth}%`
+                : "100%",
+          }}
+          className={`relative flex-1 ${fullscreen ? "h-full overflow-y-auto" : ""}`}
           onMouseLeave={() => {
             if (!blockMenuOpen && !draggedBlockRef.current) {
               setHoveredBlock(null);
             }
           }}
         >
+          {/* EMPTY EDITOR CLICKABLE TEMPLATE STARTERS (DISAPPEARS IMMEDIATELY ON TYPING OR CLICKING) */}
+          {!readOnly && isMounted && isEditorEmpty && templates.length > 0 && (
+            <div
+              contentEditable={false}
+              className="pointer-events-auto absolute left-12 top-11 z-20 flex flex-col gap-1.5 max-w-md select-none"
+            >
+              <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60">
+                Start with a template (or just start typing)
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {templates.map((tpl) => (
+                  <button
+                    key={`empty-starter-${tpl.id}`}
+                    type="button"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      if (contentRef.current) {
+                        contentRef.current.innerHTML = tpl.html;
+                        recordRecentTemplate(tpl.id);
+                        setIsEditorEmpty(false);
+                        emitChange(true);
+                      }
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-[#141722]/90 hover:bg-indigo-600/20 hover:border-indigo-500/50 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground shadow-sm transition"
+                  >
+                    <span>{tpl.name}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
           {!readOnly && hoveredBlock && (
             <div
               style={{
@@ -3160,9 +3299,44 @@ export function RichEditor({
           onPaste={handlePaste}
           onDrop={handleDrop}
           onKeyDown={handleKeyDown}
-          style={{ minHeight: fullscreen ? "calc(100vh - 140px)" : minHeight, fontSize: `${fontSize}px` }}
-          className="tz-rich-content p-4 md:p-6 text-sm overflow-y-auto"
+          style={{ minHeight: fullscreen ? "100%" : minHeight, fontSize: `${fontSize}px` }}
+          className="tz-rich-content p-4 md:p-6 text-sm"
         />
+        </div>
+
+        {/* FULLSCREEN REVIEW COMPANION SPLIT PANE */}
+        {fullscreen && fullscreenCompanionOpen && companionNode && (
+          <>
+            <div
+              onMouseDown={() => {
+                document.body.style.cursor = "col-resize";
+                document.body.style.userSelect = "none";
+                const onMove = (ev: MouseEvent) => {
+                  const pct = Math.max(30, Math.min(78, (ev.clientX / window.innerWidth) * 100));
+                  setFullscreenSplitWidth(Math.round(pct * 10) / 10);
+                };
+                const onUp = () => {
+                  document.body.style.cursor = "";
+                  document.body.style.userSelect = "";
+                  window.removeEventListener("mousemove", onMove);
+                  window.removeEventListener("mouseup", onUp);
+                };
+                window.addEventListener("mousemove", onMove);
+                window.addEventListener("mouseup", onUp);
+              }}
+              className="hidden lg:flex w-2.5 cursor-col-resize items-center justify-center bg-border/20 hover:bg-indigo-500/30 transition-colors shrink-0"
+              title="Drag to resize Fullscreen Companion Split"
+            >
+              <div className="h-16 w-1 rounded-full bg-border/60" />
+            </div>
+            <div
+              style={{ width: `calc(${100 - fullscreenSplitWidth}% - 10px)` }}
+              className="h-full overflow-y-auto border-l border-border/50 bg-[#0d0f14] p-4"
+            >
+              {companionNode}
+            </div>
+          </>
+        )}
         </div>
 
         {/* SLASH (`/`) COMMAND MENU */}
@@ -3464,9 +3638,20 @@ export function RichEditor({
                       <button
                         type="button"
                         onClick={() => {
+                          applyTemplateToEditor(t);
+                          setNewTemplateModal(false);
+                        }}
+                        className="rounded border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-2 py-0.5 text-[11px] font-semibold text-emerald-300"
+                        title="Insert this template at cursor and close modal"
+                      >
+                        Insert
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
                           if (contentRef.current) {
                             contentRef.current.innerHTML = t.html;
-                            emitChange();
+                            emitChange(true);
                           }
                           setEditingTemplateId(t.id);
                           setNewTemplateName(t.name);
@@ -3474,7 +3659,7 @@ export function RichEditor({
                         className="rounded border border-border/60 bg-secondary/50 hover:bg-secondary px-2 py-0.5 text-[11px] text-foreground"
                         title="Load this template into the editor to modify it"
                       >
-                        Load into Editor
+                        Edit in Workspace
                       </button>
                       <button
                         type="button"

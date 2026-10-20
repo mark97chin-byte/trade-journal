@@ -62,6 +62,7 @@ export function PeriodReviewCompanionCard({
 
   // Trade reflection state
   const [tradeIdx, setTradeIdx] = useState(0);
+  const [tradeNoteSubTab, setTradeNoteSubTab] = useState<"setup" | "review">("setup");
   const [wouldTakeAgain, setWouldTakeAgain] = useState<
     Record<string, "yes" | "no" | null>
   >({});
@@ -432,26 +433,62 @@ export function PeriodReviewCompanionCard({
                 </button>
               </div>
 
-              {/* Existing Trade Note Preview (if any) */}
-              {activeTrade.notes &&
-                activeTrade.notes.replace(/<[^>]+>/g, "").trim() && (
-                  <div
-                    style={{ height: expandedHeight ? "380px" : "200px", minHeight: "120px" }}
-                    className="rounded-lg border border-border/50 bg-[#0d0f14] p-2.5 resize-y overflow-y-auto text-xs"
+              {/* Trade Setup Notes vs Trade Review Notes Switcher */}
+              <div
+                style={{ height: expandedHeight ? "380px" : "220px", minHeight: "130px" }}
+                className="rounded-lg border border-border/50 bg-[#0d0f14] p-2.5 resize-y overflow-y-auto text-xs space-y-2"
+              >
+                <div className="flex items-center justify-between border-b border-border/40 pb-1.5">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setTradeNoteSubTab("setup")}
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${
+                        tradeNoteSubTab === "setup"
+                          ? "bg-secondary text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Setup &amp; Execution Note
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTradeNoteSubTab("review")}
+                      className={`px-2 py-0.5 rounded text-[10px] font-semibold transition ${
+                        tradeNoteSubTab === "review"
+                          ? "bg-secondary text-foreground"
+                          : "text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      Trade Review
+                    </button>
+                  </div>
+                  <Link
+                    href={`/trades/${activeTrade.key}`}
+                    className="text-[10px] text-indigo-400 hover:underline inline-flex items-center gap-1"
                   >
-                    <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1 flex items-center justify-between">
-                      <span>Recorded Trade Note</span>
-                      <Link
-                        href={`/trades/${activeTrade.key}`}
-                        className="text-indigo-400 hover:underline inline-flex items-center gap-1"
-                      >
-                        <span>Open Replay</span>
-                        <ExternalLink className="w-2.5 h-2.5" />
-                      </Link>
-                    </div>
+                    <span>Open Trade</span>
+                    <ExternalLink className="w-2.5 h-2.5" />
+                  </Link>
+                </div>
+
+                {tradeNoteSubTab === "setup" ? (
+                  activeTrade.notes && activeTrade.notes.replace(/<[^>]+>/g, "").trim() ? (
                     <Markdown content={activeTrade.notes} className="!p-0" />
+                  ) : (
+                    <div className="py-6 text-center text-muted-foreground italic text-[11px]">
+                      No Setup/Execution notes recorded for this trade.
+                    </div>
+                  )
+                ) : (activeTrade as any).reviewNotes &&
+                  String((activeTrade as any).reviewNotes).replace(/<[^>]+>/g, "").trim() ? (
+                  <Markdown content={(activeTrade as any).reviewNotes} className="!p-0" />
+                ) : (
+                  <div className="py-6 text-center text-muted-foreground italic text-[11px]">
+                    No Post-Trade Review recorded on this trade yet.
                   </div>
                 )}
+              </div>
 
               {/* Hindsight-Free Process Question */}
               <div className="rounded-lg border border-border/60 bg-[#161924] p-2.5 space-y-2">
