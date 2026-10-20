@@ -15,6 +15,7 @@ import { ContractMultiplierSettings, TimeZoneSettings } from "@/components/journ
 import { MarketDataSettings } from "@/components/market-data-settings";
 import { AiSettings } from "@/components/ai-settings";
 import { CurrencySettings } from "@/components/currency-settings";
+import { DataManagementSettings } from "@/components/data-management-settings";
 import { FilterBar } from "@/components/filter-bar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -55,7 +56,7 @@ const sections = [
   },
   {
     id: "your-data",
-    label: "Data & backups",
+    label: "Data management",
     icon: Database,
     description: "Download your journal data for safekeeping or use in other tools.",
   },
@@ -176,32 +177,7 @@ function Settings() {
                 {id === "currency-conversion" && <CurrencySettings />}
                 {id === "market-data" && <MarketDataSettings />}
                 {id === "ai-settings" && <AiSettings />}
-                {id === "your-data" && (
-                  <Card>
-                    <CardHeader>
-                      <CardTitle>Export your data</CardTitle>
-                    </CardHeader>
-                    <CardContent className="space-y-4">
-                      <p className="text-sm text-muted-foreground">
-                        Save a full journal backup, or export your trades as a CSV.
-                      </p>
-                      <div className="flex flex-wrap gap-2">
-                        <Button variant="outline" asChild>
-                          <a href="/api/export" download="trade-journal-export.json">
-                            <Download aria-hidden="true" />
-                            Full backup (JSON)
-                          </a>
-                        </Button>
-                        <Button variant="outline" asChild>
-                          <a href="/api/export?format=csv" download>
-                            <Download aria-hidden="true" />
-                            Trades (CSV)
-                          </a>
-                        </Button>
-                      </div>
-                    </CardContent>
-                  </Card>
-                )}
+{id === "your-data" && <DataManagementSettings />}
               </div>
             </section>
           ))}

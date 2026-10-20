@@ -952,6 +952,19 @@ export function RichEditor({
   const [newTemplateModal, setNewTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState("");
   const [editingTemplateId, setEditingTemplateId] = useState<string | null>(null);
+  const [buttonConfigModal, setButtonConfigModal] = useState<{
+    open: boolean;
+    targetEl: HTMLElement | null;
+    label: string;
+    selectedTemplateId: string;
+    customHtml: string;
+  }>({
+    open: false,
+    targetEl: null,
+    label: "+ Add Section",
+    selectedTemplateId: "preset_toggle",
+    customHtml: "",
+  });
   const [lightbox, setLightbox] = useState<{
     open: boolean;
     images: string[];
@@ -1220,13 +1233,15 @@ export function RichEditor({
   };
 
   const insertNotionButtonBlock = () => {
-    const label = window.prompt("Button label (e.g., + Add Asset Toggle, + Add Trade Section):", "+ Add Asset Toggle");
-    if (!label) return;
+    rememberSelection();
     const defaultSpawnHtml = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Asset / Section</strong></div></div><div class="tz-toggle-body"><p data-placeholder="Type notes or paste chart..."><br/></p></div></div>`;
-    const payloadB64 = typeof window !== "undefined" ? window.btoa(unescape(encodeURIComponent(defaultSpawnHtml))) : "";
-    insertHtmlAtCursor(
-      `<div class="tz-notion-btn-wrapper" data-notion-type="button" data-btn-label="${escapeHtml(label)}" data-btn-payload="${payloadB64}" contenteditable="false"><button type="button" class="tz-notion-action-btn"><span class="tz-notion-btn-icon">＋</span><span class="tz-notion-btn-text">${escapeHtml(label)}</span></button><button type="button" class="tz-notion-btn-config" title="Configure button label &amp; spawned blocks">⚙</button></div><p><br/></p>`
-    );
+    setButtonConfigModal({
+      open: true,
+      targetEl: null,
+      label: "+ Add Asset Toggle",
+      selectedTemplateId: "preset_toggle",
+      customHtml: defaultSpawnHtml,
+    });
   };
 
   const openLightboxForImage = (src: string) => {
@@ -1269,56 +1284,21 @@ export function RichEditor({
       e.stopPropagation();
       const wrapper = configBtn.closest(".tz-notion-btn-wrapper") as HTMLElement | null;
       if (wrapper) {
-        const currentLabel = wrapper.getAttribute("data-btn-label") || "+ Add Block";
-        const nextLabel = window.prompt(
-          "Edit Button Label (or type 'DELETE' to remove button):",
-          currentLabel
-        );
-        if (nextLabel === null) return;
-        if (nextLabel.trim().toUpperCase() === "DELETE") {
-          wrapper.remove();
-          emitChange();
-          return;
+        const currentLabel = wrapper.getAttribute("data-btn-label") || "+ Add Section";
+        const payloadB64 = wrapper.getAttribute("data-btn-payload") || "";
+        let decodedHtml = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Section</strong></div></div><div class="tz-toggle-body"><p><br/></p></div></div>`;
+        if (payloadB64) {
+          try {
+            decodedHtml = decodeURIComponent(escape(window.atob(payloadB64)));
+          } catch {}
         }
-        wrapper.setAttribute("data-btn-label", nextLabel.trim());
-        const textSpan = wrapper.querySelector(".tz-notion-btn-text");
-        if (textSpan) textSpan.textContent = nextLabel.trim();
-
-        const tplLines = templates.map((t, i) => `T${i + 1} = Template: ${t.name}`).join("\n");
-        const presetChoice = window.prompt(
-          `Choose what this button spawns when clicked:\n1 = Collapsible Toggle\n2 = 2-Column Layout\n3 = Callout Box\n4 = To-Do Checklist\n${tplLines}\n(Leave blank to keep current)`,
-          ""
-        );
-        let newSpawn = "";
-        if (presetChoice === "1") {
-          newSpawn = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Toggle</strong></div></div><div class="tz-toggle-body"><p><br/></p></div></div>`;
-        } else if (presetChoice === "2") {
-          newSpawn = `<div class="tz-column-list" data-notion-type="column_list" data-columns="2"><div class="tz-column" data-notion-type="column"><p><br/></p></div><div class="tz-column" data-notion-type="column"><p><br/></p></div></div>`;
-        } else if (presetChoice === "3") {
-          newSpawn = `<div class="tz-callout tz-color-blue_background" data-notion-type="callout" data-notion-color="blue_background" data-icon="💡"><span class="tz-callout-icon" contenteditable="false">💡</span><div class="tz-callout-content"><p>Note...</p></div></div>`;
-        } else if (presetChoice === "4") {
-          newSpawn = `<div class="tz-check-row" data-notion-type="to_do"><input type="checkbox" class="tz-inline-checkbox"/><div class="tz-check-text">To-do item</div></div>`;
-        }
-        if (presetChoice && /^T\d+$/i.test(presetChoice.trim())) {
-          const tIdx = parseInt(presetChoice.trim().slice(1), 10) - 1;
-          if (templates[tIdx]) {
-            newSpawn = templates[tIdx].html;
-          }
-        }
-        if (newSpawn) {
-          wrapper.setAttribute("data-btn-payload", window.btoa(unescape(encodeURIComponent(newSpawn))));
-        }
-        // Save button config into tz_notion_btn_registry so future Notion pulls remember its label & template
-        try {
-          const blockId = wrapper.getAttribute("data-notion-block-id") || `${ownerId}_btn_0`;
-          const reg = JSON.parse(localStorage.getItem("tz_notion_btn_registry") || "{}");
-          reg[blockId] = {
-            label: nextLabel.trim(),
-            payload: wrapper.getAttribute("data-btn-payload") || "",
-          };
-          localStorage.setItem("tz_notion_btn_registry", JSON.stringify(reg));
-        } catch {}
-        emitChange(true);
+        setButtonConfigModal({
+          open: true,
+          targetEl: wrapper,
+          label: currentLabel,
+          selectedTemplateId: "custom",
+          customHtml: decodedHtml,
+        });
       }
       return;
     }
@@ -3557,6 +3537,219 @@ export function RichEditor({
             >
               Esc ✕
             </button>
+          </div>
+        </div>
+      )}
+
+      
+      {/* VISUAL NOTION BUTTON CONFIGURER MODAL */}
+      {buttonConfigModal.open && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-xl max-h-[90vh] overflow-y-auto rounded-xl border border-border bg-card p-5 space-y-4 shadow-2xl text-xs">
+            <div className="flex items-center justify-between border-b border-border/50 pb-3">
+              <h4 className="text-sm font-bold text-foreground flex items-center gap-2">
+                <Plus className="h-4 w-4 text-indigo-400" />
+                <span>
+                  {buttonConfigModal.targetEl
+                    ? "Configure Notion Button Block"
+                    : "Create Notion Button Block"}
+                </span>
+              </h4>
+              <button
+                type="button"
+                onClick={() =>
+                  setButtonConfigModal((prev) => ({ ...prev, open: false, targetEl: null }))
+                }
+                className="text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block font-semibold text-foreground">
+                1. Button Label (Displayed on the clickable button)
+              </label>
+              <input
+                type="text"
+                value={buttonConfigModal.label}
+                onChange={(e) =>
+                  setButtonConfigModal((prev) => ({ ...prev, label: e.target.value }))
+                }
+                placeholder="e.g., + Add Ticker Toggle, + Add Trade Review..."
+                className="h-9 w-full rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-indigo-500"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block font-semibold text-foreground">
+                2. Choose What Blocks This Button Spawns When Clicked
+              </label>
+              <select
+                value={buttonConfigModal.selectedTemplateId}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  let html = buttonConfigModal.customHtml;
+                  if (val === "preset_toggle") {
+                    html = `<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Asset / Ticker</strong></div></div><div class="tz-toggle-body"><p><br/></p></div></div>`;
+                  } else if (val === "preset_toggle_h2") {
+                    html = `<div class="tz-toggle tz-toggle-h2" data-notion-type="heading_2" data-toggle-type="heading_2" data-open="true"><div class="tz-toggle-header"><span class="tz-toggle-btn" contenteditable="false">▾</span><div class="tz-toggle-title"><strong>New Section Heading</strong></div></div><div class="tz-toggle-body"><p><br/></p></div></div>`;
+                  } else if (val === "preset_cols2") {
+                    html = `<div class="tz-column-list" data-notion-type="column_list" data-columns="2"><div class="tz-column" data-notion-type="column"><p>Left column...</p></div><div class="tz-column" data-notion-type="column"><p>Right column...</p></div></div>`;
+                  } else if (val === "preset_callout") {
+                    html = `<div class="tz-callout tz-color-blue_background" data-notion-type="callout" data-notion-color="blue_background" data-icon="💡"><span class="tz-callout-icon" contenteditable="false">💡</span><div class="tz-callout-content"><p>Key note...</p></div></div>`;
+                  } else if (val === "preset_todo") {
+                    html = `<div class="tz-check-row" data-notion-type="to_do"><input type="checkbox" class="tz-inline-checkbox"/><div class="tz-check-text">Action item</div></div>`;
+                  } else if (val.startsWith("tpl:")) {
+                    const tplId = val.slice(4);
+                    const found = templates.find((t) => t.id === tplId);
+                    if (found) html = found.html;
+                  }
+                  setButtonConfigModal((prev) => ({
+                    ...prev,
+                    selectedTemplateId: val,
+                    customHtml: html,
+                  }));
+                }}
+                className="h-9 w-full rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-indigo-500"
+              >
+                <option value="custom">— Custom Blocks (Edit below) —</option>
+                <optgroup label="Your Saved Templates">
+                  {templates.map((t) => (
+                    <option key={t.id} value={`tpl:${t.id}`}>
+                      Template: {t.name}
+                    </option>
+                  ))}
+                </optgroup>
+                <optgroup label="Quick Notion Block Presets">
+                  <option value="preset_toggle">Collapsible Toggle Block</option>
+                  <option value="preset_toggle_h2">Collapsible Toggle Heading 2</option>
+                  <option value="preset_cols2">2-Column Side-by-Side Layout</option>
+                  <option value="preset_callout">Highlighted Callout Box</option>
+                  <option value="preset_todo">To-Do Checklist Row</option>
+                </optgroup>
+              </select>
+            </div>
+
+            <div className="space-y-1.5">
+              <div className="flex items-center justify-between">
+                <label className="font-semibold text-foreground">
+                  3. Interactive Preview &amp; Custom Block Editor (Edit text/blocks to spawn)
+                </label>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (contentRef.current) {
+                      setButtonConfigModal((prev) => ({
+                        ...prev,
+                        selectedTemplateId: "custom",
+                        customHtml: contentRef.current?.innerHTML || prev.customHtml,
+                      }));
+                    }
+                  }}
+                  className="rounded border border-indigo-500/40 bg-indigo-500/10 hover:bg-indigo-500/20 px-2 py-0.5 text-[11px] font-medium text-indigo-300"
+                  title="Copy all blocks currently in the main editor into this button"
+                >
+                  Capture Current Editor Blocks
+                </button>
+              </div>
+              <div
+                contentEditable
+                suppressContentEditableWarning
+                onBlur={(e) => {
+                  const html = e.currentTarget.innerHTML;
+                  setButtonConfigModal((prev) => ({
+                    ...prev,
+                    selectedTemplateId: "custom",
+                    customHtml: html,
+                  }));
+                }}
+                dangerouslySetInnerHTML={{ __html: buttonConfigModal.customHtml }}
+                className="tz-rich-content min-h-[120px] max-h-[240px] overflow-y-auto rounded-lg border border-border/70 bg-[#0d0f14] p-3 text-xs focus:border-indigo-500 outline-none"
+              />
+            </div>
+
+            <div className="flex items-center justify-between pt-2 border-t border-border/50">
+              {buttonConfigModal.targetEl ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    buttonConfigModal.targetEl?.remove();
+                    setButtonConfigModal((prev) => ({ ...prev, open: false, targetEl: null }));
+                    emitChange(true);
+                  }}
+                  className="inline-flex items-center gap-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 px-3 py-1.5 text-xs font-semibold text-rose-400"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  <span>Delete Button</span>
+                </button>
+              ) : (
+                <div />
+              )}
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() =>
+                    setButtonConfigModal((prev) => ({ ...prev, open: false, targetEl: null }))
+                  }
+                  className="rounded-lg border border-border/60 px-3 py-1.5 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const cleanLabel = buttonConfigModal.label.trim() || "+ Add Section";
+                    const payloadB64 =
+                      typeof window !== "undefined"
+                        ? window.btoa(unescape(encodeURIComponent(buttonConfigModal.customHtml)))
+                        : "";
+
+                    if (buttonConfigModal.targetEl) {
+                      const wrap = buttonConfigModal.targetEl;
+                      wrap.setAttribute("data-btn-label", cleanLabel);
+                      wrap.setAttribute("data-btn-payload", payloadB64);
+                      const textSpan = wrap.querySelector(".tz-notion-btn-text");
+                      if (textSpan) textSpan.textContent = cleanLabel;
+
+                      try {
+                        const blockId =
+                          wrap.getAttribute("data-notion-block-id") || `${ownerId}_btn_0`;
+                        const reg = JSON.parse(
+                          localStorage.getItem("tz_notion_btn_registry") || "{}"
+                        );
+                        reg[blockId] = { label: cleanLabel, payload: payloadB64 };
+                        reg[`label_${cleanLabel}`] = { label: cleanLabel, payload: payloadB64 };
+                        localStorage.setItem("tz_notion_btn_registry", JSON.stringify(reg));
+                      } catch {}
+                      emitChange(true);
+                    } else {
+                      const blockId = `btn_${Date.now()}`;
+                      try {
+                        const reg = JSON.parse(
+                          localStorage.getItem("tz_notion_btn_registry") || "{}"
+                        );
+                        reg[blockId] = { label: cleanLabel, payload: payloadB64 };
+                        reg[`label_${cleanLabel}`] = { label: cleanLabel, payload: payloadB64 };
+                        localStorage.setItem("tz_notion_btn_registry", JSON.stringify(reg));
+                      } catch {}
+                      insertHtmlAtCursor(
+                        `<div class="tz-notion-btn-wrapper" data-notion-type="button" data-notion-block-id="${blockId}" data-btn-label="${escapeHtml(
+                          cleanLabel
+                        )}" data-btn-payload="${payloadB64}" contenteditable="false"><button type="button" class="tz-notion-action-btn"><span class="tz-notion-btn-icon">＋</span><span class="tz-notion-btn-text">${escapeHtml(
+                          cleanLabel
+                        )}</span></button><button type="button" class="tz-notion-btn-config" title="Configure button label &amp; template to spawn">⚙</button></div><p><br/></p>`
+                      );
+                    }
+                    setButtonConfigModal((prev) => ({ ...prev, open: false, targetEl: null }));
+                  }}
+                  className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-4 py-1.5 text-xs font-semibold text-white shadow transition"
+                >
+                  {buttonConfigModal.targetEl ? "Save Button Changes" : "Insert Button"}
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
