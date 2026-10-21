@@ -8,6 +8,7 @@ import { ReportDimensionView } from "@/components/reports/report-dimension-view"
 import { WinsVsLossesView } from "@/components/reports/wins-vs-losses-view";
 import { PerformanceView } from "@/components/reports/performance-view";
 import { CompareView } from "@/components/reports/compare-view";
+import { MissedTradesReportView } from "@/components/reports/missed-trades-report-view";
 import { ContentManagementView } from "@/components/tags/content-management-view";
 import { useApi } from "@/lib/use-api";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -22,6 +23,7 @@ type MainTab =
   | "wins_vs_losses"
   | "performance"
   | "compare"
+  | "missed_opportunity"
   | "content_management";
 
 type DayTimeSubTab = "days" | "months" | "trade_time" | "trade_duration";
@@ -216,6 +218,19 @@ function ReportsContent() {
               }`}
             >
               Compare
+            </button>
+
+            {/* 5. Missed trades */}
+            <button
+              type="button"
+              onClick={() => setMainTab("missed_opportunity")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                mainTab === "missed_opportunity"
+                  ? "bg-secondary text-foreground font-semibold border border-border shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
+              }`}
+            >
+              Missed trades
             </button>
           </div>
 
@@ -483,6 +498,10 @@ function ReportsContent() {
 
             {mainTab === "compare" && (
               <CompareView dateLabel={dateLabel} globalQuery={query} />
+            )}
+
+            {mainTab === "missed_opportunity" && (
+              <MissedTradesReportView query={query} />
             )}
           </div>
         )}

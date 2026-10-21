@@ -208,6 +208,89 @@ export function JournalEntryEditor({
   });
 
   const [saving, setSaving] = useState(false);
+  const [periodMissedTrades, setPeriodMissedTrades] = useState<any[]>([]);
+  const [includeMissedInStats, setIncludeMissedInStats] = useState<boolean>(false);
+  const [bottomTradesTab, setBottomTradesTab] = useState<"executed" | "missed">("executed");
+
+  useEffect(() => {
+    fetch(
+      `/api/reports/missed-analytics?from=${encodeURIComponent(
+        range.startDate
+      )}&to=${encodeURIComponent(range.endDate)}`
+    )
+      .then((r) => r.json())
+      .then((d) => {
+        if (Array.isArray(d?.missedTrades)) {
+          setPeriodMissedTrades(d.missedTrades);
+        }
+      })
+      .catch(() => {});
+  }, [range.startDate, range.endDate]);
+
+  const missedSummary = useMemo(() => {
+    const count = periodMissedTrades.length;
+    const winningMisses = periodMissedTrades.filter(
+      (m) => (m.outcome || "WIN") === "WIN" || Number(m.theoretical_pnl || 0) > 0
+    );
+    const losingMisses = periodMissedTrades.filter(
+      (m) => m.outcome === "LOSS" || Number(m.theoretical_pnl || 0) < 0
+    );
+
+    const leftOnTablePnl = winningMisses.reduce(
+      (acc, m) => acc + Math.max(0, Number(m.theoretical_pnl || 0)),
+      0
+    );
+    const leftOnTableR = winningMisses.reduce(
+      (acc, m) => acc + Math.max(0, Number(m.realized_r ?? m.planned_r ?? 0)),
+      0
+    );
+
+    const losingMissesPnl = losingMisses.reduce(
+      (acc, m) => acc + Number(m.theoretical_pnl || 0),
+      0
+    );
+    const losingMissesR = losingMisses.reduce(
+      (acc, m) => acc + Number(m.realized_r ?? -1),
+      0
+    );
+
+    const netPnl = periodMissedTrades.reduce(
+      (acc, m) => acc + Number(m.theoretical_pnl || 0),
+      0
+    );
+    const netR = periodMissedTrades.reduce(
+      (acc, m) => acc + Number(m.realized_r ?? m.planned_r ?? 0),
+      0
+    );
+
+    const totalOpportunities = trades.length + count;
+    const captureEfficiencyPct =
+      totalOpportunities > 0
+        ? Math.round((trades.length / totalOpportunities) * 100)
+        : 100;
+
+    const reasonCounts: Record<string, number> = {};
+    for (const m of periodMissedTrades) {
+      const r = m.miss_reason || "Hesitation / Fear";
+      reasonCounts[r] = (reasonCounts[r] || 0) + 1;
+    }
+    const topReason =
+      Object.entries(reasonCounts).sort((a, b) => b[1] - a[1])[0]?.[0] || "—";
+
+    return {
+      count,
+      winningCount: winningMisses.length,
+      losingCount: losingMisses.length,
+      leftOnTablePnl,
+      leftOnTableR,
+      losingMissesPnl,
+      losingMissesR,
+      netPnl,
+      netR,
+      captureEfficiencyPct,
+      topReason,
+    };
+  }, [periodMissedTrades, trades.length]);
   const [syncingNotion, setSyncingNotion] = useState(false);
   const [saveStatus, setSaveStatus] = useState<string | null>(null);
 
@@ -398,15 +481,37 @@ export function JournalEntryEditor({
     };
   }, [range]);
 
+  const effectiveTradesForStats = useMemo(() => {
+    if (!includeMissedInStats || periodMissedTrades.length === 0) return trades;
+    const mappedMissed: JournalTrade[] = periodMissedTrades.map((m) => ({
+      key: m.id,
+      symbol: m.symbol,
+      direction: m.direction || "long",
+      openedAt: m.observed_at || range.startDate,
+      closedAt: m.exit_at || m.observed_at || range.startDate,
+      netPnl: Number(m.theoretical_pnl || 0),
+      grossPnl: Number(m.theoretical_pnl || 0),
+      fees: 0,
+      quantity: Number(m.quantity || 1),
+      avgEntry: m.entry ?? undefined,
+      avgExit: m.target ?? undefined,
+      realizedR: Number(m.realized_r ?? m.planned_r ?? 0),
+      notes: m.notes || "",
+      tags: [],
+    }));
+    return [...trades, ...mappedMissed];
+  }, [trades, periodMissedTrades, includeMissedInStats, range.startDate]);
+
   const stats = useMemo(() => {
-    const total = trades.length;
-    const wins = trades.filter((t) => t.netPnl > 0);
-    const losses = trades.filter((t) => t.netPnl < 0);
-    const netPnl = trades.reduce((acc, t) => acc + t.netPnl, 0);
-    const grossPnl = trades.reduce((acc, t) => acc + (t.grossPnl ?? t.netPnl), 0);
-    const fees = trades.reduce((acc, t) => acc + (t.fees ?? 0), 0);
-    const volume = trades.reduce((acc, t) => acc + (t.quantity || 0), 0);
-    const totalR = trades.reduce((acc, t) => acc + (t.realizedR ?? 0), 0);
+    const sourceTrades = effectiveTradesForStats;
+    const total = sourceTrades.length;
+    const wins = sourceTrades.filter((t) => t.netPnl > 0);
+    const losses = sourceTrades.filter((t) => t.netPnl < 0);
+    const netPnl = sourceTrades.reduce((acc, t) => acc + t.netPnl, 0);
+    const grossPnl = sourceTrades.reduce((acc, t) => acc + (t.grossPnl ?? t.netPnl), 0);
+    const fees = sourceTrades.reduce((acc, t) => acc + (t.fees ?? 0), 0);
+    const volume = sourceTrades.reduce((acc, t) => acc + (t.quantity || 0), 0);
+    const totalR = sourceTrades.reduce((acc, t) => acc + (t.realizedR ?? 0), 0);
 
     const grossWin = wins.reduce((acc, t) => acc + (t.grossPnl ?? t.netPnl), 0);
     const grossLoss = Math.abs(
@@ -420,7 +525,7 @@ export function JournalEntryEditor({
         : "0.00";
     const winRate = total > 0 ? ((wins.length / total) * 100).toFixed(1) : "0.0";
 
-    const sorted = [...trades].sort(
+    const sorted = [...sourceTrades].sort(
       (a, b) => new Date(a.openedAt).getTime() - new Date(b.openedAt).getTime()
     );
     let running = 0;
@@ -435,12 +540,12 @@ export function JournalEntryEditor({
     });
 
     const bestTrade =
-      trades.length > 0
-        ? [...trades].sort((a, b) => b.netPnl - a.netPnl)[0]
+      sourceTrades.length > 0
+        ? [...sourceTrades].sort((a, b) => b.netPnl - a.netPnl)[0]
         : null;
     const worstTrade =
-      trades.length > 0
-        ? [...trades].sort((a, b) => a.netPnl - b.netPnl)[0]
+      sourceTrades.length > 0
+        ? [...sourceTrades].sort((a, b) => a.netPnl - b.netPnl)[0]
         : null;
 
     return {
@@ -902,9 +1007,27 @@ export function JournalEntryEditor({
             />
           </div>
 
-          <div className="flex items-center gap-4 text-sm">
+          <div className="flex flex-wrap items-center gap-3 text-sm">
+            <button
+              type="button"
+              onClick={() => setIncludeMissedInStats((v) => !v)}
+              className={`inline-flex items-center gap-1.5 rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
+                includeMissedInStats
+                  ? "border-foreground bg-secondary text-foreground shadow-2xs"
+                  : "border-border/60 bg-secondary/30 text-muted-foreground hover:text-foreground"
+              }`}
+              title="Toggle including missed trades in this journal's stats to evaluate full model potential"
+            >
+              <span>
+                {includeMissedInStats
+                  ? `Model Stats: Including ${missedSummary.count} Missed (${fmtCurrency(missedSummary.netPnl)})`
+                  : `Include Missed Trades (${missedSummary.count})`}
+              </span>
+            </button>
             <div>
-              <span className="text-xs text-muted-foreground mr-1.5">Net P&amp;L:</span>
+              <span className="text-xs text-muted-foreground mr-1.5">
+                {includeMissedInStats ? "Model P&L:" : "Net P&L:"}
+              </span>
               <span
                 className={`font-bold ${
                   stats.netPnl >= 0 ? "text-profit" : "text-loss"
@@ -1044,6 +1167,71 @@ export function JournalEntryEditor({
             </div>
           </div>
         </div>
+
+        {/* ALWAYS-VISIBLE MISSED TRADES, CAPTURE EFFICIENCY & COUNTERFACTUAL LOSS IMPACT ROW */}
+        <div className="mt-4 pt-3 border-t border-slate-200 dark:border-border/40 grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs">
+          <div>
+            <div className="text-muted-foreground text-[10px]">
+              Setup Capture Efficiency
+            </div>
+            <div className="font-semibold text-foreground">
+              {missedSummary.captureEfficiencyPct}% ({trades.length} Taken /{" "}
+              {missedSummary.count} Missed)
+            </div>
+          </div>
+
+          <div>
+            <div className="text-muted-foreground text-[10px]">
+              Left on Table ({missedSummary.winningCount} Missed Wins)
+            </div>
+            <div className="font-semibold text-profit font-mono">
+              {fmtCurrency(missedSummary.leftOnTablePnl)} (+
+              {missedSummary.leftOnTableR.toFixed(2)}R)
+            </div>
+          </div>
+
+          <div>
+            <div className="text-muted-foreground text-[10px]">
+              Missed Losses ({missedSummary.losingCount} Losing Setups)
+            </div>
+            <div className="font-semibold text-loss font-mono">
+              {fmtCurrency(missedSummary.losingMissesPnl)} (
+              {missedSummary.losingMissesR.toFixed(2)}R)
+            </div>
+          </div>
+
+          <div>
+            <div className="text-muted-foreground text-[10px]">
+              If All Missed Taken (Model P&amp;L)
+            </div>
+            <div
+              className={`font-semibold font-mono ${
+                trades.reduce((s, t) => s + t.netPnl, 0) + missedSummary.netPnl >= 0
+                  ? "text-profit"
+                  : "text-loss"
+              }`}
+            >
+              {fmtCurrency(
+                trades.reduce((s, t) => s + t.netPnl, 0) + missedSummary.netPnl
+              )}{" "}
+              ({(() => {
+                const combR =
+                  trades.reduce((s, t) => s + (t.realizedR ?? 0), 0) +
+                  missedSummary.netR;
+                return combR > 0 ? `+${combR.toFixed(2)}R` : `${combR.toFixed(2)}R`;
+              })()})
+            </div>
+          </div>
+
+          <div>
+            <div className="text-muted-foreground text-[10px]">
+              Top Reason Missed
+            </div>
+            <div className="font-semibold text-foreground truncate">
+              {missedSummary.topReason}
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* NOTES WORKSPACE (DRAGGABLE RESIZABLE 2-COLUMN SPLIT) */}
@@ -1123,6 +1311,7 @@ export function JournalEntryEditor({
                     endDate={range.endDate}
                     anchorDate={range.anchorDate}
                     trades={trades}
+                    missedTrades={periodMissedTrades}
                     onInsertReflectionHtml={(html) => {
                       if (noteEditorRef.current?.insertHtml) {
                         noteEditorRef.current.insertHtml(html);
@@ -1259,6 +1448,7 @@ export function JournalEntryEditor({
               endDate={range.endDate}
               anchorDate={range.anchorDate}
               trades={trades}
+              missedTrades={periodMissedTrades}
               onInsertReflectionHtml={(html) => {
                 if (noteEditorRef.current?.insertHtml) {
                   noteEditorRef.current.insertHtml(html);
@@ -1582,56 +1772,191 @@ export function JournalEntryEditor({
         )}
       </div>
 
-      {/* EXECUTED TRADES TABLE */}
+      {/* EXECUTED TRADES & MISSED TRADES TABS TABLE */}
       <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm space-y-4">
-        <div className="flex items-center justify-between border-b border-slate-200 dark:border-border/40 pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 dark:border-border/40 pb-3">
           <div className="flex items-center gap-2">
-            <TrendingUp className="w-4 h-4 text-muted-foreground" />
-            <h2 className="text-sm font-bold text-foreground">
-              Executed Trades ({trades.length})
-            </h2>
+            <div className="flex items-center gap-1 rounded-xl bg-[#0d0f14] p-1 border border-border/60 text-xs">
+              <button
+                type="button"
+                onClick={() => setBottomTradesTab("executed")}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold transition ${
+                  bottomTradesTab === "executed"
+                    ? "bg-secondary text-foreground border border-border shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <TrendingUp className="w-3.5 h-3.5" />
+                <span>Executed Trades ({trades.length})</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setBottomTradesTab("missed")}
+                className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1 font-semibold transition ${
+                  bottomTradesTab === "missed"
+                    ? "bg-secondary text-foreground border border-border shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                <span>Missed Trades ({periodMissedTrades.length})</span>
+              </button>
+            </div>
           </div>
-          <span className="text-xs text-muted-foreground">
-            Click any trade to inspect its 1m chart replay &amp; running P&amp;L excursion
-          </span>
+
+          {bottomTradesTab === "missed" && periodMissedTrades.length > 0 ? (
+            <div className="flex flex-wrap items-center gap-4 text-xs">
+              <span className="text-muted-foreground">
+                Opportunity Missed:{" "}
+                <strong className="text-foreground font-mono">
+                  {fmtCurrency(missedSummary.netPnl)} (
+                  {missedSummary.netR >= 0
+                    ? `+${missedSummary.netR.toFixed(2)}R`
+                    : `${missedSummary.netR.toFixed(2)}R`}
+                  )
+                </strong>
+              </span>
+              <span className="text-muted-foreground">
+                Top Miss Reason:{" "}
+                <strong className="text-foreground">{missedSummary.topReason}</strong>
+              </span>
+            </div>
+          ) : (
+            <span className="text-xs text-muted-foreground">
+              Click any trade to inspect its chart replay &amp; running P&amp;L excursion
+            </span>
+          )}
         </div>
 
-        {trades.length > 0 ? (
+        {bottomTradesTab === "executed" ? (
+          trades.length > 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead>
+                  <tr className="text-muted-foreground border-b border-slate-200 dark:border-border/40">
+                    <th className="py-2 px-2.5 font-medium">Opened (NY)</th>
+                    <th className="py-2 px-2.5 font-medium">Symbol</th>
+                    <th className="py-2 px-2.5 font-medium">Side</th>
+                    <th className="py-2 px-2.5 font-medium text-right">Volume</th>
+                    <th className="py-2 px-2.5 font-medium text-right">Entry → Exit</th>
+                    <th className="py-2 px-2.5 font-medium text-right">Realized R</th>
+                    <th className="py-2 px-2.5 font-medium text-right">Net P&amp;L</th>
+                    <th className="py-2 px-2.5 font-medium">Partials / Notes</th>
+                    <th className="py-2 px-2.5 font-medium text-right">Replay</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {trades.map((t) => {
+                    const isBuy =
+                      t.direction.toLowerCase() === "buy" ||
+                      t.direction.toLowerCase() === "long";
+                    const datePart = t.openedAt.slice(0, 10);
+                    const timePart =
+                      t.openedAt.length >= 16 ? t.openedAt.slice(11, 19) : "";
+
+                    return (
+                      <tr
+                        key={t.key}
+                        className="border-b border-border/20 hover:bg-muted/20 transition"
+                      >
+                        <td className="py-2.5 px-2.5 tabular-nums text-muted-foreground">
+                          {datePart}{" "}
+                          <span className="text-foreground font-medium">{timePart}</span>
+                        </td>
+                        <td className="py-2.5 px-2.5">
+                          <span className="px-2 py-0.5 rounded bg-secondary text-foreground font-semibold text-[11px]">
+                            {t.symbol}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-2.5">
+                          <span
+                            className={`font-bold text-[11px] uppercase ${
+                              isBuy ? "text-profit" : "text-loss"
+                            }`}
+                          >
+                            {t.direction}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-2.5 text-right tabular-nums text-foreground">
+                          {t.quantity}L
+                        </td>
+                        <td className="py-2.5 px-2.5 text-right tabular-nums text-muted-foreground">
+                          {t.avgEntry ?? "—"} → {t.avgExit ?? "—"}
+                        </td>
+                        <td className="py-2.5 px-2.5 text-right tabular-nums font-medium">
+                          {t.realizedR != null ? (
+                            <span
+                              className={
+                                t.realizedR >= 0 ? "text-profit" : "text-loss"
+                              }
+                            >
+                              {t.realizedR > 0 ? `+${t.realizedR}R` : `${t.realizedR}R`}
+                            </span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td
+                          className={`py-2.5 px-2.5 text-right font-bold tabular-nums ${
+                            t.netPnl >= 0 ? "text-profit" : "text-loss"
+                          }`}
+                        >
+                          {fmtCurrency(t.netPnl)}
+                        </td>
+                        <td className="py-2.5 px-2.5 text-muted-foreground max-w-[260px] truncate">
+                          {(t as any).partialsBreakdown || t.notes || "—"}
+                        </td>
+                        <td className="py-2.5 px-2.5 text-right">
+                          <Link
+                            href={`/trades/${t.key}`}
+                            className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground border border-border px-2.5 py-1 text-[11px] font-semibold transition hover:bg-secondary/80"
+                          >
+                            <span>Replay</span>
+                            <ArrowRight className="w-3 h-3" />
+                          </Link>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-slate-200 dark:border-border/40 rounded-lg">
+              No trades executed during this period.
+            </div>
+          )
+        ) : periodMissedTrades.length > 0 ? (
           <div className="overflow-x-auto">
             <table className="w-full text-left text-xs">
               <thead>
                 <tr className="text-muted-foreground border-b border-slate-200 dark:border-border/40">
-                  <th className="py-2 px-2.5 font-medium">Opened (NY)</th>
+                  <th className="py-2 px-2.5 font-medium">Observed At</th>
                   <th className="py-2 px-2.5 font-medium">Symbol</th>
                   <th className="py-2 px-2.5 font-medium">Side</th>
-                  <th className="py-2 px-2.5 font-medium text-right">Volume</th>
-                  <th className="py-2 px-2.5 font-medium text-right">Entry → Exit</th>
-                  <th className="py-2 px-2.5 font-medium text-right">Realized R</th>
-                  <th className="py-2 px-2.5 font-medium text-right">Net P&amp;L</th>
-                  <th className="py-2 px-2.5 font-medium">Partials / Notes</th>
-                  <th className="py-2 px-2.5 font-medium text-right">Replay</th>
+                  <th className="py-2 px-2.5 font-medium">Reason Missed</th>
+                  <th className="py-2 px-2.5 font-medium text-right">Entry / SL / TP</th>
+                  <th className="py-2 px-2.5 font-medium text-right">Theoretical R</th>
+                  <th className="py-2 px-2.5 font-medium text-right">Opportunity ($)</th>
+                  <th className="py-2 px-2.5 font-medium text-right">Action</th>
                 </tr>
               </thead>
               <tbody>
-                {trades.map((t) => {
-                  const isBuy =
-                    t.direction.toLowerCase() === "buy" ||
-                    t.direction.toLowerCase() === "long";
-                  const datePart = t.openedAt.slice(0, 10);
-                  const timePart =
-                    t.openedAt.length >= 16 ? t.openedAt.slice(11, 19) : "";
-
+                {periodMissedTrades.map((m) => {
+                  const isBuy = String(m.direction || "long").toLowerCase() === "long";
+                  const mPnl = Number(m.theoretical_pnl || 0);
+                  const mR = Number(m.realized_r ?? m.planned_r ?? 0);
                   return (
                     <tr
-                      key={t.key}
+                      key={m.id}
                       className="border-b border-border/20 hover:bg-muted/20 transition"
                     >
                       <td className="py-2.5 px-2.5 tabular-nums text-muted-foreground">
-                        {datePart} <span className="text-foreground font-medium">{timePart}</span>
+                        {(m.observed_at || "").slice(0, 16).replace("T", " ")} •{" "}
+                        <strong className="text-foreground">{m.session || "NY AM"}</strong>
                       </td>
                       <td className="py-2.5 px-2.5">
                         <span className="px-2 py-0.5 rounded bg-secondary text-foreground font-semibold text-[11px]">
-                          {t.symbol}
+                          {m.symbol}
                         </span>
                       </td>
                       <td className="py-2.5 px-2.5">
@@ -1640,44 +1965,35 @@ export function JournalEntryEditor({
                             isBuy ? "text-profit" : "text-loss"
                           }`}
                         >
-                          {t.direction}
+                          {m.direction}
                         </span>
                       </td>
-                      <td className="py-2.5 px-2.5 text-right tabular-nums text-foreground">
-                        {t.quantity}L
+                      <td className="py-2.5 px-2.5 font-medium text-foreground">
+                        {m.miss_reason || "Hesitation / Fear"}
                       </td>
-                      <td className="py-2.5 px-2.5 text-right tabular-nums text-muted-foreground">
-                        {t.avgEntry ?? "—"} → {t.avgExit ?? "—"}
+                      <td className="py-2.5 px-2.5 text-right tabular-nums text-muted-foreground font-mono">
+                        {m.entry ?? "—"} / {m.stop ?? "—"} / {m.target ?? "—"}
                       </td>
-                      <td className="py-2.5 px-2.5 text-right tabular-nums font-medium">
-                        {t.realizedR != null ? (
-                          <span
-                            className={
-                              t.realizedR >= 0 ? "text-profit" : "text-loss"
-                            }
-                          >
-                            {t.realizedR > 0 ? `+${t.realizedR}R` : `${t.realizedR}R`}
-                          </span>
-                        ) : (
-                          "—"
-                        )}
+                      <td
+                        className={`py-2.5 px-2.5 text-right tabular-nums font-bold ${
+                          mR >= 0 ? "text-profit" : "text-loss"
+                        }`}
+                      >
+                        {mR > 0 ? `+${mR}R` : `${mR}R`}
                       </td>
                       <td
                         className={`py-2.5 px-2.5 text-right font-bold tabular-nums ${
-                          t.netPnl >= 0 ? "text-profit" : "text-loss"
+                          mPnl >= 0 ? "text-profit" : "text-loss"
                         }`}
                       >
-                        {fmtCurrency(t.netPnl)}
-                      </td>
-                      <td className="py-2.5 px-2.5 text-muted-foreground max-w-[260px] truncate">
-                        {(t as any).partialsBreakdown || t.notes || "—"}
+                        {fmtCurrency(mPnl)}
                       </td>
                       <td className="py-2.5 px-2.5 text-right">
                         <Link
-                          href={`/trades/${t.key}`}
-                          className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground border border-indigo-500/30 px-2.5 py-1 text-[11px] font-semibold transition hover:bg-secondary/80"
+                          href="/missed"
+                          className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground border border-border px-2.5 py-1 text-[11px] font-semibold transition hover:bg-secondary/80"
                         >
-                          <span>Replay</span>
+                          <span>Open Lab</span>
                           <ArrowRight className="w-3 h-3" />
                         </Link>
                       </td>
@@ -1689,7 +2005,7 @@ export function JournalEntryEditor({
           </div>
         ) : (
           <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-slate-200 dark:border-border/40 rounded-lg">
-            No trades executed during this period.
+            No missed trades recorded during this period.
           </div>
         )}
       </div>

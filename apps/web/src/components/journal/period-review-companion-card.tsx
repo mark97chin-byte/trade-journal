@@ -23,6 +23,7 @@ interface PeriodReviewCompanionCardProps {
   endDate: string;
   anchorDate: string;
   trades: JournalTrade[];
+  missedTrades?: any[];
   onInsertReflectionHtml: (html: string) => void;
 }
 
@@ -45,12 +46,13 @@ export function PeriodReviewCompanionCard({
   endDate,
   anchorDate,
   trades,
+  missedTrades = [],
   onInsertReflectionHtml,
 }: PeriodReviewCompanionCardProps) {
-  // For Daily journal, default straight to "trades" reflection; for Week/Month/Quarter/Year default to "notes"
-  const [mode, setMode] = useState<"notes" | "trades">(
-    periodType === "day" ? "trades" : "notes"
+  const [mode, setMode] = useState<"notes" | "trades" | "missed">(
+    periodType === "day" ? (trades.length > 0 ? "trades" : missedTrades.length > 0 ? "missed" : "trades") : "notes"
   );
+  const [missedIdx, setMissedIdx] = useState(0);
 
   // Sub-period notes state
   const [subEntries, setSubEntries] = useState<SubEntryPreview[]>([]);
@@ -209,12 +211,23 @@ export function PeriodReviewCompanionCard({
             onClick={() => setMode("trades")}
             className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-semibold transition ${
               mode === "trades"
-                ? "bg-indigo-600 text-white"
+                ? "bg-secondary text-foreground border border-border"
                 : "text-muted-foreground hover:text-foreground"
             }`}
           >
             <TrendingUp className="w-3 h-3" />
             <span>Trades ({trades.length})</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => setMode("missed")}
+            className={`inline-flex items-center gap-1 rounded-md px-2 py-1 font-semibold transition ${
+              mode === "missed"
+                ? "bg-secondary text-foreground border border-border"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <span>Missed ({missedTrades.length})</span>
           </button>
         </div>
       </div>
@@ -601,6 +614,120 @@ export function PeriodReviewCompanionCard({
           ) : null}
         </div>
       )}
+
+      {/* MODE 3: MISSED TRADES & OPPORTUNITY COST REFLECTION */}
+      {mode === "missed" && (
+        <div className="space-y-3">
+          {missedTrades.length === 0 ? (
+            <div className="py-6 text-center text-xs text-muted-foreground border border-dashed border-border/40 rounded-lg">
+              No missed trades recorded in this {periodType}.
+            </div>
+          ) : (() => {
+            const activeMissed = missedTrades[missedIdx] || missedTrades[0];
+            if (!activeMissed) return null;
+            const mPnl = Number(activeMissed.theoretical_pnl || 0);
+            const mR = Number(activeMissed.realized_r ?? activeMissed.planned_r ?? 0);
+            return (
+              <div className="space-y-3">
+                <div className="flex items-center justify-between rounded-lg bg-[#0d0f14] px-2.5 py-1.5 border border-border/60">
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setMissedIdx((i) => (i - 1 + missedTrades.length) % missedTrades.length)
+                    }
+                    className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"
+                  >
+                    <ChevronLeft className="w-4 h-4" />
+                  </button>
+                  <div className="text-center">
+                    <div className="text-xs font-bold text-foreground flex items-center justify-center gap-1.5">
+                      <span>
+                        Missed {missedIdx + 1} of {missedTrades.length}:
+                      </span>
+                      <span className="px-1.5 py-0.5 rounded bg-secondary text-[11px] font-mono">
+                        {activeMissed.symbol}
+                      </span>
+                      <span className="uppercase text-[11px]">
+                        {activeMissed.direction}
+                      </span>
+                      <span className={mPnl >= 0 ? "text-profit" : "text-loss"}>
+                        {fmtCurrency(mPnl)} ({mR >= 0 ? `+${mR}R` : `${mR}R`})
+                      </span>
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {(activeMissed.observed_at || "").slice(0, 16).replace("T", " ")} • Reason:{" "}
+                      <strong className="text-foreground">
+                        {activeMissed.miss_reason || "Hesitation / Fear"}
+                      </strong>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setMissedIdx((i) => (i + 1) % missedTrades.length)}
+                    className="p-1 rounded hover:bg-secondary text-muted-foreground hover:text-foreground"
+                  >
+                    <ChevronRight className="w-4 h-4" />
+                  </button>
+                </div>
+
+                <div className="rounded-lg border border-border/50 bg-[#0d0f14] p-2.5 text-xs space-y-2">
+                  <div className="flex items-center justify-between border-b border-border/40 pb-1.5 text-[11px]">
+                    <span className="text-muted-foreground">
+                      Levels:{" "}
+                      <strong className="font-mono text-foreground">
+                        Entry {activeMissed.entry ?? "—"} | SL {activeMissed.stop ?? "—"} | TP{" "}
+                        {activeMissed.target ?? "—"}
+                      </strong>
+                    </span>
+                    <Link
+                      href="/missed"
+                      className="text-[10px] text-muted-foreground hover:text-foreground underline inline-flex items-center gap-1"
+                    >
+                      <span>Open in Missed Trades</span>
+                      <ExternalLink className="w-2.5 h-2.5" />
+                    </Link>
+                  </div>
+
+                  {activeMissed.notes && activeMissed.notes.replace(/<[^>]+>/g, "").trim() ? (
+                    <Markdown content={activeMissed.notes} className="!p-0" />
+                  ) : (
+                    <div className="py-4 text-center text-muted-foreground italic text-[11px]">
+                      No setup notes recorded for this missed opportunity.
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const html = `
+<div class="tz-toggle" data-notion-type="toggle" data-toggle-type="toggle" data-open="true">
+  <div class="tz-toggle-header">
+    <span class="tz-toggle-btn" contenteditable="false">▾</span>
+    <div class="tz-toggle-title"><strong>[MISSED SETUP] ${activeMissed.symbol} (${String(activeMissed.direction).toUpperCase()}) • ${fmtCurrency(mPnl)} [${mR >= 0 ? `+${mR}R` : `${mR}R`}] — Reason: ${activeMissed.miss_reason || "Hesitation"}</strong></div>
+  </div>
+  <div class="tz-toggle-body">
+    <ul>
+      <li><strong>Why it was missed:</strong> ${activeMissed.miss_reason || "—"} (${activeMissed.session || "NY AM"})</li>
+      <li><strong>Planned Levels:</strong> Entry ${activeMissed.entry ?? "—"} | SL ${activeMissed.stop ?? "—"} | TP ${activeMissed.target ?? "—"}</li>
+      <li><strong>Corrective Action for Next Session:</strong> Define concrete alert / execution trigger to capture this setup next time.</li>
+    </ul>
+  </div>
+</div>
+<p><br/></p>`;
+                      onInsertReflectionHtml(html);
+                    }}
+                    className="w-full inline-flex items-center justify-center gap-1.5 rounded-lg border border-border bg-secondary hover:bg-secondary/80 py-1.5 text-xs font-semibold text-foreground transition"
+                  >
+                    <Sparkles className="w-3.5 h-3.5" />
+                    <span>Insert Missed Trade Reflection into Journal</span>
+                  </button>
+                </div>
+              </div>
+            );
+          })()}
+        </div>
+      )}
+
     </div>
   );
 }

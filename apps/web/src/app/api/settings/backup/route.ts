@@ -4,6 +4,7 @@ import path from "path";
 import fs from "fs";
 import zlib from "zlib";
 import { ensureJournalSchema } from "@/server/journal-service";
+import { getCandleDb } from "@/server/market-data/candle-db";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +63,12 @@ export async function GET() {
         } catch {
           dump[tbl] = [];
         }
+      }
+      try {
+        const cdb = getCandleDb();
+        dump["market_candles"] = cdb.prepare(`SELECT * FROM candles`).all() as any[];
+      } catch {
+        dump["market_candles"] = [];
       }
     } finally {
       db.close();
@@ -172,6 +179,25 @@ export async function POST(req: NextRequest) {
         }
       });
       tx();
+      if (Array.isArray(tables["market_candles"]) && tables["market_candles"].length > 0) {
+        try {
+          const cdb = getCandleDb();
+          if (mode === "replace") {
+            cdb.prepare(`DELETE FROM candles`).run();
+          }
+          const ins = cdb.prepare(
+            `INSERT OR REPLACE INTO candles (provider, symbol, timeframe, time, open, high, low, close, volume)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+          );
+          const cTx = cdb.transaction((rows: any[]) => {
+            for (const r of rows) {
+              ins.run(r.provider, r.symbol, r.timeframe, r.time, r.open, r.high, r.low, r.close, r.volume);
+              restoredRows++;
+            }
+          });
+          cTx(tables["market_candles"]);
+        } catch {}
+      }
       db.pragma("foreign_keys = ON");
       db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`);
     } finally {

@@ -5,29 +5,46 @@ import fs from "fs";
 
 export const dynamic = "force-dynamic";
 
-function resolveRepoRoot(): string {
+function findSyncScriptOnLocalMachine(): string | null {
   const cwd = process.cwd();
-  if (fs.existsSync(path.join(cwd, "mt5_notion_sync_wine.py"))) return cwd;
-  const parent = path.resolve(cwd, "..", "..");
-  if (fs.existsSync(path.join(parent, "mt5_notion_sync_wine.py"))) return parent;
-  return cwd;
+  const candidates = [
+    path.join(cwd, "sync-mt5.sh"),
+    path.resolve(cwd, "..", "sync-mt5.sh"),
+    path.resolve(cwd, "..", "..", "sync-mt5.sh"),
+    "/home/mark/trade-journal-dev/sync-mt5.sh",
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return null;
 }
 
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
-    const mode = body.mode === "login" ? "login" : "sync";
-    const rootDir = resolveRepoRoot();
-    const scriptPath = path.join(rootDir, "scripts", "tablet-mt5.sh");
+    const desktopHost = String(body.desktopHost || "mark@fedora-mark-desktop").trim();
+    const isTermux = process.cwd().includes("com.termux") || Boolean(process.env.TERMUX_VERSION);
+    const localSyncScript = findSyncScriptOnLocalMachine();
 
-    const cmd = fs.existsSync(scriptPath)
-      ? `bash "${scriptPath}" ${mode}`
-      : `bash "${path.join(rootDir, "sync-mt5.sh")}"`;
+    let cmd = "";
+    if (!isTermux && localSyncScript) {
+      // Running directly on Fedora desktop
+      const repoDir = path.dirname(localSyncScript);
+      cmd = `cd "${repoDir}" && bash "${localSyncScript}"`;
+    } else {
+      // Running on Samsung Galaxy Tab A (Termux):
+      // Trigger sync-mt5.sh on Fedora desktop over Tailscale SSH, then pull updated trades into tablet SQLite
+      const tabletDbPath = fs.existsSync(path.resolve(process.cwd(), "data", "journal.db"))
+        ? path.resolve(process.cwd(), "data", "journal.db")
+        : path.resolve(process.cwd(), "apps", "web", "data", "journal.db");
+
+      cmd = `ssh -o BatchMode=yes -o ConnectTimeout=8 ${desktopHost} "cd ~/trade-journal-dev && ./sync-mt5.sh" && scp -o BatchMode=yes ${desktopHost}:~/trade-journal-dev/apps/web/data/journal.db "${tabletDbPath}.remote" && sqlite3 "${tabletDbPath}" "ATTACH DATABASE '${tabletDbPath}.remote' AS rem; INSERT OR REPLACE INTO trades SELECT * FROM rem.trades; INSERT OR REPLACE INTO executions SELECT * FROM rem.executions; DETACH DATABASE rem;" && rm -f "${tabletDbPath}.remote"`;
+    }
 
     const output = await new Promise<{ stdout: string; stderr: string; code: number }>((resolve) => {
       exec(
         cmd,
-        { cwd: rootDir, timeout: 120_000, env: { ...process.env } },
+        { timeout: 180_000, env: { ...process.env } },
         (error, stdout, stderr) => {
           resolve({
             stdout: String(stdout || ""),
@@ -48,7 +65,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       ok: true,
-      log: output.stdout.trim() || "MT5 sync completed successfully.",
+      log: output.stdout.trim() || "MT5 trades synced and merged into local SQLite.",
     });
   } catch (err: any) {
     return NextResponse.json(

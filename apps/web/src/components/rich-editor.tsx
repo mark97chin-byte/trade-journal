@@ -3904,6 +3904,8 @@ export function RichEditor({
                     { key: "quarter_review", label: "Quarterly — Review" },
                     { key: "year_prep", label: "Yearly — System Plan" },
                     { key: "year_review", label: "Yearly — Annual Review" },
+                    { key: "missed_prep", label: "Missed Trade — Setup & Context" },
+                    { key: "missed_review", label: "Missed Trade — Post-Mortem Review" },
                   ] as const
                 ).map((slot) => (
                   <div

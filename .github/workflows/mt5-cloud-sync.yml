@@ -1,0 +1,47 @@
+name: MT5 Cloud Trade Sync (No PC Required)
+
+on:
+  workflow_dispatch:
+    inputs:
+      days_lookback:
+        description: "Days of MT5 history to sync"
+        required: false
+        default: "30"
+  schedule:
+    # Runs automatically at 22:15 UTC (5:15 PM NY Close) Monday-Friday
+    - cron: "15 22 * * 1-5"
+
+jobs:
+  sync-mt5:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install MetaTrader5 & dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install MetaTrader5 requests python-dotenv tzdata
+
+      - name: Download & Install Headless MetaTrader 5 Terminal
+        shell: powershell
+        run: |
+          Invoke-WebRequest -Uri "https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" -OutFile "mt5setup.exe"
+          Start-Process -FilePath ".\mt5setup.exe" -ArgumentList "/auto" -Wait
+
+      - name: Run MT5 -> Notion & Cloud Trade Sync
+        env:
+          NOTION_TOKEN: ${{ secrets.NOTION_TOKEN }}
+          NOTION_TRADES_DATABASE_ID: ${{ secrets.NOTION_TRADES_DATABASE_ID }}
+          NOTION_DAILY_DATABASE_ID: ${{ secrets.NOTION_DAILY_DATABASE_ID }}
+          MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
+          MT5_PASSWORD: ${{ secrets.MT5_PASSWORD }}
+          MT5_SERVER: ${{ secrets.MT5_SERVER }}
+          DAYS_LOOKBACK: ${{ github.event.inputs.days_lookback || '30' }}
+        run: |
+          python mt5_notion_sync_wine.py

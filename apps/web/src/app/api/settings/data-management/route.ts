@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
+import { getCandleDb } from "@/server/market-data/candle-db";
 import {
   ensureJournalSchema,
   getJournalConfig,
@@ -19,10 +20,26 @@ import {
 
 export const dynamic = "force-dynamic";
 
-function resolveDbPath(): string {
+function resolveJournalDbPath(): string {
   const dbPath = path.resolve(process.cwd(), "data", "journal.db");
   const altDbPath = path.resolve(process.cwd(), "apps", "web", "data", "journal.db");
   return fs.existsSync(dbPath) ? dbPath : altDbPath;
+}
+
+function resolveCandleDbPath(): string {
+  const rootData = path.resolve(process.cwd(), "apps/web/data");
+  const localData = path.resolve(process.cwd(), "data");
+  const targetDir = fs.existsSync(path.resolve(process.cwd(), "apps/web")) ? rootData : localData;
+  return path.join(targetDir, "market_candles.db");
+}
+
+function getFileWithWalSize(filePath: string): number {
+  if (!fs.existsSync(filePath)) return 0;
+  let total = fs.statSync(filePath).size;
+  if (fs.existsSync(`${filePath}-wal`)) {
+    total += fs.statSync(`${filePath}-wal`).size;
+  }
+  return total;
 }
 
 function byteLen(str: string | null | undefined): number {
@@ -40,7 +57,72 @@ function inlineImageBytes(html: string | null | undefined): number {
   return total;
 }
 
-// Strips HTML tags, entities, and whitespace so we can compare against empty or unmodified default templates
+function inferAssetClassFromSymbol(
+  rawSymbol: string | null | undefined
+): "futures" | "forex" | "crypto" | "equities" {
+  const s = String(rawSymbol || "").toUpperCase().trim();
+  if (!s) return "futures";
+
+  if (
+    ["BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "AVAX", "USDT", "USDC"].some((k) =>
+      s.includes(k)
+    )
+  ) {
+    return "crypto";
+  }
+
+  if (
+    [
+      "SPX", "US500", "ES.C", "MES", "NAS", "NDX", "US100", "USTEC", "NQ.C", "MNQ",
+      "US30", "DJ30", "DOW", "YM.C", "MYM", "US2000", "RUT", "RTY", "UK100", "FTSE",
+      "DE30", "DE40", "GER", "DAX", "EU50", "JP225", "AU200", "HK33", "CN50", "VIX",
+      "WTICO", "USOIL", "UKOIL", "BCO", "CL.C",
+    ].some((k) => s.includes(k)) ||
+    /^(ES|NQ|YM|RTY|MES|MNQ|CL|NG)(\.[A-Z]\.[0-9]+)?$/.test(s)
+  ) {
+    return "futures";
+  }
+
+  if (
+    [
+      "XAU", "XAG", "GOLD", "SILVER", "GC.C", "SI.C", "EUR", "GBP", "JPY",
+      "AUD", "CAD", "CHF", "NZD", "DXY",
+    ].some((k) => s.includes(k)) ||
+    /^[A-Z]{3}\/[A-Z]{3}$/.test(s) ||
+    /^[A-Z]{6}$/.test(s)
+  ) {
+    return "forex";
+  }
+
+  return "equities";
+}
+
+function classifyCandleProvider(
+  rawProvider: string
+): "databento" | "londonstrategicedge" | "csv" | "other" {
+  const lower = String(rawProvider || "").toLowerCase();
+  if (
+    lower.includes("databento") ||
+    lower.includes("glbx") ||
+    lower.includes("xnas") ||
+    lower.includes("dbn")
+  ) {
+    return "databento";
+  }
+  if (
+    lower.includes("london-strategic-edge") ||
+    lower.includes("londonstrategicedge") ||
+    lower.includes("london strategic edge") ||
+    lower.includes("lse")
+  ) {
+    return "londonstrategicedge";
+  }
+  if (lower.includes("csv") || lower.includes("upload")) {
+    return "csv";
+  }
+  return "other";
+}
+
 function normalizeHtmlForComparison(html: string | null | undefined): string {
   if (!html) return "";
   return String(html)
@@ -67,14 +149,9 @@ function isSubstantiveJournalContent(
 ): boolean {
   if (!html || !String(html).trim()) return false;
   const raw = String(html);
-
-  // If the user pasted or uploaded any image/screenshot, it is always substantive
   if (/<img\b/i.test(raw)) return true;
-
   const norm = normalizeHtmlForComparison(raw);
   if (!norm) return false;
-
-  // Common empty placeholder strings
   if (
     norm === "type / for commands..." ||
     norm === "type '/' for commands..." ||
@@ -82,30 +159,193 @@ function isSubstantiveJournalContent(
   ) {
     return false;
   }
-
-  // If the normalized text matches ANY default or custom template, treat it as unmodified template (do not overwrite Notion!)
   if (templateNormSet.has(norm)) {
     return false;
   }
-
   return true;
 }
 
-export async function GET() {
+interface CandleSeriesItem {
+  seriesKey: string;
+  sourceType: "candles_db" | "csv_table" | "excursions_table";
+  providerRaw: string;
+  providerCategory: "databento" | "londonstrategicedge" | "csv" | "other";
+  symbol: string;
+  assetClass: "futures" | "forex" | "crypto" | "equities";
+  timeframe: string;
+  barCount: number;
+  bytes: number;
+  rangeBarCount: number;
+  rangeBytes: number;
+  firstDate: string;
+  lastDate: string;
+}
+
+function queryAllCandleSeries(
+  journalDb: Database.Database,
+  startDate = "2000-01-01",
+  endDate = "2099-12-31"
+): {
+  series: CandleSeriesItem[];
+  candleDbDiskBytes: number;
+} {
+  const series: CandleSeriesItem[] = [];
+  const candleDbPath = resolveCandleDbPath();
+  const candleDbDiskBytes = getFileWithWalSize(candleDbPath);
+
+  // 1. Query market_candles.db -> candles (provider, symbol, timeframe, time, ...)
   try {
-    const dbPath = resolveDbPath();
+    const cdb = getCandleDb();
+    const startMs = new Date(`${startDate}T00:00:00.000Z`).getTime();
+    const endMs = new Date(`${endDate}T23:59:59.999Z`).getTime();
+    const rows = cdb
+      .prepare(
+        `SELECT provider, symbol, timeframe,
+                COUNT(*) as cnt,
+                SUM(CASE WHEN time >= ? AND time <= ? THEN 1 ELSE 0 END) as range_cnt,
+                MIN(time) as min_t,
+                MAX(time) as max_t
+         FROM candles
+         GROUP BY provider, symbol, timeframe
+         ORDER BY cnt DESC`
+      )
+      .all(startMs, endMs) as any[];
+
+    const totalBarsInCandleDb = rows.reduce((acc, r) => acc + Number(r.cnt || 0), 0);
+
+    for (const r of rows) {
+      const cnt = Number(r.cnt || 0);
+      if (cnt <= 0) continue;
+      const provRaw = String(r.provider || "unknown");
+      const sym = String(r.symbol || "UNKNOWN");
+      const tf = String(r.timeframe || "1m");
+      const minT = Number(r.min_t || 0);
+      const maxT = Number(r.max_t || 0);
+      const minMs = minT < 1e11 ? minT * 1000 : minT;
+      const maxMs = maxT < 1e11 ? maxT * 1000 : maxT;
+
+      // Distribute actual market_candles.db disk file size proportionally across series
+      const propBytes =
+        candleDbDiskBytes > 0 && totalBarsInCandleDb > 0
+          ? Math.round((cnt / totalBarsInCandleDb) * candleDbDiskBytes)
+          : cnt * 96;
+
+      const rCnt = Number(r.range_cnt ?? cnt);
+      const rBytes = cnt > 0 ? Math.round((rCnt / cnt) * propBytes) : 0;
+      series.push({
+        seriesKey: `candles_db||${provRaw}||${sym}||${tf}`,
+        sourceType: "candles_db",
+        providerRaw: provRaw,
+        providerCategory: classifyCandleProvider(provRaw),
+        symbol: sym,
+        assetClass: inferAssetClassFromSymbol(sym),
+        timeframe: tf,
+        barCount: cnt,
+        bytes: propBytes,
+        rangeBarCount: rCnt,
+        rangeBytes: rBytes,
+        firstDate: minMs > 0 ? new Date(minMs).toISOString().slice(0, 10) : "—",
+        lastDate: maxMs > 0 ? new Date(maxMs).toISOString().slice(0, 10) : "—",
+      });
+    }
+  } catch (err) {
+    console.warn("[DataManagement] Failed to read market_candles.db:", err);
+  }
+
+  // 2. Query journal.db -> market_csv_datasets (if any uploaded CSV candle datasets exist)
+  try {
+    const csvRows = journalDb
+      .prepare(
+        `SELECT id, name, symbol, resolution, bar_count, first_time, last_time, length(bars_json) as b_len
+         FROM market_csv_datasets`
+      )
+      .all() as any[];
+
+    for (const r of csvRows) {
+      const sym = String(r.symbol || r.name || r.id);
+      const tf = String(r.resolution || "1m");
+      const minT = Number(r.first_time || 0);
+      const maxT = Number(r.last_time || 0);
+      const minMs = minT < 1e11 ? minT * 1000 : minT;
+      const maxMs = maxT < 1e11 ? maxT * 1000 : maxT;
+
+      series.push({
+        seriesKey: `csv_table||market-csv||${r.id}||${tf}`,
+        sourceType: "csv_table",
+        providerRaw: "market-csv",
+        providerCategory: "csv",
+        symbol: sym,
+        assetClass: inferAssetClassFromSymbol(sym),
+        timeframe: tf,
+        barCount: Number(r.bar_count || 0),
+        bytes: Number(r.b_len || 0) + 128,
+        rangeBarCount: Number(r.bar_count || 0),
+        rangeBytes: Number(r.b_len || 0) + 128,
+        firstDate: minMs > 0 ? new Date(minMs).toISOString().slice(0, 10) : "—",
+        lastDate: maxMs > 0 ? new Date(maxMs).toISOString().slice(0, 10) : "—",
+      });
+    }
+  } catch {}
+
+  // 3. Query journal.db -> trade_excursions (cached MFE/MAE excursion JSONs)
+  try {
+    const exRows = journalDb
+      .prepare(
+        `SELECT provider, COUNT(*) as cnt, COALESCE(SUM(length(estimate_json) + 96), 0) as b_len,
+                MIN(fetched_at) as min_f, MAX(fetched_at) as max_f
+         FROM trade_excursions
+         GROUP BY provider`
+      )
+      .all() as any[];
+
+    for (const r of exRows) {
+      const cnt = Number(r.cnt || 0);
+      if (cnt <= 0) continue;
+      const provRaw = String(r.provider || "london-strategic-edge");
+      series.push({
+        seriesKey: `excursions_table||${provRaw}||Excursions||1m`,
+        sourceType: "excursions_table",
+        providerRaw: provRaw,
+        providerCategory: classifyCandleProvider(provRaw),
+        symbol: "Trade Excursion Caches",
+        assetClass: "futures",
+        timeframe: "excursions",
+        barCount: cnt,
+        bytes: Number(r.b_len || 0),
+        rangeBarCount: cnt,
+        rangeBytes: Number(r.b_len || 0),
+        firstDate: String(r.min_f || "").slice(0, 10) || "—",
+        lastDate: String(r.max_f || "").slice(0, 10) || "—",
+      });
+    }
+  } catch {}
+
+  return { series, candleDbDiskBytes };
+}
+
+export async function GET(req: NextRequest) {
+  try {
+    const url = new URL(req.url);
+    const startDate = url.searchParams.get("startDate") || "2000-01-01";
+    const endDate = url.searchParams.get("endDate") || "2099-12-31";
+
+    const dbPath = resolveJournalDbPath();
     if (!fs.existsSync(dbPath)) {
       return NextResponse.json({ error: "Database file not found" }, { status: 404 });
     }
 
-    const fileStats = fs.statSync(dbPath);
-    const walPath = `${dbPath}-wal`;
-    const walBytes = fs.existsSync(walPath) ? fs.statSync(walPath).size : 0;
-    const totalDiskBytes = fileStats.size + walBytes;
-
+    const journalDiskBytes = getFileWithWalSize(dbPath);
     const db = new Database(dbPath, { readonly: true });
+
     try {
-      // 1. Attachments breakdown by owner_type
+      const { series: candleSeries, candleDbDiskBytes } = queryAllCandleSeries(
+        db,
+        startDate,
+        endDate
+      );
+      const totalDiskBytes = journalDiskBytes + candleDbDiskBytes;
+
+      // 1. Attachments breakdown
       let attachmentRows: Array<{ owner_type: string; cnt: number; bytes: number }> = [];
       try {
         attachmentRows = db
@@ -122,18 +362,10 @@ export async function GET() {
         attMap[r.owner_type] = { count: Number(r.cnt || 0), bytes: Number(r.bytes || 0) };
       }
 
-      // 2. Trade Database (trades + executions + trade_rule_checks + missed_trades)
+      // 2. Trade Database
       const trades = db.prepare(`SELECT * FROM trades`).all() as any[];
       const executions = db.prepare(`SELECT * FROM executions`).all() as any[];
-      let ruleChecksBytes = 0;
-      try {
-        const rc = db
-          .prepare(`SELECT COALESCE(SUM(length(rule) + length(trade_key)), 0) as b FROM trade_rule_checks`)
-          .get() as any;
-        ruleChecksBytes = Number(rc?.b || 0);
-      } catch {}
-
-      let tradeRowBytes = ruleChecksBytes;
+      let tradeRowBytes = 0;
       let tradeInlineImgBytes = 0;
       for (const t of trades) {
         tradeRowBytes +=
@@ -167,16 +399,10 @@ export async function GET() {
       let dailyCount = 0;
       let dailyTextBytes = 0;
       let dailyInlineImgBytes = 0;
-
       let periodicCount = 0;
       let periodicTextBytes = 0;
       let periodicInlineImgBytes = 0;
-      const periodicBreakdown: Record<string, number> = {
-        week: 0,
-        month: 0,
-        quarter: 0,
-        year: 0,
-      };
+      const periodicBreakdown: Record<string, number> = { week: 0, month: 0, quarter: 0, year: 0 };
 
       for (const j of journalRows) {
         const cBytes =
@@ -198,9 +424,7 @@ export async function GET() {
           periodicCount++;
           periodicTextBytes += cBytes;
           periodicInlineImgBytes += imgBytes;
-          if (j.period_type in periodicBreakdown) {
-            periodicBreakdown[j.period_type]!++;
-          }
+          if (j.period_type in periodicBreakdown) periodicBreakdown[j.period_type]!++;
         }
       }
 
@@ -211,7 +435,6 @@ export async function GET() {
 
       const dailyAttBytes = (attMap["day"]?.bytes || 0) + (attMap["editor"]?.bytes || 0);
       const dailyAttCount = (attMap["day"]?.count || 0) + (attMap["editor"]?.count || 0);
-
       const periodicAttBytes =
         (attMap["week"]?.bytes || 0) +
         (attMap["month"]?.bytes || 0) +
@@ -223,40 +446,49 @@ export async function GET() {
         (attMap["quarter"]?.count || 0) +
         (attMap["year"]?.count || 0);
 
-      // 4. Chart Replay / Candlesticks Database (trade_excursions + market_csv_datasets)
-      let excursionCount = 0;
-      let excursionBytes = 0;
-      try {
-        const exStat = db
-          .prepare(
-            `SELECT COUNT(*) as cnt, COALESCE(SUM(length(estimate_json) + length(trade_key) + 64), 0) as bytes
-             FROM trade_excursions`
-          )
-          .get() as any;
-        excursionCount = Number(exStat?.cnt || 0);
-        excursionBytes = Number(exStat?.bytes || 0);
-      } catch {}
+      // 4. Aggregate Candlestick Telemetry by Provider, Asset Class & Individual Ticker Series
+      let candleTotalBytes = 0;
+      let candleTotalBars = 0;
 
-      let csvDatasetCount = 0;
-      let csvDatasetBytes = 0;
-      let totalBarsStored = 0;
-      try {
-        const csvStat = db
-          .prepare(
-            `SELECT COUNT(*) as cnt,
-                    COALESCE(SUM(length(bars_json) + length(name) + 80), 0) as bytes,
-                    COALESCE(SUM(bar_count), 0) as bars
-             FROM market_csv_datasets`
-          )
-          .get() as any;
-        csvDatasetCount = Number(csvStat?.cnt || 0);
-        csvDatasetBytes = Number(csvStat?.bytes || 0);
-        totalBarsStored = Number(csvStat?.bars || 0);
-      } catch {}
+      const byProvider: Record<string, { count: number; bytes: number; bars: number }> = {
+        databento: { count: 0, bytes: 0, bars: 0 },
+        londonstrategicedge: { count: 0, bytes: 0, bars: 0 },
+        csv: { count: 0, bytes: 0, bars: 0 },
+        other: { count: 0, bytes: 0, bars: 0 },
+      };
+
+      const byAssetClass: Record<string, { count: number; bytes: number; bars: number }> = {
+        futures: { count: 0, bytes: 0, bars: 0 },
+        forex: { count: 0, bytes: 0, bars: 0 },
+        crypto: { count: 0, bytes: 0, bars: 0 },
+        equities: { count: 0, bytes: 0, bars: 0 },
+      };
+
+      for (const s of candleSeries) {
+        candleTotalBytes += s.bytes;
+        candleTotalBars += s.barCount;
+
+        const pBucket = byProvider[s.providerCategory] || byProvider.other!;
+        pBucket.count++;
+        pBucket.bytes += s.bytes;
+        pBucket.bars += s.barCount;
+
+        const aBucket = byAssetClass[s.assetClass] || byAssetClass.futures!;
+        aBucket.count++;
+        aBucket.bytes += s.bytes;
+        aBucket.bars += s.barCount;
+      }
 
       return NextResponse.json({
         ok: true,
         totalDiskBytes,
+        journalDiskBytes,
+        candleDbDiskBytes,
+        candleBreakdown: {
+          byProvider,
+          byAssetClass,
+          series: candleSeries,
+        },
         databases: {
           trades: {
             label: "Trade Database",
@@ -289,14 +521,14 @@ export async function GET() {
             totalBytes: periodicTextBytes + periodicAttBytes,
           },
           candles: {
-            label: "Chart Replay & Candlesticks Database",
-            description: "Historical OHLCV candlestick datasets & 1m trade excursion caches",
-            rowCount: csvDatasetCount + excursionCount,
-            subCountLabel: `${csvDatasetCount} datasets (${totalBarsStored.toLocaleString()} bars) • ${excursionCount} trade excursions`,
-            dataBytes: csvDatasetBytes + excursionBytes,
+            label: "Chart Replay & Candlesticks Database (market_candles.db)",
+            description: "Cached candles from Databento (Paid), London Strategic Edge (Free) & CSVs",
+            rowCount: candleSeries.length,
+            subCountLabel: `${candleSeries.length} ticker series • ${candleTotalBars.toLocaleString()} cached bars`,
+            dataBytes: candleTotalBytes,
             attachmentBytes: 0,
             attachmentCount: 0,
-            totalBytes: csvDatasetBytes + excursionBytes,
+            totalBytes: candleTotalBytes,
           },
         },
       });
@@ -317,18 +549,19 @@ export async function POST(req: NextRequest) {
     const action = body.action;
     const startDate = String(body.startDate || "2020-01-01").slice(0, 10);
     const endDate = String(body.endDate || "2099-12-31").slice(0, 10);
+    const ignoreDateRangeForCandles = Boolean(body.ignoreDateRangeForCandles);
     const targets: string[] = Array.isArray(body.targets)
       ? body.targets
       : ["daily", "periodic", "trades"];
+    const selectedSeriesKeys: string[] = Array.isArray(body.selectedSeriesKeys)
+      ? body.selectedSeriesKeys
+      : [];
 
-    const dbPath = resolveDbPath();
+    const dbPath = resolveJournalDbPath();
     if (!fs.existsSync(dbPath)) {
       return NextResponse.json({ ok: false, error: "Database not found" }, { status: 404 });
     }
 
-    // ==========================================================================
-    // ACTION 1: PUSH DATE RANGE TO NOTION (SKIPPING EMPTY & DEFAULT-TEMPLATE PAGES)
-    // ==========================================================================
     if (action === "push_notion") {
       const cfg = getJournalConfig();
       const templateNormSet = new Set<string>();
@@ -353,8 +586,6 @@ export async function POST(req: NextRequest) {
 
           if (isDaily && !targets.includes("daily")) continue;
           if (!isDaily && !targets.includes("periodic")) continue;
-
-          // Check if entry overlaps [startDate, endDate]
           if (range.endDate < startDate || range.startDate > endDate) continue;
 
           const { token, databaseId } = getNotionConfig(range.periodType);
@@ -363,7 +594,6 @@ export async function POST(req: NextRequest) {
             continue;
           }
 
-          // Check Prep tab and Review tab independently against empty + default-template guard
           for (const tab of ["prep", "review"] as const) {
             const isReview = tab === "review";
             const htmlContent = isReview ? row.review_content : row.content;
@@ -484,38 +714,6 @@ export async function POST(req: NextRequest) {
             }
           }
         }
-
-        // Also push Trade Notes in range if "trades" selected
-        if (targets.includes("trades")) {
-          const tradeRows = db
-            .prepare(
-              `SELECT key, symbol, notes, review_notes, notion_page_id
-               FROM trades
-               WHERE substr(opened_at, 1, 10) >= ? AND substr(opened_at, 1, 10) <= ?`
-            )
-            .all(startDate, endDate) as any[];
-
-          const token = process.env.NOTION_TOKEN || "";
-          for (const tr of tradeRows) {
-            const combinedHtml = [tr.notes, tr.review_notes].filter(Boolean).join("<hr/>");
-            if (!isSubstantiveJournalContent(combinedHtml, templateNormSet)) {
-              skippedEmptyOrTemplate++;
-              continue;
-            }
-            if (tr.notion_page_id && token) {
-              try {
-                const blockTree = await editorHtmlToNotionTree(combinedHtml, token);
-                if (blockTree.length > 0) {
-                  await clearNotionPageBlocks(tr.notion_page_id, token);
-                  await appendBlocksTreeRecursive(tr.notion_page_id, blockTree, token);
-                  pushedPages++;
-                }
-              } catch {}
-            } else {
-              skippedEmptyOrTemplate++;
-            }
-          }
-        }
       } finally {
         db.close();
       }
@@ -525,13 +723,10 @@ export async function POST(req: NextRequest) {
         pushedPages,
         skippedEmptyOrTemplate,
         errors: errors.slice(0, 10),
-        message: `Synced ${pushedPages} substantive page(s) to Notion. Skipped ${skippedEmptyOrTemplate} empty or unmodified default-template page(s) to protect cloud backups.`,
+        message: `Synced ${pushedPages} substantive page(s) to Notion. Skipped ${skippedEmptyOrTemplate} empty or unmodified default-template page(s).`,
       });
     }
 
-    // ==========================================================================
-    // ACTION 2: DELETE LOCAL DATA IN DATE RANGE + VACUUM
-    // ==========================================================================
     if (action === "delete_range") {
       const onlySyncedToNotion = Boolean(body.onlySyncedToNotion);
       const db = new Database(dbPath);
@@ -545,7 +740,6 @@ export async function POST(req: NextRequest) {
       };
 
       try {
-        // 1. Delete Trades in range
         if (targets.includes("trades")) {
           const syncClause = onlySyncedToNotion ? "AND notion_page_id IS NOT NULL" : "";
           const toDel = db
@@ -566,9 +760,10 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // 2. Delete Daily / Periodic Journals in range
         if (targets.includes("daily") || targets.includes("periodic")) {
-          const allEntries = db.prepare(`SELECT slug, period_type, notion_page_id FROM journal_entries`).all() as any[];
+          const allEntries = db
+            .prepare(`SELECT slug, period_type, notion_page_id FROM journal_entries`)
+            .all() as any[];
           for (const row of allEntries) {
             const range = parseSlugRange(row.slug);
             const isDaily = range.periodType === "day";
@@ -595,33 +790,61 @@ export async function POST(req: NextRequest) {
           }
         }
 
-        // 3. Delete Candlesticks / Excursions in range
-        if (targets.includes("candles")) {
-          try {
-            const exDel = db
-              .prepare(
-                `DELETE FROM trade_excursions
-                 WHERE substr(fetched_at, 1, 10) >= ? AND substr(fetched_at, 1, 10) <= ?`
-              )
-              .run(startDate, endDate);
-            deletedCounts.candles += exDel.changes;
-          } catch {}
+        // Delete selected candlestick ticker series
+        if (targets.includes("candles") && selectedSeriesKeys.length > 0) {
+          const startMs = ignoreDateRangeForCandles
+            ? 0
+            : new Date(`${startDate}T00:00:00.000Z`).getTime();
+          const endMs = ignoreDateRangeForCandles
+            ? Number.MAX_SAFE_INTEGER
+            : new Date(`${endDate}T23:59:59.999Z`).getTime();
 
-          try {
-            const startEpoch = Math.floor(new Date(`${startDate}T00:00:00Z`).getTime() / 1000);
-            const endEpoch = Math.floor(new Date(`${endDate}T23:59:59Z`).getTime() / 1000);
-            const csvDel = db
-              .prepare(
-                `DELETE FROM market_csv_datasets
-                 WHERE (first_time >= ? AND last_time <= ?)
-                    OR (substr(imported_at, 1, 10) >= ? AND substr(imported_at, 1, 10) <= ?)`
-              )
-              .run(startEpoch, endEpoch, startDate, endDate);
-            deletedCounts.candles += csvDel.changes;
-          } catch {}
+          const cdb = getCandleDb();
+          let touchedCandleDb = false;
+
+          for (const key of selectedSeriesKeys) {
+            const [sourceType, provRaw, symOrId, tf] = key.split("||");
+            if (sourceType === "candles_db" && provRaw && symOrId && tf) {
+              const res = ignoreDateRangeForCandles
+                ? cdb
+                    .prepare(
+                      `DELETE FROM candles WHERE provider = ? AND symbol = ? AND timeframe = ?`
+                    )
+                    .run(provRaw, symOrId, tf)
+                : cdb
+                    .prepare(
+                      `DELETE FROM candles
+                       WHERE provider = ? AND symbol = ? AND timeframe = ? AND time BETWEEN ? AND ?`
+                    )
+                    .run(provRaw, symOrId, tf, startMs, endMs);
+              deletedCounts.candles += res.changes;
+              touchedCandleDb = true;
+            } else if (sourceType === "csv_table" && symOrId) {
+              const res = db
+                .prepare(`DELETE FROM market_csv_datasets WHERE id = ?`)
+                .run(symOrId);
+              deletedCounts.candles += res.changes;
+            } else if (sourceType === "excursions_table" && provRaw) {
+              const res = ignoreDateRangeForCandles
+                ? db.prepare(`DELETE FROM trade_excursions WHERE provider = ?`).run(provRaw)
+                : db
+                    .prepare(
+                      `DELETE FROM trade_excursions
+                       WHERE provider = ? AND substr(fetched_at, 1, 10) >= ? AND substr(fetched_at, 1, 10) <= ?`
+                    )
+                    .run(provRaw, startDate, endDate);
+              deletedCounts.candles += res.changes;
+            }
+          }
+
+          if (touchedCandleDb) {
+            try {
+              cdb.exec(`PRAGMA wal_checkpoint(TRUNCATE);`);
+              cdb.exec(`VACUUM;`);
+            } catch {}
+          }
         }
 
-        // Reclaim SQLite disk space immediately
         db.exec(`PRAGMA wal_checkpoint(TRUNCATE);`);
         db.exec(`VACUUM;`);
       } finally {
@@ -631,7 +854,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({
         ok: true,
         deletedCounts,
-        message: `Deleted ${deletedCounts.trades} trades, ${deletedCounts.daily} daily journals, ${deletedCounts.periodic} periodic journals, and ${deletedCounts.candles} candle caches. Database vacuumed.`,
+        message: `Deleted ${deletedCounts.trades} trades, ${deletedCounts.daily} daily journals, ${deletedCounts.periodic} periodic journals, and ${deletedCounts.candles.toLocaleString()} cached candle bars. Databases vacuumed.`,
       });
     }
 
