@@ -130,10 +130,52 @@ export function RunningPnlChart({
       });
     }
 
-    // Filter bars to the exact trade window
-    const tradeBars = bars.filter(
+    // Filter bars to the trade window; if openMs === closeMs or < 2 bars match,
+    // automatically locate the entry candle and include up to the exit/target candle!
+    let tradeBars = bars.filter(
       (b) => b.time >= openMs - 60_000 && b.time <= closeMs + 60_000
     );
+    if (tradeBars.length < 2 && bars.length >= 2) {
+      // Find candle where price touched avgEntry, or closest by timestamp
+      let startIdx = bars.findIndex(
+        (b) => b.time >= openMs - 3600_000 && b.low <= trade.avgEntry && b.high >= trade.avgEntry
+      );
+      if (startIdx === -1) {
+        startIdx = bars.findIndex(
+          (b) => b.low <= trade.avgEntry && b.high >= trade.avgEntry
+        );
+      }
+      if (startIdx === -1) {
+        let bestD = Infinity;
+        bars.forEach((b, idx) => {
+          const d = Math.abs(b.time - openMs);
+          if (d < bestD) {
+            bestD = d;
+            startIdx = idx;
+          }
+        });
+      }
+      startIdx = Math.max(0, startIdx);
+
+      // Find exit candle where avgExit was touched after startIdx
+      let endIdx = -1;
+      if (trade.avgExit && trade.avgExit > 0) {
+        for (let i = startIdx + 1; i < bars.length; i++) {
+          const b = bars[i]!;
+          if (
+            (isShort && b.low <= trade.avgExit) ||
+            (!isShort && b.high >= trade.avgExit)
+          ) {
+            endIdx = i;
+            break;
+          }
+        }
+      }
+      if (endIdx === -1 || endIdx <= startIdx) {
+        endIdx = Math.min(bars.length - 1, startIdx + 24);
+      }
+      tradeBars = bars.slice(startIdx, endIdx + 1);
+    }
     if (tradeBars.length === 0) return [];
 
     const pts: Point[] = [];

@@ -110,6 +110,62 @@ function classifyNySession(isoStr: string): string {
   }
 }
 
+
+function nyDatePrefixFromIso(isoStr: string): string {
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 10);
+    return new Intl.DateTimeFormat("en-CA", {
+      timeZone: "America/New_York",
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).format(d);
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+function generateDateBasedMissedId(
+  db: Database.Database,
+  observedAtIso: string,
+  _symbol?: string
+): string {
+  const datePart = nyDatePrefixFromIso(observedAtIso);
+  const basePrefix = datePart; // Clean YYYY-MM-DD prefix
+
+  // Find all existing entries for this date
+  const existing = db
+    .prepare(`SELECT id FROM missed_trades WHERE id LIKE ? OR id LIKE ?`)
+    .all(`${basePrefix}-%`, `${basePrefix}_%`) as Array<{ id: string }>;
+
+  let maxSuffix = 0;
+  for (const row of existing) {
+    const m = row.id.match(/[-_](\d+)$/);
+    if (m) {
+      const n = parseInt(m[1]!, 10);
+      if (n > maxSuffix) maxSuffix = n;
+    }
+  }
+  return `${basePrefix}-${maxSuffix + 1}`;
+}
+
+function migrateLegacyMissedIds(db: Database.Database) {
+  try {
+    // Migrate legacy missed_ or symbol-tagged slugs (e.g. 2026-10-16-NAS100-1 -> 2026-10-16-1)
+    const legacyRows = db
+      .prepare(`SELECT id, observed_at, symbol FROM missed_trades WHERE id LIKE 'missed_%' OR id GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]-*-*' ORDER BY observed_at ASC`)
+      .all() as Array<{ id: string; observed_at: string; symbol: string }>;
+
+    for (const r of legacyRows) {
+      // Check if it already matches clean YYYY-MM-DD-N
+      if (/^\d{4}-\d{2}-\d{2}-\d+$/.test(r.id)) continue;
+      const newId = generateDateBasedMissedId(db, r.observed_at);
+      db.prepare(`UPDATE missed_trades SET id = ? WHERE id = ?`).run(newId, r.id);
+    }
+  } catch {}
+}
+
 function mapMissedRow(r: any) {
   return {
     id: r.id,
@@ -157,6 +213,19 @@ export async function GET() {
     const db = new Database(dbPath);
     try {
       ensureMissedTradesSchema(db);
+      migrateLegacyMissedIds(db);
+      // Automatically prune blank $0 orphan drafts that were never populated with an entry price or notes
+      try {
+        db.prepare(
+          `DELETE FROM missed_trades
+           WHERE (entry IS NULL OR entry = 0)
+             AND (stop IS NULL OR stop = 0)
+             AND (target IS NULL OR target = 0)
+             AND TRIM(COALESCE(notes, '')) = ''
+             AND TRIM(COALESCE(review_notes, '')) = ''`
+        ).run();
+      } catch {}
+
       const rows = db
         .prepare(`SELECT * FROM missed_trades ORDER BY observed_at DESC`)
         .all() as any[];
@@ -180,11 +249,17 @@ export async function POST(req: NextRequest) {
     const dbPath = resolveDbPath();
     const db = new Database(dbPath);
     ensureMissedTradesSchema(db);
+      migrateLegacyMissedIds(db);
 
     try {
-      const id = body.id || `missed_${crypto.randomUUID().slice(0, 10)}`;
+      const observedAt = body.observedAt || new Date().toISOString();
+      const rawId = String(body.id || "").trim();
+      const id =
+        !rawId || rawId.startsWith("new_") || rawId.startsWith("missed_")
+          ? generateDateBasedMissedId(db, observedAt, body.symbol || "NAS100")
+          : rawId;
       const nowIso = new Date().toISOString();
-      const observedAt = body.observedAt || nowIso;
+      
       const session = body.session || classifyNySession(observedAt);
 
       // Handle Notion Pull if requested
@@ -530,6 +605,7 @@ export async function DELETE(req: NextRequest) {
     const dbPath = resolveDbPath();
     const db = new Database(dbPath);
     ensureMissedTradesSchema(db);
+      migrateLegacyMissedIds(db);
     try {
       if (permanent) {
         db.prepare(`DELETE FROM missed_trades WHERE id = ?`).run(id);

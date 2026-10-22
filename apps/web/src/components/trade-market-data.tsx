@@ -42,6 +42,25 @@ import { Label } from "./ui/label";
 import { OptionSelect } from "./ui/option-select";
 import { resolveProviderSymbol } from "@/lib/symbol-mapping";
 
+
+function formatNyTimeDisplay(timeMs: number | null | undefined): string {
+  if (!timeMs || !Number.isFinite(timeMs)) return "—";
+  const d = new Date(timeMs);
+  if (isNaN(d.getTime())) return "—";
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+  const hr = map.hour === "24" ? "00" : map.hour || "00";
+  return `${map.month}-${map.day} ${hr}:${map.minute} NY`;
+}
+
 const ALL_RESOLUTIONS: Resolution[] = [
   "1m",
   "3m",
@@ -130,7 +149,7 @@ export function TradeMarketData({
   executions: ChartExecution[];
 }) {
   const privacy = usePrivacy();
-  const isStandalone = trade.key.startsWith("missed_") || trade.key.startsWith("sim_");
+  const isStandalone = Boolean(onExtractRr) || trade.key.startsWith("missed_") || trade.key.startsWith("sim_");
 
   const { data: saved, refresh: refreshSaved } = useApi<{
     saved: { estimate: ExcursionEstimate } | null;
@@ -716,7 +735,7 @@ export function getEffectiveExecutions(
     });
   }
 
-  if (trade.key.startsWith("missed_") || trade.key.startsWith("sim_")) {
+  if ((trade as any).isMissedTrade || trade.key.startsWith("missed_") || trade.key.startsWith("sim_")) {
     return [];
   }
 
@@ -826,46 +845,77 @@ export function HistoricalReplay({
 
   const openMs = Date.parse(trade.openedAt);
   const closeMs = trade.closedAt ? Date.parse(trade.closedAt) : openMs;
-  const entryBarIndex = useMemo(() => findClosestBarIndex(openMs), [history.bars, openMs]);
-  const closeBarIndex = useMemo(() => findClosestBarIndex(closeMs), [history.bars, closeMs]);
 
-  const defaultSnapCount = useMemo(() => {
-    if (showAllForwardBars || trade.key.startsWith("missed_")) {
-      return history.bars.length;
+  // 1. Helper: Finds the exact bar index where the setup starts
+  const findSmartEntryBarIndex = (openedAtMs: number, targetEntryPrice?: number): number => {
+    if (!history.bars.length) return 0;
+    let timeIdx = 0;
+    let minDiff = Infinity;
+    for (let i = 0; i < history.bars.length; i++) {
+      const d = Math.abs(history.bars[i]!.time - openedAtMs);
+      if (d < minDiff) {
+        minDiff = d;
+        timeIdx = i;
+      }
     }
-    return Math.min(history.bars.length, Math.max(1, closeBarIndex + 5));
-  }, [history.bars.length, closeBarIndex, showAllForwardBars, trade.key]);
+    if (!targetEntryPrice || targetEntryPrice <= 0) return timeIdx;
 
-  const [count, setCount] = useState(defaultSnapCount);
-  const [playing, setPlaying] = useState(false);
-  const [speed, setSpeed] = useState("4");
-  const [customTfInput, setCustomTfInput] = useState("");
-  const [showCustomModal, setShowCustomModal] = useState(false);
+    const barAtTime = history.bars[timeIdx]!;
+    if (barAtTime.low <= targetEntryPrice && barAtTime.high >= targetEntryPrice) {
+      return timeIdx;
+    }
 
-  // Native Vela Position Tool State (renders directly inside Vela's price pane so prices match axis 100%)
-  const [posActive, setPosActive] = useState<boolean>(Boolean(initialRrOverlay?.entry));
+    for (let i = timeIdx; i < history.bars.length; i++) {
+      const b = history.bars[i]!;
+      if (b.low <= targetEntryPrice && b.high >= targetEntryPrice) {
+        return i;
+      }
+    }
+
+    let bestPriceIdx = timeIdx;
+    let bestPriceDist = Infinity;
+    for (let i = 0; i < history.bars.length; i++) {
+      const b = history.bars[i]!;
+      const dist =
+        targetEntryPrice < b.low
+          ? b.low - targetEntryPrice
+          : targetEntryPrice > b.high
+          ? targetEntryPrice - b.high
+          : 0;
+      if (dist < bestPriceDist) {
+        bestPriceDist = dist;
+        bestPriceIdx = i;
+      }
+    }
+    return bestPriceIdx;
+  };
+
+  // 2. Position Tool Interactive State
+  const [posActive, setPosActive] = useState<boolean>(
+    Boolean(initialRrOverlay && initialRrOverlay.entry > 0)
+  );
   const [pickingStartCandleDir, setPickingStartCandleDir] = useState<"long" | "short" | null>(null);
   const [posDir, setPosDir] = useState<"long" | "short">(
     initialRrOverlay?.direction || "long"
   );
   const [posStartBarIdx, setPosStartBarIdx] = useState<number>(() =>
-    Math.max(0, Math.min(history.bars.length - 1, entryBarIndex - 1))
+    findSmartEntryBarIndex(openMs, initialRrOverlay?.entry)
   );
   const [posEntry, setPosEntry] = useState<number>(() => {
-    if (initialRrOverlay?.entry) return initialRrOverlay.entry;
-    const b = history.bars[Math.max(0, entryBarIndex - 1)] || history.bars[0];
+    if (initialRrOverlay?.entry && initialRrOverlay.entry > 0) return initialRrOverlay.entry;
+    const b = history.bars[0];
     return b ? b.close : 0;
   });
   const [posStop, setPosStop] = useState<number>(() => {
-    if (initialRrOverlay?.stop) return initialRrOverlay.stop;
-    const b = history.bars[Math.max(0, entryBarIndex - 1)] || history.bars[0];
+    if (initialRrOverlay?.stop && initialRrOverlay.stop > 0) return initialRrOverlay.stop;
+    const b = history.bars[0];
     if (!b) return 0;
     const span = Math.max(b.close * 0.0025, Math.abs(b.high - b.low) * 2, 15);
     return Number((b.close - span).toFixed(2));
   });
   const [posTarget, setPosTarget] = useState<number>(() => {
-    if (initialRrOverlay?.target) return initialRrOverlay.target;
-    const b = history.bars[Math.max(0, entryBarIndex - 1)] || history.bars[0];
+    if (initialRrOverlay?.target && initialRrOverlay.target > 0) return initialRrOverlay.target;
+    const b = history.bars[0];
     if (!b) return 0;
     const span = Math.max(b.close * 0.0025, Math.abs(b.high - b.low) * 2, 15);
     return Number((b.close + span * 2.5).toFixed(2));
@@ -874,7 +924,35 @@ export function HistoricalReplay({
     () => initialRrOverlay?.partials || []
   );
 
-  // Price bounds of loaded history for smooth slider adjustments
+  // Sync Position Tool whenever a saved Missed Trade's overlay or candle history loads
+  const prevOverlaySigRef = useRef<string>("");
+  useEffect(() => {
+    if (!history.bars.length) return;
+    const sig = JSON.stringify({
+      barsLen: history.bars.length,
+      firstBar: history.bars[0]?.time,
+      ov: initialRrOverlay,
+    });
+    if (sig === prevOverlaySigRef.current) return;
+    prevOverlaySigRef.current = sig;
+
+    if (
+      initialRrOverlay &&
+      initialRrOverlay.entry > 0 &&
+      initialRrOverlay.stop > 0 &&
+      initialRrOverlay.target > 0
+    ) {
+      setPosActive(true);
+      setPosDir(initialRrOverlay.direction);
+      setPosEntry(initialRrOverlay.entry);
+      setPosStop(initialRrOverlay.stop);
+      setPosTarget(initialRrOverlay.target);
+      setPosPartials(initialRrOverlay.partials || []);
+      const smartIdx = findSmartEntryBarIndex(openMs, initialRrOverlay.entry);
+      setPosStartBarIdx(smartIdx);
+    }
+  }, [initialRrOverlay, history.bars, openMs]);
+
   const historyPriceBounds = useMemo(() => {
     if (!history.bars.length) return { min: 0, max: 100, step: 0.5 };
     let min = Infinity;
@@ -920,7 +998,7 @@ export function HistoricalReplay({
       const sl =
         localHigh > entryP
           ? Number((localHigh + fallbackSpan * 0.1).toFixed(2))
-          : Number((entryP + fallbackSpan).toFixed(2));
+          : Number((entryP + fallbackSpan * 0.1).toFixed(2));
       const risk = Math.abs(sl - entryP) || fallbackSpan;
       const tp = Number((entryP - risk * 2.5).toFixed(2));
       setPosStop(sl);
@@ -942,57 +1020,55 @@ export function HistoricalReplay({
   };
 
   const handleClickPositionButton = (dir: "long" | "short") => {
-    // Enter "Click on Chart to Choose Start Candle" mode!
     setPosDir(dir);
     setPickingStartCandleDir((prev) => (prev === dir ? null : dir));
   };
 
-  // Candle-Accurate Simulation Engine:
-  // Starts at posStartBarIdx, walks forward candle-by-candle, checks Partial TPs,
-  // and stops at the EXACT candle where Stop Loss or Full Take Profit is hit first!
+  // 3. Candle-Accurate Simulation Engine (Evaluated before dependent time indices)
   const simulatedPosition: NativeVelaPositionOverlay | null = useMemo(() => {
     if (!posActive || !history.bars.length || posEntry <= 0 || posStop <= 0 || posTarget <= 0) {
       return null;
     }
-    const sIdx = Math.max(0, Math.min(history.bars.length - 1, posStartBarIdx));
-    const startBar = history.bars[sIdx] || history.bars[0]!;
-    const forwardBars = history.bars.slice(sIdx);
+    const rawStartIdx = Math.max(0, Math.min(history.bars.length - 1, posStartBarIdx));
+    const startBar = history.bars[rawStartIdx] || history.bars[0]!;
+    const forwardBars = history.bars.slice(rawStartIdx);
 
     const riskDist = Math.abs(posEntry - posStop);
     const rewardDist = Math.abs(posTarget - posEntry);
     const plannedR = riskDist > 0 ? Number((rewardDist / riskDist).toFixed(2)) : 0;
 
-    let exitBar = forwardBars[forwardBars.length - 1] || startBar;
+    let exitBar =
+      forwardBars[Math.min(forwardBars.length - 1, 12)] ||
+      forwardBars[forwardBars.length - 1] ||
+      startBar;
     let exitPrice = posTarget;
     let outcome: "WIN" | "LOSS" | "BE" = "WIN";
     let maxFav = 0;
     let maxAdv = 0;
 
-    // Track the exact candle timestamp when each partial target is first touched
     const hitPartialTimes = new Map<string, number>();
 
     for (let i = 0; i < forwardBars.length; i++) {
       const b = forwardBars[i]!;
+      if (i === 0 && forwardBars.length > 1) continue;
+
       if (posDir === "long") {
         const fav = Math.max(0, b.high - posEntry);
         const adv = Math.max(0, posEntry - b.low);
         if (fav > maxFav) maxFav = fav;
         if (adv > maxAdv) maxAdv = adv;
 
-        // Check if Stop Loss hit on this candle
         if (b.low <= posStop) {
           outcome = hitPartialTimes.size > 0 ? "WIN" : "LOSS";
           exitBar = b;
           exitPrice = posStop;
           break;
         }
-        // Check if any Partial TPs were hit on this candle
         for (const p of posPartials) {
           if (p.price > posEntry && b.high >= p.price && !hitPartialTimes.has(p.id)) {
             hitPartialTimes.set(p.id, b.time);
           }
         }
-        // Check if Full Take Profit hit on this candle
         if (b.high >= posTarget) {
           outcome = "WIN";
           exitBar = b;
@@ -1025,7 +1101,6 @@ export function HistoricalReplay({
       }
     }
 
-    // Calculate blended Realized R across filled partials + remainder at exitPrice
     let allocatedPct = 0;
     let weightedR = 0;
     if (riskDist > 0) {
@@ -1057,7 +1132,7 @@ export function HistoricalReplay({
         hitTimeMs: hitPartialTimes.get(p.id) ?? null,
       })),
       startTimeMs: startBar.time,
-      exitTimeMs: exitBar.time,
+      exitTimeMs: Math.max(startBar.time + 60_000, exitBar.time),
       exitPrice,
       outcome,
       plannedR,
@@ -1066,6 +1141,41 @@ export function HistoricalReplay({
       maeR: riskDist > 0 ? Number((maxAdv / riskDist).toFixed(2)) : 0,
     };
   }, [posActive, history.bars, posStartBarIdx, posEntry, posStop, posTarget, posDir, posPartials]);
+
+  // 4. Safe Declarations: Derived from simulatedPosition after it has initialized
+  const effectiveStartMs = useMemo(() => {
+    if (simulatedPosition?.startTimeMs) return simulatedPosition.startTimeMs;
+    if (initialRrOverlay && initialRrOverlay.entry > 0) return openMs;
+    return openMs;
+  }, [simulatedPosition?.startTimeMs, initialRrOverlay, openMs]);
+
+  const effectiveEndMs = useMemo(() => {
+    if (simulatedPosition?.exitTimeMs) return simulatedPosition.exitTimeMs;
+    if (trade.closedAt) return closeMs;
+    return effectiveStartMs;
+  }, [simulatedPosition?.exitTimeMs, trade.closedAt, closeMs, effectiveStartMs]);
+
+  const entryBarIndex = useMemo(
+    () => findClosestBarIndex(effectiveStartMs),
+    [history.bars, effectiveStartMs]
+  );
+  const closeBarIndex = useMemo(
+    () => findClosestBarIndex(effectiveEndMs),
+    [history.bars, effectiveEndMs]
+  );
+
+  const defaultSnapCount = useMemo(() => {
+    if (showAllForwardBars || (trade as any).isMissedTrade || trade.key.startsWith("missed_")) {
+      return history.bars.length;
+    }
+    return Math.min(history.bars.length, Math.max(1, closeBarIndex + 5));
+  }, [history.bars.length, closeBarIndex, showAllForwardBars, trade.key]);
+
+  const [count, setCount] = useState(defaultSnapCount);
+  const [playing, setPlaying] = useState(false);
+  const [speed, setSpeed] = useState("4");
+  const [customTfInput, setCustomTfInput] = useState("");
+  const [showCustomModal, setShowCustomModal] = useState(false);
 
   useEffect(() => {
     setCount(defaultSnapCount);
@@ -1128,39 +1238,6 @@ export function HistoricalReplay({
     }
   };
 
-  // Auto-sync simulatedPosition to parent form without refreshing chart
-  const lastEmittedSigRef = useRef<string>("");
-  useEffect(() => {
-    if (!onExtractRr || !simulatedPosition) return;
-    const totalPct = simulatedPosition.partials.reduce((s, p) => s + (Number(p.pct) || 0), 0);
-    if (totalPct > 100) return;
-    const sig = JSON.stringify({
-      d: simulatedPosition.direction,
-      e: Number(simulatedPosition.entry.toFixed(2)),
-      s: Number(simulatedPosition.stop.toFixed(2)),
-      t: Number(simulatedPosition.target.toFixed(2)),
-      p: simulatedPosition.partials,
-      st: simulatedPosition.startTimeMs,
-      et: simulatedPosition.exitTimeMs,
-    });
-    if (sig === lastEmittedSigRef.current) return;
-    lastEmittedSigRef.current = sig;
-    onExtractRr({
-      direction: simulatedPosition.direction,
-      entry: Number(simulatedPosition.entry.toFixed(2)),
-      stop: Number(simulatedPosition.stop.toFixed(2)),
-      target: Number(simulatedPosition.target.toFixed(2)),
-      partials: simulatedPosition.partials,
-      entryTimeIso: new Date(simulatedPosition.startTimeMs).toISOString(),
-      exitTimeIso: new Date(simulatedPosition.exitTimeMs).toISOString(),
-      plannedR: simulatedPosition.plannedR,
-      realizedR: simulatedPosition.realizedR,
-      outcome: simulatedPosition.outcome,
-      mfeR: simulatedPosition.mfeR,
-      maeR: simulatedPosition.maeR,
-    });
-  }, [simulatedPosition, onExtractRr]);
-
   const handlePopulateFromSimulatedPosition = () => {
     if (!onExtractRr || !simulatedPosition) return;
     const totalPct = simulatedPosition.partials.reduce((s, p) => s + (Number(p.pct) || 0), 0);
@@ -1192,7 +1269,7 @@ export function HistoricalReplay({
   const closePct = ((closeBarIndex - 1) / Math.max(1, history.bars.length - 1)) * 100;
   const tradeSpanPct = Math.max(0.6, closePct - entryPct);
 
-  return (
+    return (
     <Card className="journal-replay-enter border-border/70">
       <CardHeader className="pb-2">
         <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1431,16 +1508,8 @@ export function HistoricalReplay({
                           the chart below (or type exact prices):
                         </span>
                         <span className="font-mono text-foreground">
-                          Start:{" "}
-                          {new Date(simulatedPosition.startTimeMs)
-                            .toISOString()
-                            .slice(5, 16)
-                            .replace("T", " ")}{" "}
-                          → Candle Exit:{" "}
-                          {new Date(simulatedPosition.exitTimeMs)
-                            .toISOString()
-                            .slice(5, 16)
-                            .replace("T", " ")}
+                          Start: {formatNyTimeDisplay(simulatedPosition.startTimeMs)} → Candle Exit:{" "}
+                          {formatNyTimeDisplay(simulatedPosition.exitTimeMs)}
                         </span>
                       </div>
 
@@ -1906,15 +1975,21 @@ function ReplayChart({
   const onDragStartBarRef = useRef(onDragStartBarOffset);
   onDragStartBarRef.current = onDragStartBarOffset;
 
-  // Live linear regression of (pixelY <-> price) calibrated continuously from Vela's crosshair & visible bars
-  const scaleModelRef = useRef<{ topPrice: number; bottomPrice: number; plotHeight: number }>({
+  // Exact pixelY <-> Price converter in `host.current` coordinate space (0 = top of chart, 480 = bottom)
+  // Bottom time-axis strip in Vela is 28px high, so price pane plot height is (480 - 28) = 452px.
+  const PLOT_HEIGHT = 452;
+  const scaleModelRef = useRef<{
+    topPrice: number;
+    bottomPrice: number;
+    calibrated: boolean;
+  }>({
     topPrice: 100,
     bottomPrice: 0,
-    plotHeight: 440,
+    calibrated: false,
   });
   const crosshairSamplesRef = useRef<Array<{ y: number; price: number }>>([]);
   const lastPointerYRef = useRef<number>(220);
-  const [, forceRailRender] = useState(0);
+  const [, setTick] = useState(0);
 
   const visibleTimeRangeRef = useRef<{ fromMs: number; toMs: number }>({
     fromMs: history.bars[0]?.time ?? Date.now() - 86_400_000,
@@ -1930,7 +2005,46 @@ function ReplayChart({
     return getNewYorkOffsetMs(new Date(refTime));
   }, [history]);
 
-  // Recomputes the fallback visible price bounds whenever visibleTimeRange or bars change
+  // Try querying Vela's internal projector / coordinate system directly if present on renderer
+  const tryVelaNativeYOf = (price: number): number | null => {
+    const inst = chart.current as any;
+    if (!inst) return null;
+    const rend = inst.renderer || inst._renderer || inst;
+    try {
+      if (typeof rend?.projector?.yOf === "function") {
+        const y = rend.projector.yOf(price, "price");
+        if (typeof y === "number" && Number.isFinite(y)) return y;
+      }
+      if (typeof rend?.coord?.priceToY === "function") {
+        const y = rend.coord.priceToY(price, "price");
+        if (typeof y === "number" && Number.isFinite(y)) return y;
+      }
+      if (typeof rend?.priceToY === "function") {
+        const y = rend.priceToY(price, "price");
+        if (typeof y === "number" && Number.isFinite(y)) return y;
+      }
+      // Search shallow properties of renderer for a projector/coordinate object with yOf or priceToY
+      if (rend && typeof rend === "object") {
+        for (const key of Object.keys(rend)) {
+          const sub = rend[key];
+          if (sub && typeof sub === "object") {
+            if (typeof sub.yOf === "function") {
+              const y = sub.yOf(price, "price");
+              if (typeof y === "number" && Number.isFinite(y)) return y;
+            }
+            if (typeof sub.priceToY === "function") {
+              const y = sub.priceToY(price, "price");
+              if (typeof y === "number" && Number.isFinite(y)) return y;
+            }
+          }
+        }
+      }
+    } catch {}
+    return null;
+  };
+
+  // Recomputes initial uncalibrated scale bounds from visible candles ONLY (matching Vela's candle autoscale,
+  // which autoscales to candle OHLC and does NOT autoscale to overlay drawing lines!)
   const recomputeVisibleScaleFallback = () => {
     const allBars = latest.current.bars.length ? latest.current.bars : history.bars;
     if (!allBars.length) return;
@@ -1944,17 +2058,13 @@ function ReplayChart({
       if (b.low < minP) minP = b.low;
       if (b.high > maxP) maxP = b.high;
     }
-    const pos = latestPosRef.current;
-    if (pos && pos.entry > 0) {
-      minP = Math.min(minP, pos.entry, pos.stop, pos.target);
-      maxP = Math.max(maxP, pos.entry, pos.stop, pos.target);
-    }
     const span = Math.max(0.0001, maxP - minP);
-    const pad = span * 0.09;
+    // Vela's default vertical margin on the price pane is ~10% top and ~10% bottom of candle range
+    const pad = span * 0.105;
     scaleModelRef.current = {
       topPrice: maxP + pad,
       bottomPrice: minP - pad,
-      plotHeight: 440,
+      calibrated: false,
     };
   };
 
@@ -1975,7 +2085,7 @@ function ReplayChart({
       const buildAndEmit = (ctx: any) => {
         if (!ctx) return;
         const pos = latestPosRef.current;
-        const isMissedTrade = trade.key.startsWith("missed_") || trade.key.startsWith("sim_");
+        const isMissedTrade = Boolean(pos) || (trade as any).isMissedTrade || trade.key.startsWith("missed_") || trade.key.startsWith("sim_");
         const fillLabels =
           pos || isMissedTrade
             ? []
@@ -2223,7 +2333,7 @@ function ReplayChart({
               };
               crosshairSamplesRef.current = [];
               recomputeVisibleScaleFallback();
-              forceRailRender((c) => c + 1);
+              setTick((c) => c + 1);
             }
           },
           setInputs() {},
@@ -2319,30 +2429,62 @@ function ReplayChart({
         const curPrice = typeof ev.price === "number" ? ev.price : null;
         lastCrosshairRef.current = { rawTimeMs: rawT, price: curPrice };
 
-        // Continuously calibrate exact pixelY <-> Price mapping from Vela's own crosshair!
+        // Continuously calibrate exact pixelY <-> Price mapping in host.current coordinates (0..PLOT_HEIGHT)!
         if (curPrice !== null && Number.isFinite(curPrice)) {
           const y = lastPointerYRef.current;
-          const samples = crosshairSamplesRef.current;
-          if (!samples.length || Math.abs(samples[samples.length - 1]!.y - y) >= 12) {
-            samples.push({ y, price: curPrice });
-            if (samples.length > 8) samples.shift();
-          }
-          if (samples.length >= 2) {
-            const sA = samples[0]!;
-            const sB = samples[samples.length - 1]!;
-            const dy = sB.y - sA.y;
-            const dp = sB.price - sA.price;
-            if (Math.abs(dy) >= 15 && Math.abs(dp) > 0) {
-              const slope = dp / dy; // negative (price decreases as y increases)
-              const plotH = 440;
-              const topP = sA.price - slope * sA.y;
-              const botP = topP + slope * plotH;
+          if (y >= 4 && y <= PLOT_HEIGHT - 4) {
+            const samples = crosshairSamplesRef.current;
+            if (!samples.length || Math.abs(samples[samples.length - 1]!.y - y) >= 8) {
+              samples.push({ y, price: curPrice });
+              if (samples.length > 10) samples.shift();
+            }
+
+            // Find two samples with the widest vertical separation for maximum precision
+            let bestA = samples[0]!;
+            let bestB = samples[samples.length - 1]!;
+            for (let i = 0; i < samples.length; i++) {
+              for (let j = i + 1; j < samples.length; j++) {
+                if (Math.abs(samples[j]!.y - samples[i]!.y) > Math.abs(bestB.y - bestA.y)) {
+                  bestA = samples[i]!;
+                  bestB = samples[j]!;
+                }
+              }
+            }
+
+            const dy = bestB.y - bestA.y;
+            const dp = bestB.price - bestA.price;
+            if (Math.abs(dy) >= 10 && dp * dy < 0) {
+              const slope = dp / dy; // negative: price per pixel
+              const topP = curPrice - slope * y;
+              const botP = topP + slope * PLOT_HEIGHT;
               if (topP > botP) {
+                const prevTop = scaleModelRef.current.topPrice;
+                const prevBot = scaleModelRef.current.bottomPrice;
                 scaleModelRef.current = {
                   topPrice: topP,
                   bottomPrice: botP,
-                  plotHeight: plotH,
+                  calibrated: true,
                 };
+                if (
+                  Math.abs(prevTop - topP) > Math.abs(topP - botP) * 0.003 ||
+                  Math.abs(prevBot - botP) > Math.abs(topP - botP) * 0.003
+                ) {
+                  setTick((c) => c + 1);
+                }
+              }
+            } else {
+              // Single-point shift calibration: preserve current span but lock intercept to (y, curPrice)!
+              const curSpan = scaleModelRef.current.topPrice - scaleModelRef.current.bottomPrice;
+              if (curSpan > 0) {
+                const slope = -curSpan / PLOT_HEIGHT;
+                const topP = curPrice - slope * y;
+                const botP = topP + slope * PLOT_HEIGHT;
+                scaleModelRef.current = {
+                  topPrice: topP,
+                  bottomPrice: botP,
+                  calibrated: true,
+                };
+                setTick((c) => c + 1);
               }
             }
           }
@@ -2431,24 +2573,32 @@ function ReplayChart({
   }, [nextFrame]);
 
   useEffect(() => {
-    recomputeVisibleScaleFallback();
+    if (!scaleModelRef.current.calibrated) {
+      recomputeVisibleScaleFallback();
+    }
     emitIndicatorPayloadRef.current?.();
   }, [velaPosition]);
 
-  // Maps any price to a Y coordinate on the Left Handle Rail, clamping to [8, plotH - 8]
-  // so even when a level is scrolled out of the chart's visible range, its pill stays pinned
-  // at the top or bottom edge of the left rail!
-  const priceToClampedRailY = (price: number): { y: number; clamped: "top" | "bottom" | null } => {
-    const { topPrice, bottomPrice, plotHeight } = scaleModelRef.current;
-    const span = Math.max(0.0001, topPrice - bottomPrice);
-    const rawY = ((topPrice - price) / span) * plotHeight;
-    if (rawY < 8) return { y: 8, clamped: "top" };
-    if (rawY > plotHeight - 16) return { y: plotHeight - 16, clamped: "bottom" };
+  // Maps any price to an exact Y pixel in `host.current` coordinate space (0..452px),
+  // clamping to [38, PLOT_HEIGHT - 14] so out-of-range pills stay grabbable on the rail!
+  const priceToClampedRailY = (
+    price: number
+  ): { y: number; clamped: "top" | "bottom" | null } => {
+    const nativeY = tryVelaNativeYOf(price);
+    let rawY: number;
+    if (nativeY !== null) {
+      rawY = nativeY;
+    } else {
+      const { topPrice, bottomPrice } = scaleModelRef.current;
+      const span = Math.max(0.0001, topPrice - bottomPrice);
+      rawY = ((topPrice - price) / span) * PLOT_HEIGHT;
+    }
+    if (rawY < 38) return { y: 38, clamped: "top" };
+    if (rawY > PLOT_HEIGHT - 14) return { y: PLOT_HEIGHT - 14, clamped: "bottom" };
     return { y: rawY, clamped: null };
   };
 
-  // Starts dragging a price pill on the Left Rail — disables pointer-events on Vela's host
-  // so the chart NEVER pans or moves while you drag the pill!
+  // Dragging a price pill on the Left Rail — locks Vela's canvas so the chart never moves!
   const startRailPriceDrag = (
     e: React.PointerEvent | React.MouseEvent,
     kind: "entry" | "stop" | "target" | "partial",
@@ -2459,10 +2609,9 @@ function ReplayChart({
     e.stopPropagation();
 
     const startY = e.clientY;
-    const { topPrice, bottomPrice, plotHeight } = scaleModelRef.current;
-    const pricePerPx = Math.max(0.0001, (topPrice - bottomPrice) / Math.max(100, plotHeight));
+    const { topPrice, bottomPrice } = scaleModelRef.current;
+    const pricePerPx = Math.max(0.0001, (topPrice - bottomPrice) / PLOT_HEIGHT);
 
-    // Lock Vela's canvas pointer events so the chart cannot pan during drag!
     if (host.current) host.current.style.pointerEvents = "none";
     document.body.style.cursor = "ns-resize";
     document.body.style.userSelect = "none";
@@ -2491,7 +2640,7 @@ function ReplayChart({
     window.addEventListener("mouseup", onUp);
   };
 
-  // Starts dragging the "↔ Start Bar" pill horizontally — locks Vela's canvas so the chart NEVER pans!
+  // Dragging the "↔ Start Bar" pill horizontally — locks Vela's canvas so the chart never pans!
   const startRailTimeDrag = (e: React.PointerEvent | React.MouseEvent) => {
     e.preventDefault();
     e.stopPropagation();
@@ -2530,9 +2679,19 @@ function ReplayChart({
 
   const currentStartIdx = useMemo(() => {
     if (!velaPosition) return 0;
-    const idx = history.bars.findIndex((b) => b.time >= velaPosition.startTimeMs);
-    return idx >= 0 ? idx : 0;
-  }, [velaPosition, history.bars]);
+    // Find exact bar index matching pos.startTimeMs
+    const targetMs = velaPosition.startTimeMs;
+    let bestIdx = 0;
+    let minD = Infinity;
+    for (let i = 0; i < history.bars.length; i++) {
+      const d = Math.abs(history.bars[i]!.time - targetMs);
+      if (d < minD) {
+        minD = d;
+        bestIdx = i;
+      }
+    }
+    return bestIdx;
+  }, [velaPosition?.startTimeMs, history.bars]);
 
   return (
     <>
@@ -2544,15 +2703,22 @@ function ReplayChart({
       <div
         ref={outerWrapRef}
         onPointerMove={(e) => {
-          if (outerWrapRef.current) {
-            const rect = outerWrapRef.current.getBoundingClientRect();
-            lastPointerYRef.current = Math.max(0, e.clientY - rect.top - 12);
+          if (host.current) {
+            // Exact Y relative to host.current top (0px = top of Vela canvas!)
+            const rect = host.current.getBoundingClientRect();
+            lastPointerYRef.current = e.clientY - rect.top;
           }
         }}
+        onWheel={() => {
+          // Reset calibration samples when user wheel-zooms the price/time scale
+          crosshairSamplesRef.current = [];
+          scaleModelRef.current.calibrated = false;
+          setTimeout(() => setTick((c) => c + 1), 30);
+        }}
         onPointerDownCapture={(e) => {
-          if (!ready || !pickingStartCandleDir || !onPickStartCandleIdx || !outerWrapRef.current)
+          if (!ready || !pickingStartCandleDir || !onPickStartCandleIdx || !host.current)
             return;
-          const rect = outerWrapRef.current.getBoundingClientRect();
+          const rect = host.current.getBoundingClientRect();
           const relX = e.clientX - rect.left;
           if (relX < 48 || relX > rect.width - 68) return;
 
@@ -2591,44 +2757,46 @@ function ReplayChart({
         )}
         <div ref={host} className={`h-full ${ready ? "journal-replay-reveal" : "invisible"}`} />
 
-        {/* TOP-LEFT PINNED START BAR SCRUBBER + DRAG RAIL */}
+        {/* TOP-LEFT PINNED START BAR CONTROLS WITH PRECISE STEP BUTTONS */}
         {ready && velaPosition && !pickingStartCandleDir && (
           <div
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
-            className="pointer-events-auto absolute left-14 top-2.5 z-40 flex items-center gap-2 rounded-lg border border-border bg-card/95 px-2.5 py-1 text-[11px] shadow-md backdrop-blur-xs"
+            className="pointer-events-auto absolute left-14 top-1.5 z-40 flex items-center gap-1.5 rounded-lg border border-border bg-card/95 px-2 py-1 text-[11px] shadow-md backdrop-blur-xs"
           >
-            <span
-              onPointerDown={startRailTimeDrag}
-              className="cursor-ew-resize rounded bg-secondary px-1.5 py-0.5 font-mono font-bold text-foreground hover:bg-secondary/80"
-              title="Drag left/right to move Start Bar without moving the chart"
+            <span className="font-semibold text-foreground text-[10px] mr-0.5">
+              Start:
+            </span>
+            <button
+              type="button"
+              onClick={() => onPickRef.current?.(Math.max(0, currentStartIdx - 1))}
+              disabled={currentStartIdx <= 0}
+              className="rounded border border-border bg-secondary hover:bg-secondary/80 px-1.5 py-0.5 font-mono text-[10px] font-bold text-foreground transition disabled:opacity-30"
+              title="Move Start Bar 1 candle left"
             >
-              ↔ Drag Start Bar
+              ◀ -1
+            </button>
+            <span className="font-mono text-[10px] font-bold text-foreground px-1">
+              {formatNyTimeDisplay(velaPosition.startTimeMs)}
             </span>
-            <input
-              type="range"
-              min={0}
-              max={Math.max(0, history.bars.length - 2)}
-              value={currentStartIdx}
-              onChange={(e) => {
-                const nextIdx = Number(e.target.value);
-                onPickRef.current?.(nextIdx);
-              }}
-              className="w-28 accent-foreground cursor-pointer h-1.5"
-              title="Scrub Start Candle position"
-            />
-            <span className="font-mono text-[10px] text-muted-foreground">
-              {new Date(velaPosition.startTimeMs).toISOString().slice(5, 16).replace("T", " ")}
-            </span>
+            <button
+              type="button"
+              onClick={() => onPickRef.current?.(Math.min(history.bars.length - 1, currentStartIdx + 1))}
+              disabled={currentStartIdx >= history.bars.length - 1}
+              className="rounded border border-border bg-secondary hover:bg-secondary/80 px-1.5 py-0.5 font-mono text-[10px] font-bold text-foreground transition disabled:opacity-30"
+              title="Move Start Bar 1 candle right"
+            >
+              +1 ▶
+            </button>
           </div>
         )}
 
-        {/* LEFT-EDGE PINNED HANDLE RAIL (SNAPPED TO LEFT OF CHART + CLAMPED WHEN OUT OF RANGE) */}
+        {/* LEFT-EDGE PINNED HANDLE RAIL — ANCHORED AT top-0 bottom-0 SO Y PIXELS MATCH VELA CANVAS 1:1 */}
         {ready && velaPosition && onDragPositionPrice && !pickingStartCandleDir && (
           <div
             onPointerDown={(e) => e.stopPropagation()}
             onMouseDown={(e) => e.stopPropagation()}
-            className="pointer-events-none absolute top-10 bottom-8 left-14 w-48 z-40"
+            className="pointer-events-none absolute inset-y-0 left-14 w-52 z-40"
           >
             {(() => {
               const slPos = priceToClampedRailY(velaPosition.stop);
@@ -2641,8 +2809,8 @@ function ReplayChart({
                   <div
                     onPointerDown={(e) => startRailPriceDrag(e, "stop", velaPosition.stop)}
                     style={{ top: slPos.y }}
-                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-rose-500/70 bg-card/95 hover:bg-rose-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-rose-400 shadow-md transition-colors"
-                    title="Drag up/down to adjust Stop Loss (chart stays locked)"
+                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-rose-500/70 bg-card/95 hover:bg-rose-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-rose-400 shadow-md"
+                    title="Drag up/down to adjust Stop Loss"
                   >
                     <span>
                       {slPos.clamped === "top"
@@ -2658,7 +2826,7 @@ function ReplayChart({
                   <div
                     onPointerDown={(e) => startRailPriceDrag(e, "entry", velaPosition.entry)}
                     style={{ top: entryPos.y }}
-                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1.5 rounded border border-sky-500/70 bg-card/95 hover:bg-sky-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-sky-300 shadow-md transition-colors"
+                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1.5 rounded border border-sky-500/70 bg-card/95 hover:bg-sky-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-sky-300 shadow-md"
                     title="Drag up/down to adjust Entry Price • Drag '↔' to move Start Candle"
                   >
                     <span
@@ -2686,7 +2854,7 @@ function ReplayChart({
                         key={p.id}
                         onPointerDown={(e) => startRailPriceDrag(e, "partial", p.price, idx)}
                         style={{ top: pPos.y }}
-                        className="pointer-events-auto absolute left-2 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-emerald-500/50 bg-card/95 hover:bg-emerald-950/60 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-300 shadow-md transition-colors"
+                        className="pointer-events-auto absolute left-2 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-emerald-500/50 bg-card/95 hover:bg-emerald-950/60 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-300 shadow-md"
                         title={`Drag up/down to adjust TP${idx + 1} (${p.pct}%)`}
                       >
                         <span>
@@ -2705,8 +2873,8 @@ function ReplayChart({
                   <div
                     onPointerDown={(e) => startRailPriceDrag(e, "target", velaPosition.target)}
                     style={{ top: tpPos.y }}
-                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-emerald-500/70 bg-card/95 hover:bg-emerald-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-400 shadow-md transition-colors"
-                    title="Drag up/down to adjust Full Take Profit (chart stays locked)"
+                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-emerald-500/70 bg-card/95 hover:bg-emerald-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-400 shadow-md"
+                    title="Drag up/down to adjust Full Take Profit"
                   >
                     <span>
                       {tpPos.clamped === "top"

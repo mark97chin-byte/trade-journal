@@ -680,7 +680,7 @@ export function PeriodReviewCompanionCard({
                       </strong>
                     </span>
                     <Link
-                      href="/missed"
+                      href={`/missed/${encodeURIComponent(activeMissed.id)}`}
                       className="text-[10px] text-muted-foreground hover:text-foreground underline inline-flex items-center gap-1"
                     >
                       <span>Open in Missed Trades</span>

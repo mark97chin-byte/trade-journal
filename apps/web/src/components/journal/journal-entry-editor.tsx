@@ -1990,7 +1990,7 @@ export function JournalEntryEditor({
                       </td>
                       <td className="py-2.5 px-2.5 text-right">
                         <Link
-                          href="/missed"
+                          href={`/missed/${encodeURIComponent(m.id)}`}
                           className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground border border-border px-2.5 py-1 text-[11px] font-semibold transition hover:bg-secondary/80"
                         >
                           <span>Open Lab</span>
