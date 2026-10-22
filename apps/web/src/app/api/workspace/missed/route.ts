@@ -49,6 +49,7 @@ function ensureMissedTradesSchema(db: Database.Database) {
       session TEXT DEFAULT 'NY AM',
       tags_json TEXT DEFAULT '[]',
       mistakes_json TEXT DEFAULT '[]',
+      rules_followed_json TEXT DEFAULT '[]',
       notes TEXT NOT NULL DEFAULT '',
       review_notes TEXT DEFAULT '',
       rating INTEGER,
@@ -77,6 +78,7 @@ function ensureMissedTradesSchema(db: Database.Database) {
     "ALTER TABLE missed_trades ADD COLUMN session TEXT DEFAULT 'NY AM'",
     "ALTER TABLE missed_trades ADD COLUMN tags_json TEXT DEFAULT '[]'",
     "ALTER TABLE missed_trades ADD COLUMN mistakes_json TEXT DEFAULT '[]'",
+    "ALTER TABLE missed_trades ADD COLUMN rules_followed_json TEXT DEFAULT '[]'",
     "ALTER TABLE missed_trades ADD COLUMN review_notes TEXT DEFAULT ''",
     "ALTER TABLE missed_trades ADD COLUMN rating INTEGER",
     "ALTER TABLE missed_trades ADD COLUMN notion_page_id TEXT",
@@ -135,6 +137,7 @@ function mapMissedRow(r: any) {
     session: r.session || classifyNySession(r.observed_at),
     tagsJson: r.tags_json || "[]",
     mistakesJson: r.mistakes_json || "[]",
+    rulesFollowedJson: r.rules_followed_json || "[]",
     notes: r.notes || "",
     reviewNotes: r.review_notes || "",
     rating: r.rating ?? null,
@@ -297,6 +300,12 @@ export async function POST(req: NextRequest) {
               ? body.mistakesJson
               : JSON.stringify(body.mistakesJson)
             : existing?.mistakes_json ?? "[]",
+        rules_followed_json:
+          body.rulesFollowedJson !== undefined
+            ? typeof body.rulesFollowedJson === "string"
+              ? body.rulesFollowedJson
+              : JSON.stringify(body.rulesFollowedJson)
+            : existing?.rules_followed_json ?? "[]",
         notes: body.notes !== undefined ? body.notes : existing?.notes ?? "",
         review_notes:
           body.reviewNotes !== undefined ? body.reviewNotes : existing?.review_notes ?? "",
@@ -313,14 +322,14 @@ export async function POST(req: NextRequest) {
           entry, stop, target, partials_json,
           account_size, risk_percent, risk_amount, contract_multiplier, quantity,
           planned_r, realized_r, theoretical_pnl, mae_r, mfe_r,
-          miss_reason, session, tags_json, mistakes_json,
+          miss_reason, session, tags_json, mistakes_json, rules_followed_json,
           notes, review_notes, rating, notion_page_id, notion_url, created_at, archived_at
         ) VALUES (
           @id, @symbol, @direction, @observed_at, @exit_at, @outcome, @playbook_id,
           @entry, @stop, @target, @partials_json,
           @account_size, @risk_percent, @risk_amount, @contract_multiplier, @quantity,
           @planned_r, @realized_r, @theoretical_pnl, @mae_r, @mfe_r,
-          @miss_reason, @session, @tags_json, @mistakes_json,
+          @miss_reason, @session, @tags_json, @mistakes_json, @rules_followed_json,
           @notes, @review_notes, @rating, @notion_page_id, @notion_url, @created_at, @archived_at
         )
         ON CONFLICT(id) DO UPDATE SET
@@ -348,6 +357,7 @@ export async function POST(req: NextRequest) {
           session = excluded.session,
           tags_json = excluded.tags_json,
           mistakes_json = excluded.mistakes_json,
+          rules_followed_json = excluded.rules_followed_json,
           notes = excluded.notes,
           review_notes = excluded.review_notes,
           rating = excluded.rating`

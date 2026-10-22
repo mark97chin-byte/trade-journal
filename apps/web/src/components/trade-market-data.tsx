@@ -63,6 +63,7 @@ export interface PositionPartialItem {
   price: number;
   pct: number;
   manualPct?: boolean;
+  hitTimeMs?: number | null;
 }
 
 export function rebalanceEqualPartials(
@@ -182,11 +183,10 @@ export function TradeMarketData({
   // Shared stable localStorage key so refreshing /missed never loses cached candles
   const cacheKey = useMemo(() => {
     if (isStandalone) {
-      const dateDay = (anchorIso || "").slice(0, 10);
-      return `candle_cache_shared_${provider || "lse"}_${symbol}_${resolution}_${dateDay}`;
+      return `candle_cache_shared_${provider || "lse"}_${symbol}_${resolution}`;
     }
     return `candle_cache_${trade.key}`;
-  }, [isStandalone, provider, symbol, resolution, anchorIso, trade.key]);
+  }, [isStandalone, provider, symbol, resolution, trade.key]);
 
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
@@ -716,6 +716,10 @@ export function getEffectiveExecutions(
     });
   }
 
+  if (trade.key.startsWith("missed_") || trade.key.startsWith("sim_")) {
+    return [];
+  }
+
   const openMs = Date.parse(trade.openedAt);
   const closeMs = trade.closedAt ? Date.parse(trade.closedAt) : openMs;
   const entryBar = getCandleAt(openMs);
@@ -964,8 +968,8 @@ export function HistoricalReplay({
     let maxFav = 0;
     let maxAdv = 0;
 
-    // Track which partial targets get touched BEFORE SL or Full TP
-    const hitPartials = new Set<string>();
+    // Track the exact candle timestamp when each partial target is first touched
+    const hitPartialTimes = new Map<string, number>();
 
     for (let i = 0; i < forwardBars.length; i++) {
       const b = forwardBars[i]!;
@@ -977,15 +981,15 @@ export function HistoricalReplay({
 
         // Check if Stop Loss hit on this candle
         if (b.low <= posStop) {
-          outcome = hitPartials.size > 0 ? "WIN" : "LOSS";
+          outcome = hitPartialTimes.size > 0 ? "WIN" : "LOSS";
           exitBar = b;
           exitPrice = posStop;
           break;
         }
         // Check if any Partial TPs were hit on this candle
         for (const p of posPartials) {
-          if (p.price > posEntry && b.high >= p.price) {
-            hitPartials.add(p.id);
+          if (p.price > posEntry && b.high >= p.price && !hitPartialTimes.has(p.id)) {
+            hitPartialTimes.set(p.id, b.time);
           }
         }
         // Check if Full Take Profit hit on this candle
@@ -1002,14 +1006,14 @@ export function HistoricalReplay({
         if (adv > maxAdv) maxAdv = adv;
 
         if (b.high >= posStop) {
-          outcome = hitPartials.size > 0 ? "WIN" : "LOSS";
+          outcome = hitPartialTimes.size > 0 ? "WIN" : "LOSS";
           exitBar = b;
           exitPrice = posStop;
           break;
         }
         for (const p of posPartials) {
-          if (p.price < posEntry && b.low <= p.price) {
-            hitPartials.add(p.id);
+          if (p.price < posEntry && b.low <= p.price && !hitPartialTimes.has(p.id)) {
+            hitPartialTimes.set(p.id, b.time);
           }
         }
         if (b.low <= posTarget) {
@@ -1026,7 +1030,7 @@ export function HistoricalReplay({
     let weightedR = 0;
     if (riskDist > 0) {
       for (const p of posPartials) {
-        if (hitPartials.has(p.id) && p.pct > 0) {
+        if (hitPartialTimes.has(p.id) && p.pct > 0) {
           const pct = Math.min(100 - allocatedPct, p.pct);
           allocatedPct += pct;
           const pMove = posDir === "long" ? p.price - posEntry : posEntry - p.price;
@@ -1048,7 +1052,10 @@ export function HistoricalReplay({
       entry: posEntry,
       stop: posStop,
       target: posTarget,
-      partials: posPartials,
+      partials: posPartials.map((p) => ({
+        ...p,
+        hitTimeMs: hitPartialTimes.get(p.id) ?? null,
+      })),
       startTimeMs: startBar.time,
       exitTimeMs: exitBar.time,
       exitPrice,
@@ -1063,7 +1070,7 @@ export function HistoricalReplay({
   useEffect(() => {
     setCount(defaultSnapCount);
     setPlaying(false);
-  }, [history, defaultSnapCount]);
+  }, [history]);
 
   useEffect(() => {
     if (!playing || privacy) return;
@@ -1120,6 +1127,39 @@ export function HistoricalReplay({
       setCustomTfInput("");
     }
   };
+
+  // Auto-sync simulatedPosition to parent form without refreshing chart
+  const lastEmittedSigRef = useRef<string>("");
+  useEffect(() => {
+    if (!onExtractRr || !simulatedPosition) return;
+    const totalPct = simulatedPosition.partials.reduce((s, p) => s + (Number(p.pct) || 0), 0);
+    if (totalPct > 100) return;
+    const sig = JSON.stringify({
+      d: simulatedPosition.direction,
+      e: Number(simulatedPosition.entry.toFixed(2)),
+      s: Number(simulatedPosition.stop.toFixed(2)),
+      t: Number(simulatedPosition.target.toFixed(2)),
+      p: simulatedPosition.partials,
+      st: simulatedPosition.startTimeMs,
+      et: simulatedPosition.exitTimeMs,
+    });
+    if (sig === lastEmittedSigRef.current) return;
+    lastEmittedSigRef.current = sig;
+    onExtractRr({
+      direction: simulatedPosition.direction,
+      entry: Number(simulatedPosition.entry.toFixed(2)),
+      stop: Number(simulatedPosition.stop.toFixed(2)),
+      target: Number(simulatedPosition.target.toFixed(2)),
+      partials: simulatedPosition.partials,
+      entryTimeIso: new Date(simulatedPosition.startTimeMs).toISOString(),
+      exitTimeIso: new Date(simulatedPosition.exitTimeMs).toISOString(),
+      plannedR: simulatedPosition.plannedR,
+      realizedR: simulatedPosition.realizedR,
+      outcome: simulatedPosition.outcome,
+      mfeR: simulatedPosition.mfeR,
+      maeR: simulatedPosition.maeR,
+    });
+  }, [simulatedPosition, onExtractRr]);
 
   const handlePopulateFromSimulatedPosition = () => {
     if (!onExtractRr || !simulatedPosition) return;
@@ -1573,10 +1613,12 @@ export function HistoricalReplay({
                 if (!posActive) {
                   spawnPositionToolAtBar(dir, barIdx);
                 } else {
-                  const chosenBar = history.bars[barIdx];
                   setPosStartBarIdx(barIdx);
-                  if (chosenBar) setPosEntry(chosenBar.close);
-                  setPickingStartCandleDir(null);
+                  if (pickingStartCandleDir) {
+                    const chosenBar = history.bars[barIdx];
+                    if (chosenBar) setPosEntry(chosenBar.close);
+                    setPickingStartCandleDir(null);
+                  }
                 }
               }}
               onDragPositionPrice={(kind, value, partialIdx) => {
@@ -1822,6 +1864,7 @@ function ReplayChart({
 }: {
   history: TradeMarketResult;
   trade: ChartTrade & { currency: string };
+  executions?: ChartExecution[];
   nextFrame: ReturnType<typeof replayFrame<ChartExecution>>;
   showAllForwardBars?: boolean;
   velaPosition?: NativeVelaPositionOverlay | null;
@@ -1836,6 +1879,7 @@ function ReplayChart({
 }) {
   const indicatorType = `replay-fills-${useId()}`;
   const host = useRef<HTMLDivElement>(null);
+  const outerWrapRef = useRef<HTMLDivElement>(null);
   const chart = useRef<Vela | null>(null);
   const indicatorCtxRef = useRef<any>(null);
   const emitIndicatorPayloadRef = useRef<(() => void) | null>(null);
@@ -1848,7 +1892,30 @@ function ReplayChart({
   const latestPosRef = useRef(velaPosition);
   latestPosRef.current = velaPosition;
 
-  // Track visible horizontal time window so clicking on the chart maps to the exact visible candle
+  const lastCrosshairRef = useRef<{ rawTimeMs: number | null; price: number | null }>({
+    rawTimeMs: null,
+    price: null,
+  });
+
+  const pickingDirRef = useRef<"long" | "short" | null>(pickingStartCandleDir ?? null);
+  pickingDirRef.current = pickingStartCandleDir ?? null;
+  const onPickRef = useRef(onPickStartCandleIdx);
+  onPickRef.current = onPickStartCandleIdx;
+  const onDragPriceRef = useRef(onDragPositionPrice);
+  onDragPriceRef.current = onDragPositionPrice;
+  const onDragStartBarRef = useRef(onDragStartBarOffset);
+  onDragStartBarRef.current = onDragStartBarOffset;
+
+  // Live linear regression of (pixelY <-> price) calibrated continuously from Vela's crosshair & visible bars
+  const scaleModelRef = useRef<{ topPrice: number; bottomPrice: number; plotHeight: number }>({
+    topPrice: 100,
+    bottomPrice: 0,
+    plotHeight: 440,
+  });
+  const crosshairSamplesRef = useRef<Array<{ y: number; price: number }>>([]);
+  const lastPointerYRef = useRef<number>(220);
+  const [, forceRailRender] = useState(0);
+
   const visibleTimeRangeRef = useRef<{ fromMs: number; toMs: number }>({
     fromMs: history.bars[0]?.time ?? Date.now() - 86_400_000,
     toMs: history.bars[history.bars.length - 1]?.time ?? Date.now(),
@@ -1863,12 +1930,41 @@ function ReplayChart({
     return getNewYorkOffsetMs(new Date(refTime));
   }, [history]);
 
+  // Recomputes the fallback visible price bounds whenever visibleTimeRange or bars change
+  const recomputeVisibleScaleFallback = () => {
+    const allBars = latest.current.bars.length ? latest.current.bars : history.bars;
+    if (!allBars.length) return;
+    const { fromMs, toMs } = visibleTimeRangeRef.current;
+    const vis = allBars.filter((b) => b.time >= fromMs && b.time <= toMs);
+    const slice = vis.length >= 2 ? vis : allBars;
+
+    let minP = Infinity;
+    let maxP = -Infinity;
+    for (const b of slice) {
+      if (b.low < minP) minP = b.low;
+      if (b.high > maxP) maxP = b.high;
+    }
+    const pos = latestPosRef.current;
+    if (pos && pos.entry > 0) {
+      minP = Math.min(minP, pos.entry, pos.stop, pos.target);
+      maxP = Math.max(maxP, pos.entry, pos.stop, pos.target);
+    }
+    const span = Math.max(0.0001, maxP - minP);
+    const pad = span * 0.09;
+    scaleModelRef.current = {
+      topPrice: maxP + pad,
+      bottomPrice: minP - pad,
+      plotHeight: 440,
+    };
+  };
+
   useEffect(() => {
     let disposed = false;
     let cleanup = () => {};
     setError("");
     setReady(false);
     lastAppliedBarCountRef.current = -1;
+    crosshairSamplesRef.current = [];
 
     void (async () => {
       const { Vela, registerNativeIndicator, unregisterNativeIndicator } =
@@ -1878,32 +1974,36 @@ function ReplayChart({
 
       const buildAndEmit = (ctx: any) => {
         if (!ctx) return;
-        const fillLabels = frame.current.fills.map((fill, index) => ({
-          id: `fill-${index}`,
-          paneId: "price",
-          xloc: "bar_time" as const,
-          x: ((fill as any).barTimeMs ?? Date.parse(fill.executedAt)) + nyShiftMs,
-          y: fill.price,
-          yloc: "price" as const,
-          text: `${fill.side.toUpperCase()} ${fill.quantity}`,
-          style: "label_left" as const,
-          color: fill.side === "buy" ? "#087f23" : "#bd2626",
-          textColor: "#ffffff",
-          size: "small" as const,
-          textAlign: "center" as const,
-          fontFamily: "default" as const,
-          overlay: true,
-        }));
+        const pos = latestPosRef.current;
+        const isMissedTrade = trade.key.startsWith("missed_") || trade.key.startsWith("sim_");
+        const fillLabels =
+          pos || isMissedTrade
+            ? []
+            : frame.current.fills.map((fill, index) => ({
+                id: `fill-${index}`,
+                paneId: "price",
+                xloc: "bar_time" as const,
+                x: ((fill as any).barTimeMs ?? Date.parse(fill.executedAt)) + nyShiftMs,
+                y: fill.price,
+                yloc: "price" as const,
+                text: `${fill.side.toUpperCase()} ${fill.quantity}`,
+                style: "label_left" as const,
+                color: fill.side === "buy" ? "#087f23" : "#bd2626",
+                textColor: "#ffffff",
+                size: "small" as const,
+                textAlign: "center" as const,
+                fontFamily: "default" as const,
+                overlay: true,
+              }));
 
         const posLines: any[] = [];
         const posLabels: any[] = [];
-        const pos = latestPosRef.current;
 
         if (pos && pos.entry > 0 && pos.stop > 0 && pos.target > 0) {
           const x1 = pos.startTimeMs + nyShiftMs;
           const x2 = Math.max(x1 + 60_000, pos.exitTimeMs + nyShiftMs);
 
-          // 1. Entry Line
+          // 1. Entry Line & Right Tag
           posLines.push({
             id: "pos-entry-line",
             paneId: "price",
@@ -1925,11 +2025,13 @@ function ReplayChart({
             id: "pos-entry-lbl",
             paneId: "price",
             xloc: "bar_time" as const,
-            x: x1,
+            x: x2,
             y: pos.entry,
             yloc: "price" as const,
-            text: `${pos.direction.toUpperCase()} ENTRY ${pos.entry} (${pos.realizedR > 0 ? `+${pos.realizedR}R` : `${pos.realizedR}R`})`,
-            style: "label_right" as const,
+            text: `ENTRY ${pos.entry} (${
+              pos.realizedR > 0 ? `+${pos.realizedR}R` : `${pos.realizedR}R`
+            })`,
+            style: "label_left" as const,
             color: "#0284c7",
             textColor: "#ffffff",
             size: "small" as const,
@@ -1938,7 +2040,7 @@ function ReplayChart({
             overlay: true,
           });
 
-          // 2. Stop Loss Line
+          // 2. Stop Loss Line & Right Tag
           posLines.push({
             id: "pos-sl-line",
             paneId: "price",
@@ -1973,7 +2075,7 @@ function ReplayChart({
             overlay: true,
           });
 
-          // 3. Full Take Profit Line
+          // 3. Full Take Profit Line & Right Tag
           posLines.push({
             id: "pos-tp-line",
             paneId: "price",
@@ -2008,7 +2110,7 @@ function ReplayChart({
             overlay: true,
           });
 
-          // 4. Intermediate Take Partials Lines
+          // 4. Intermediate Take Partials Lines & Right Tags
           pos.partials.forEach((p, idx) => {
             if (p.price > 0) {
               posLines.push({
@@ -2047,24 +2149,42 @@ function ReplayChart({
             }
           });
 
-          // 5. Diagonal Path from Start Bar Entry -> Exact Candle Where SL/TP Hit
-          posLines.push({
-            id: "pos-diagonal-path",
-            paneId: "price",
-            xloc: "bar_time" as const,
-            x1,
-            y1: pos.entry,
-            x2,
-            y2: pos.exitPrice,
-            extend: "none" as const,
-            color: pos.outcome === "WIN" ? "#10b981" : "#ef4444",
-            invisible: false,
-            width: 2,
-            style: "dashed" as const,
-            arrowLeft: false,
-            arrowRight: true,
-            overlay: true,
+          // 5. Sleek Multi-Segment Polyarrow connecting Entry -> TP1 -> TP2 -> ... -> Final Exit
+          const waypoints: Array<{ x: number; y: number }> = [{ x: x1, y: pos.entry }];
+          const sortedPartials = [...pos.partials]
+            .filter((p) => p.price > 0 && p.hitTimeMs != null)
+            .sort((a, b) => (a.hitTimeMs || 0) - (b.hitTimeMs || 0));
+
+          sortedPartials.forEach((p) => {
+            const stepX = (p.hitTimeMs as number) + nyShiftMs;
+            const clampedX = Math.max(waypoints[waypoints.length - 1]!.x, Math.min(x2, stepX));
+            waypoints.push({ x: clampedX, y: p.price });
           });
+
+          waypoints.push({ x: x2, y: pos.exitPrice });
+
+          const pathColor = pos.outcome === "WIN" ? "#10b981" : "#ef4444";
+          for (let w = 0; w < waypoints.length - 1; w++) {
+            const ptA = waypoints[w]!;
+            const ptB = waypoints[w + 1]!;
+            posLines.push({
+              id: `pos-polyarrow-seg-${w}`,
+              paneId: "price",
+              xloc: "bar_time" as const,
+              x1: ptA.x,
+              y1: ptA.y,
+              x2: Math.max(ptA.x + 1000, ptB.x),
+              y2: ptB.y,
+              extend: "none" as const,
+              color: pathColor,
+              invisible: false,
+              width: 1,
+              style: "dashed" as const,
+              arrowLeft: false,
+              arrowRight: true,
+              overlay: true,
+            });
+          }
         }
 
         ctx.emit({
@@ -2101,6 +2221,9 @@ function ReplayChart({
                 fromMs: vp.from - nyShiftMs,
                 toMs: vp.to - nyShiftMs,
               };
+              crosshairSamplesRef.current = [];
+              recomputeVisibleScaleFallback();
+              forceRailRender((c) => c + 1);
             }
           },
           setInputs() {},
@@ -2137,6 +2260,7 @@ function ReplayChart({
         fromMs: visibleFrom - nyShiftMs,
         toMs: visibleTo - nyShiftMs,
       };
+      recomputeVisibleScaleFallback();
 
       const instance = new Vela(host.current, {
         symbol: history.symbol,
@@ -2174,11 +2298,75 @@ function ReplayChart({
       frame.current = latest.current;
       instance.addNativeIndicator(type);
 
+      const resolveBarIndexFromShiftedTime = (shiftedMs: number): number => {
+        const rawTargetMs = shiftedMs - nyShiftMs;
+        const bars = latest.current.bars.length ? latest.current.bars : history.bars;
+        let bestIdx = 0;
+        let bestDiff = Infinity;
+        for (let i = 0; i < bars.length; i++) {
+          const diff = Math.abs(bars[i]!.time - rawTargetMs);
+          if (diff < bestDiff) {
+            bestDiff = diff;
+            bestIdx = i;
+          }
+        }
+        return bestIdx;
+      };
+
+      const handleCrosshairEv = (ev: any) => {
+        if (!ev) return;
+        const rawT = typeof ev.time === "number" ? ev.time - nyShiftMs : null;
+        const curPrice = typeof ev.price === "number" ? ev.price : null;
+        lastCrosshairRef.current = { rawTimeMs: rawT, price: curPrice };
+
+        // Continuously calibrate exact pixelY <-> Price mapping from Vela's own crosshair!
+        if (curPrice !== null && Number.isFinite(curPrice)) {
+          const y = lastPointerYRef.current;
+          const samples = crosshairSamplesRef.current;
+          if (!samples.length || Math.abs(samples[samples.length - 1]!.y - y) >= 12) {
+            samples.push({ y, price: curPrice });
+            if (samples.length > 8) samples.shift();
+          }
+          if (samples.length >= 2) {
+            const sA = samples[0]!;
+            const sB = samples[samples.length - 1]!;
+            const dy = sB.y - sA.y;
+            const dp = sB.price - sA.price;
+            if (Math.abs(dy) >= 15 && Math.abs(dp) > 0) {
+              const slope = dp / dy; // negative (price decreases as y increases)
+              const plotH = 440;
+              const topP = sA.price - slope * sA.y;
+              const botP = topP + slope * plotH;
+              if (topP > botP) {
+                scaleModelRef.current = {
+                  topPrice: topP,
+                  bottomPrice: botP,
+                  plotHeight: plotH,
+                };
+              }
+            }
+          }
+        }
+      };
+
+      const unsubCrosshair =
+        (instance as any).onCrosshairMove?.(handleCrosshairEv) ||
+        (instance as any).renderer?.onCrosshairMove?.(handleCrosshairEv);
+
+      const handleClickEv = (ev: any) => {
+        if (pickingDirRef.current && onPickRef.current && ev && typeof ev.time === "number") {
+          const idx = resolveBarIndexFromShiftedTime(ev.time);
+          onPickRef.current(idx);
+        }
+      };
+
+      const unsubClick =
+        (instance as any).onClick?.(handleClickEv) ||
+        (instance as any).renderer?.onClick?.(handleClickEv);
+
       let updating = false;
       const flush = async () => {
         if (updating || disposed) return;
-        // CRITICAL FIX: Only call instance.setMarket when the number of replay bars actually changes!
-        // Never call setMarket when dragging R:R lines or editing inputs, so the chart NEVER snaps!
         if (lastAppliedBarCountRef.current === latest.current.bars.length) {
           frame.current = latest.current;
           emitIndicatorPayloadRef.current?.();
@@ -2209,6 +2397,8 @@ function ReplayChart({
       observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
 
       cleanup = () => {
+        try { unsubCrosshair?.(); } catch {}
+        try { unsubClick?.(); } catch {}
         updateMarketBarsRef.current = null;
         emitIndicatorPayloadRef.current = null;
         indicatorCtxRef.current = null;
@@ -2236,16 +2426,113 @@ function ReplayChart({
     };
   }, [history, indicatorType, nyShiftMs]);
 
-  // When replay slider `nextFrame` changes, update market bars only if bar count changed
   useEffect(() => {
     updateMarketBarsRef.current?.();
   }, [nextFrame]);
 
-  // When `velaPosition` changes (dragging Entry, SL, TP, Partials, or Start Bar),
-  // emit directly to the existing indicator context in <1ms WITHOUT calling setMarket!
   useEffect(() => {
+    recomputeVisibleScaleFallback();
     emitIndicatorPayloadRef.current?.();
   }, [velaPosition]);
+
+  // Maps any price to a Y coordinate on the Left Handle Rail, clamping to [8, plotH - 8]
+  // so even when a level is scrolled out of the chart's visible range, its pill stays pinned
+  // at the top or bottom edge of the left rail!
+  const priceToClampedRailY = (price: number): { y: number; clamped: "top" | "bottom" | null } => {
+    const { topPrice, bottomPrice, plotHeight } = scaleModelRef.current;
+    const span = Math.max(0.0001, topPrice - bottomPrice);
+    const rawY = ((topPrice - price) / span) * plotHeight;
+    if (rawY < 8) return { y: 8, clamped: "top" };
+    if (rawY > plotHeight - 16) return { y: plotHeight - 16, clamped: "bottom" };
+    return { y: rawY, clamped: null };
+  };
+
+  // Starts dragging a price pill on the Left Rail — disables pointer-events on Vela's host
+  // so the chart NEVER pans or moves while you drag the pill!
+  const startRailPriceDrag = (
+    e: React.PointerEvent | React.MouseEvent,
+    kind: "entry" | "stop" | "target" | "partial",
+    initialPrice: number,
+    partialIdx?: number
+  ) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const startY = e.clientY;
+    const { topPrice, bottomPrice, plotHeight } = scaleModelRef.current;
+    const pricePerPx = Math.max(0.0001, (topPrice - bottomPrice) / Math.max(100, plotHeight));
+
+    // Lock Vela's canvas pointer events so the chart cannot pan during drag!
+    if (host.current) host.current.style.pointerEvents = "none";
+    document.body.style.cursor = "ns-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (moveEv: PointerEvent | MouseEvent) => {
+      moveEv.preventDefault();
+      moveEv.stopPropagation();
+      const dy = moveEv.clientY - startY;
+      const nextPrice = Number((initialPrice - dy * pricePerPx).toFixed(2));
+      onDragPriceRef.current?.(kind, nextPrice, partialIdx);
+    };
+
+    const onUp = () => {
+      if (host.current) host.current.style.pointerEvents = "";
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  // Starts dragging the "↔ Start Bar" pill horizontally — locks Vela's canvas so the chart NEVER pans!
+  const startRailTimeDrag = (e: React.PointerEvent | React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+
+    let lastX = e.clientX;
+    if (host.current) host.current.style.pointerEvents = "none";
+    document.body.style.cursor = "ew-resize";
+    document.body.style.userSelect = "none";
+
+    const onMove = (moveEv: PointerEvent | MouseEvent) => {
+      moveEv.preventDefault();
+      moveEv.stopPropagation();
+      const dx = moveEv.clientX - lastX;
+      if (Math.abs(dx) >= 10 && onDragStartBarRef.current) {
+        const steps = Math.trunc(dx / 10);
+        lastX += steps * 10;
+        onDragStartBarRef.current(steps);
+      }
+    };
+
+    const onUp = () => {
+      if (host.current) host.current.style.pointerEvents = "";
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+
+    window.addEventListener("pointermove", onMove, { passive: false });
+    window.addEventListener("pointerup", onUp);
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
+  const currentStartIdx = useMemo(() => {
+    if (!velaPosition) return 0;
+    const idx = history.bars.findIndex((b) => b.time >= velaPosition.startTimeMs);
+    return idx >= 0 ? idx : 0;
+  }, [velaPosition, history.bars]);
 
   return (
     <>
@@ -2255,7 +2542,43 @@ function ReplayChart({
         </p>
       )}
       <div
-        className="relative h-[480px] overflow-hidden rounded-lg border border-border bg-card"
+        ref={outerWrapRef}
+        onPointerMove={(e) => {
+          if (outerWrapRef.current) {
+            const rect = outerWrapRef.current.getBoundingClientRect();
+            lastPointerYRef.current = Math.max(0, e.clientY - rect.top - 12);
+          }
+        }}
+        onPointerDownCapture={(e) => {
+          if (!ready || !pickingStartCandleDir || !onPickStartCandleIdx || !outerWrapRef.current)
+            return;
+          const rect = outerWrapRef.current.getBoundingClientRect();
+          const relX = e.clientX - rect.left;
+          if (relX < 48 || relX > rect.width - 68) return;
+
+          e.preventDefault();
+          e.stopPropagation();
+
+          const bars = nextFrame.bars.length ? nextFrame.bars : history.bars;
+          if (!bars.length) return;
+
+          if (lastCrosshairRef.current.rawTimeMs !== null) {
+            const targetRawMs = lastCrosshairRef.current.rawTimeMs;
+            let bestIdx = 0;
+            let bestDiff = Infinity;
+            bars.forEach((b, idx) => {
+              const d = Math.abs(b.time - targetRawMs);
+              if (d < bestDiff) {
+                bestDiff = d;
+                bestIdx = idx;
+              }
+            });
+            onPickStartCandleIdx(bestIdx);
+          }
+        }}
+        className={`relative h-[480px] overflow-hidden rounded-lg border border-border bg-card select-none ${
+          pickingStartCandleDir ? "cursor-crosshair ring-1 ring-foreground/50" : ""
+        }`}
         aria-busy={!ready && !error}
       >
         {!ready && !error && (
@@ -2268,198 +2591,144 @@ function ReplayChart({
         )}
         <div ref={host} className={`h-full ${ready ? "journal-replay-reveal" : "invisible"}`} />
 
-        {/* 1. CLICK-ON-CHART OVERLAY TO PICK EXACT START CANDLE */}
-        {ready && pickingStartCandleDir && onPickStartCandleIdx && (
+        {/* TOP-LEFT PINNED START BAR SCRUBBER + DRAG RAIL */}
+        {ready && velaPosition && !pickingStartCandleDir && (
           <div
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              const rect = e.currentTarget.getBoundingClientRect();
-              // Vela left toolbar is ~46px, right price axis is ~68px
-              const plotLeft = 46;
-              const plotRight = rect.width - 68;
-              const plotWidth = Math.max(1, plotRight - plotLeft);
-              const relX = Math.max(0, Math.min(plotWidth, e.clientX - rect.left - plotLeft));
-              const ratio = relX / plotWidth;
-
-              const bars = nextFrame.bars.length ? nextFrame.bars : history.bars;
-              if (!bars.length) return;
-
-              const { fromMs, toMs } = visibleTimeRangeRef.current;
-              // Find the visible slice of bars inside [fromMs, toMs]
-              const visibleBars = bars.filter((b) => b.time >= fromMs && b.time <= toMs);
-              if (visibleBars.length >= 2) {
-                const pickedVisIdx = Math.min(
-                  visibleBars.length - 1,
-                  Math.max(0, Math.round(ratio * (visibleBars.length - 1)))
-                );
-                const pickedBar = visibleBars[pickedVisIdx]!;
-                const fullIdx = bars.findIndex((b) => b.time === pickedBar.time);
-                onPickStartCandleIdx(fullIdx >= 0 ? fullIdx : 0);
-              } else {
-                const fullIdx = Math.min(
-                  bars.length - 1,
-                  Math.max(0, Math.round(ratio * (bars.length - 1)))
-                );
-                onPickStartCandleIdx(fullIdx);
-              }
-            }}
-            className="absolute inset-0 z-40 cursor-crosshair bg-black/15 flex items-start justify-center pt-3"
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="pointer-events-auto absolute left-14 top-2.5 z-40 flex items-center gap-2 rounded-lg border border-border bg-card/95 px-2.5 py-1 text-[11px] shadow-md backdrop-blur-xs"
           >
-            <div className="rounded-full border border-border bg-card/95 px-3.5 py-1 text-xs font-semibold text-foreground shadow-lg">
-              Click on the exact candle where the {pickingStartCandleDir.toUpperCase()} setup starts…
-            </div>
+            <span
+              onPointerDown={startRailTimeDrag}
+              className="cursor-ew-resize rounded bg-secondary px-1.5 py-0.5 font-mono font-bold text-foreground hover:bg-secondary/80"
+              title="Drag left/right to move Start Bar without moving the chart"
+            >
+              ↔ Drag Start Bar
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, history.bars.length - 2)}
+              value={currentStartIdx}
+              onChange={(e) => {
+                const nextIdx = Number(e.target.value);
+                onPickRef.current?.(nextIdx);
+              }}
+              className="w-28 accent-foreground cursor-pointer h-1.5"
+              title="Scrub Start Candle position"
+            />
+            <span className="font-mono text-[10px] text-muted-foreground">
+              {new Date(velaPosition.startTimeMs).toISOString().slice(5, 16).replace("T", " ")}
+            </span>
           </div>
         )}
 
-        {/* 2. COMPACT RIGHT-GUTTER DRAG HANDLES FOR ENTRY, SL, TP1..TPn, FULL TP & START BAR */}
+        {/* LEFT-EDGE PINNED HANDLE RAIL (SNAPPED TO LEFT OF CHART + CLAMPED WHEN OUT OF RANGE) */}
         {ready && velaPosition && onDragPositionPrice && !pickingStartCandleDir && (
-          <div className="pointer-events-none absolute inset-y-4 left-12 right-16 z-30">
+          <div
+            onPointerDown={(e) => e.stopPropagation()}
+            onMouseDown={(e) => e.stopPropagation()}
+            className="pointer-events-none absolute top-10 bottom-8 left-14 w-48 z-40"
+          >
             {(() => {
-              const { fromMs, toMs } = visibleTimeRangeRef.current;
-              const allBars = nextFrame.bars.length ? nextFrame.bars : history.bars;
-              const visBars = allBars.filter((b) => b.time >= fromMs && b.time <= toMs);
-              const barsForScale = visBars.length > 2 ? visBars : allBars;
-
-              let minP = Infinity;
-              let maxP = -Infinity;
-              for (const b of barsForScale) {
-                if (b.low < minP) minP = b.low;
-                if (b.high > maxP) maxP = b.high;
-              }
-              minP = Math.min(minP, velaPosition.entry, velaPosition.stop, velaPosition.target);
-              maxP = Math.max(maxP, velaPosition.entry, velaPosition.stop, velaPosition.target);
-              const pad = (maxP - minP) * 0.1 || 10;
-              const topP = maxP + pad;
-              const botP = minP - pad;
-              const spanP = Math.max(0.0001, topP - botP);
-              const chartH = 430;
-
-              const pToY = (p: number) =>
-                Math.max(6, Math.min(chartH - 6, ((topP - p) / spanP) * chartH));
-
-              const startPriceDrag = (
-                ev: React.MouseEvent,
-                kind: "entry" | "stop" | "target" | "partial",
-                initialPrice: number,
-                partialIdx?: number
-              ) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                const startY = ev.clientY;
-                document.body.style.cursor = "ns-resize";
-                document.body.style.userSelect = "none";
-
-                const onMove = (moveEv: MouseEvent) => {
-                  const dy = moveEv.clientY - startY;
-                  const priceDelta = -(dy / chartH) * spanP;
-                  const nextP = Number((initialPrice + priceDelta).toFixed(2));
-                  onDragPositionPrice(kind, nextP, partialIdx);
-                };
-
-                const onUp = () => {
-                  document.body.style.cursor = "";
-                  document.body.style.userSelect = "";
-                  window.removeEventListener("mousemove", onMove);
-                  window.removeEventListener("mouseup", onUp);
-                };
-
-                window.addEventListener("mousemove", onMove);
-                window.addEventListener("mouseup", onUp);
-              };
-
-              const startTimeDrag = (ev: React.MouseEvent) => {
-                ev.preventDefault();
-                ev.stopPropagation();
-                if (!onDragStartBarOffset) return;
-                let lastX = ev.clientX;
-                document.body.style.cursor = "ew-resize";
-                document.body.style.userSelect = "none";
-
-                const onMove = (moveEv: MouseEvent) => {
-                  const dx = moveEv.clientX - lastX;
-                  if (Math.abs(dx) >= 12) {
-                    const steps = Math.trunc(dx / 12);
-                    lastX += steps * 12;
-                    onDragStartBarOffset(steps);
-                  }
-                };
-
-                const onUp = () => {
-                  document.body.style.cursor = "";
-                  document.body.style.userSelect = "";
-                  window.removeEventListener("mousemove", onMove);
-                  window.removeEventListener("mouseup", onUp);
-                };
-
-                window.addEventListener("mousemove", onMove);
-                window.addEventListener("mouseup", onUp);
-              };
+              const slPos = priceToClampedRailY(velaPosition.stop);
+              const entryPos = priceToClampedRailY(velaPosition.entry);
+              const tpPos = priceToClampedRailY(velaPosition.target);
 
               return (
                 <>
-                  {/* Compact Right-Edge Drag Pill for Full Take Profit */}
+                  {/* 1. Left-Snapped SL Handle Pill */}
                   <div
-                    onMouseDown={(e) => startPriceDrag(e, "target", velaPosition.target)}
-                    style={{ top: pToY(velaPosition.target) - 9 }}
-                    className="pointer-events-auto absolute right-0 cursor-ns-resize flex items-center"
-                    title="Drag up/down to adjust Full Take Profit"
+                    onPointerDown={(e) => startRailPriceDrag(e, "stop", velaPosition.stop)}
+                    style={{ top: slPos.y }}
+                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-rose-500/70 bg-card/95 hover:bg-rose-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-rose-400 shadow-md transition-colors"
+                    title="Drag up/down to adjust Stop Loss (chart stays locked)"
                   >
-                    <span className="rounded border border-emerald-500/60 bg-card/95 hover:bg-secondary px-1.5 py-0.5 font-mono text-[10px] font-bold text-emerald-400 shadow">
-                      ↕ TP
+                    <span>
+                      {slPos.clamped === "top"
+                        ? "▲"
+                        : slPos.clamped === "bottom"
+                        ? "▼"
+                        : "↕"}{" "}
+                      SL {velaPosition.stop}
                     </span>
                   </div>
 
-                  {/* Compact Right-Edge Drag Pills for Partial TPs */}
-                  {velaPosition.partials.map((p, idx) => (
-                    <div
-                      key={p.id}
-                      onMouseDown={(e) => startPriceDrag(e, "partial", p.price, idx)}
-                      style={{ top: pToY(p.price) - 9 }}
-                      className="pointer-events-auto absolute right-12 cursor-ns-resize flex items-center"
-                      title={`Drag up/down to adjust TP${idx + 1} (${p.pct}%)`}
-                    >
-                      <span className="rounded border border-emerald-500/40 bg-card/95 hover:bg-secondary px-1.5 py-0.5 font-mono text-[10px] font-semibold text-emerald-300 shadow">
-                        ↕ TP{idx + 1}
-                      </span>
-                    </div>
-                  ))}
-
-                  {/* Compact Drag Pills for Entry Price & Start Bar */}
+                  {/* 2. Left-Snapped Entry Handle Pill */}
                   <div
-                    style={{ top: pToY(velaPosition.entry) - 9 }}
-                    className="pointer-events-none absolute left-0 right-0 flex items-center justify-between"
+                    onPointerDown={(e) => startRailPriceDrag(e, "entry", velaPosition.entry)}
+                    style={{ top: entryPos.y }}
+                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1.5 rounded border border-sky-500/70 bg-card/95 hover:bg-sky-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-sky-300 shadow-md transition-colors"
+                    title="Drag up/down to adjust Entry Price • Drag '↔' to move Start Candle"
                   >
                     <span
-                      onMouseDown={startTimeDrag}
-                      className="pointer-events-auto rounded border border-border bg-card/95 hover:bg-secondary px-1.5 py-0.5 font-mono text-[10px] font-bold text-foreground shadow cursor-ew-resize"
+                      onPointerDown={startRailTimeDrag}
+                      className="cursor-ew-resize rounded bg-sky-500/20 px-1 text-sky-200 hover:bg-sky-500/40"
                       title="Drag left/right to move Start Candle"
                     >
-                      ↔ Start Bar
+                      ↔
                     </span>
-                    <span
-                      onMouseDown={(e) => startPriceDrag(e, "entry", velaPosition.entry)}
-                      className="pointer-events-auto rounded border border-sky-500/60 bg-card/95 hover:bg-secondary px-1.5 py-0.5 font-mono text-[10px] font-bold text-sky-400 shadow cursor-ns-resize"
-                      title="Drag up/down to adjust Entry Price"
-                    >
-                      ↕ Entry
+                    <span>
+                      {entryPos.clamped === "top"
+                        ? "▲"
+                        : entryPos.clamped === "bottom"
+                        ? "▼"
+                        : "↕"}{" "}
+                      Entry {velaPosition.entry}
                     </span>
                   </div>
 
-                  {/* Compact Right-Edge Drag Pill for Stop Loss */}
+                  {/* 3. Left-Snapped Partial TP Handle Pills */}
+                  {velaPosition.partials.map((p, idx) => {
+                    const pPos = priceToClampedRailY(p.price);
+                    return (
+                      <div
+                        key={p.id}
+                        onPointerDown={(e) => startRailPriceDrag(e, "partial", p.price, idx)}
+                        style={{ top: pPos.y }}
+                        className="pointer-events-auto absolute left-2 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-emerald-500/50 bg-card/95 hover:bg-emerald-950/60 px-2 py-0.5 font-mono text-[10px] font-semibold text-emerald-300 shadow-md transition-colors"
+                        title={`Drag up/down to adjust TP${idx + 1} (${p.pct}%)`}
+                      >
+                        <span>
+                          {pPos.clamped === "top"
+                            ? "▲"
+                            : pPos.clamped === "bottom"
+                            ? "▼"
+                            : "↕"}{" "}
+                          TP{idx + 1} ({p.pct}%) {p.price}
+                        </span>
+                      </div>
+                    );
+                  })}
+
+                  {/* 4. Left-Snapped Full Take Profit Handle Pill */}
                   <div
-                    onMouseDown={(e) => startPriceDrag(e, "stop", velaPosition.stop)}
-                    style={{ top: pToY(velaPosition.stop) - 9 }}
-                    className="pointer-events-auto absolute right-0 cursor-ns-resize flex items-center"
-                    title="Drag up/down to adjust Stop Loss"
+                    onPointerDown={(e) => startRailPriceDrag(e, "target", velaPosition.target)}
+                    style={{ top: tpPos.y }}
+                    className="pointer-events-auto absolute left-0 -translate-y-1/2 cursor-ns-resize flex items-center gap-1 rounded border border-emerald-500/70 bg-card/95 hover:bg-emerald-950/60 px-2 py-0.5 font-mono text-[10px] font-bold text-emerald-400 shadow-md transition-colors"
+                    title="Drag up/down to adjust Full Take Profit (chart stays locked)"
                   >
-                    <span className="rounded border border-rose-500/60 bg-card/95 hover:bg-secondary px-1.5 py-0.5 font-mono text-[10px] font-bold text-rose-400 shadow">
-                      ↕ SL
+                    <span>
+                      {tpPos.clamped === "top"
+                        ? "▲"
+                        : tpPos.clamped === "bottom"
+                        ? "▼"
+                        : "↕"}{" "}
+                      Full TP {velaPosition.target}
                     </span>
                   </div>
                 </>
               );
             })()}
+          </div>
+        )}
+
+        {/* Banner when Picking Start Candle */}
+        {ready && pickingStartCandleDir && (
+          <div className="pointer-events-none absolute inset-x-0 top-2.5 z-40 flex justify-center">
+            <div className="rounded-full border border-border bg-card/95 px-3.5 py-1 text-[11px] font-semibold text-foreground shadow-md">
+              Click any candle on the chart to place {pickingStartCandleDir.toUpperCase()} Start Bar…
+            </div>
           </div>
         )}
       </div>

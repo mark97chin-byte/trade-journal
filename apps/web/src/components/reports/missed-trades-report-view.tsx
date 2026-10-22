@@ -16,7 +16,7 @@ export function MissedTradesReportView({ query }: { query: string }) {
     );
   }
 
-  const { summary, byReason = [], bySession = [], byHour = [], byDayOfWeek = [] } = data;
+  const { summary, byReason = [], bySession = [], byHour = [], byDayOfWeek = [], byPlaybookRule = [] } = data;
   const topReason = byReason[0];
   const topSession = bySession[0];
   const topHour = byHour[0];
@@ -286,6 +286,54 @@ export function MissedTradesReportView({ query }: { query: string }) {
           </CardContent>
         </Card>
       </div>
+
+      {/* 4. PLAYBOOK RULES MATCHED ON MISSED TRADES */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm font-bold">
+            Playbook Rules Matched on Missed Setups
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {byPlaybookRule.length === 0 ? (
+            <p className="text-xs text-muted-foreground py-4 text-center">
+              Select a Playbook and check off matched rules on your Missed Trades to track rule-level opportunity cost here.
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5">
+              {byPlaybookRule.map((item: any) => (
+                <div
+                  key={`${item.playbookName}-${item.rule}`}
+                  className="rounded-lg border border-border/50 bg-secondary/20 p-3 flex items-center justify-between gap-3 text-xs"
+                >
+                  <div className="min-w-0">
+                    <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                      {item.playbookName}
+                    </div>
+                    <div className="font-semibold text-foreground truncate">{item.rule}</div>
+                    <div className="text-[11px] text-muted-foreground mt-0.5">
+                      Matched in {item.count} missed setup(s) • Win Rate:{" "}
+                      {Math.round((item.wins / item.count) * 100)}%
+                    </div>
+                  </div>
+                  <div className="text-right font-mono shrink-0">
+                    <div
+                      className={`font-bold ${
+                        item.pnl >= 0 ? "text-emerald-500" : "text-rose-500"
+                      }`}
+                    >
+                      {fmtMoney(item.pnl)}
+                    </div>
+                    <div className="text-[10px] text-muted-foreground">
+                      {item.r >= 0 ? `+${item.r.toFixed(2)}R` : `${item.r.toFixed(2)}R`}
+                    </div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
     </div>
   );
 }

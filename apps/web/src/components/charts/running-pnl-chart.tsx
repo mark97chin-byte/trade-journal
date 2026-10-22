@@ -75,25 +75,35 @@ export function RunningPnlChart({
   const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const svgRef = useRef<SVGSVGElement | null>(null);
 
-  // 1. Calculate effective contract multiplier for the instrument
-  const multiplier = useMemo(() => {
-    let mult = trade.contractMultiplier || 1;
-    const totalExitDelta = Math.abs((trade.avgExit ?? trade.avgEntry) - trade.avgEntry);
-    if (totalExitDelta > 0 && trade.quantity > 0 && Math.abs(trade.grossPnl) > 0) {
-      const implied = Math.abs(trade.grossPnl) / (totalExitDelta * trade.quantity);
-      if (Number.isFinite(implied) && implied > 0) {
-        mult = implied;
-      }
-    }
-    return mult;
-  }, [trade]);
-
-  // 2. Identify exit fills
+  // 1. Identify exit fills sorted chronologically
   const exitFills = useMemo(() => {
     return executions
       .filter((e) => e.side === (isShort ? "buy" : "sell"))
       .sort((a, b) => Date.parse(a.executedAt) - Date.parse(b.executedAt));
   }, [executions, isShort]);
+
+  // 2. Calculate true contract multiplier (never shrink multiplier by dividing blended partial P&L by Full TP distance!)
+  const multiplier = useMemo(() => {
+    if (trade.contractMultiplier && trade.contractMultiplier > 0) {
+      return trade.contractMultiplier;
+    }
+    // Infer from exit fills if explicit leg P&L is present
+    for (const ex of exitFills) {
+      const legDelta = Math.abs(ex.price - trade.avgEntry);
+      if (legDelta > 0 && ex.quantity > 0 && ex.pnl && Math.abs(ex.pnl) > 0) {
+        const imp = Math.abs(ex.pnl) / (legDelta * ex.quantity);
+        if (Number.isFinite(imp) && imp > 0) return imp;
+      }
+    }
+    const totalExitDelta = Math.abs((trade.avgExit ?? trade.avgEntry) - trade.avgEntry);
+    if (totalExitDelta > 0 && trade.quantity > 0 && Math.abs(trade.grossPnl) > 0) {
+      const implied = Math.abs(trade.grossPnl) / (totalExitDelta * trade.quantity);
+      if (Number.isFinite(implied) && implied > 0) {
+        return implied;
+      }
+    }
+    return 1;
+  }, [trade, exitFills]);
 
   // 3. Generate minute-by-minute simulation points
   const points = useMemo<Point[]>(() => {
@@ -129,37 +139,71 @@ export function RunningPnlChart({
     const pts: Point[] = [];
     const usedExits = new Set<string>();
 
+    const stepToleranceMs =
+      tradeBars.length > 1
+        ? Math.max(30_000, Math.round((tradeBars[1]!.time - tradeBars[0]!.time) * 0.6))
+        : 60_000;
+
     for (let i = 0; i < tradeBars.length; i++) {
       const b = tradeBars[i]!;
       const t = b.time;
+      const isLastBar = i === tradeBars.length - 1;
 
-      // Find all exits that happened up to this bar time (+30s threshold)
-      const pastExits = exitFills.filter(
-        (e) => Date.parse(e.executedAt) <= t + 30_000
-      );
-      const realizedPnl = pastExits.reduce((acc, e) => acc + (e.pnl || 0), 0);
-      const closedQty = pastExits.reduce((acc, e) => acc + e.quantity, 0);
-      const activeQty = Math.max(0, trade.quantity - closedQty);
+      // Exits that have executed on or before this candle
+      const pastExits = isLastBar
+        ? exitFills
+        : exitFills.filter((e) => Date.parse(e.executedAt) <= t + stepToleranceMs);
 
-      // Price delta from entry
-      const priceDelta = isShort ? trade.avgEntry - b.close : b.close - trade.avgEntry;
-      const floatingUnrealized = activeQty * priceDelta * multiplier;
-      const runningPnl = activeQty > 0 ? realizedPnl + floatingUnrealized : trade.netPnl;
-      const holdPnl = trade.quantity * priceDelta * multiplier;
+      let realizedPnl = 0;
+      let closedQty = 0;
+      for (const ex of pastExits) {
+        closedQty += ex.quantity;
+        const legMove = isShort ? trade.avgEntry - ex.price : ex.price - trade.avgEntry;
+        const legPnl =
+          ex.pnl !== undefined && Number.isFinite(ex.pnl)
+            ? ex.pnl
+            : ex.quantity * legMove * multiplier;
+        realizedPnl += legPnl;
+      }
 
-      // Check if any exit occurred right around this bar
-      let exitMarker: Point["exitMarker"] = undefined;
+      const activeQty = Math.max(0, Number((trade.quantity - closedQty).toFixed(4)));
+
+      // Mark price for this bar: on the final exit bar if a TP/SL fill occurred, use that fill's price
       const currentExit = exitFills.find(
         (e) =>
           !usedExits.has(e.id) &&
-          Math.abs(Date.parse(e.executedAt) - t) <= 60_000
+          (Math.abs(Date.parse(e.executedAt) - t) <= stepToleranceMs ||
+            (isLastBar && !usedExits.has(e.id)))
       );
+
+      const markPrice =
+        activeQty === 0 && currentExit
+          ? currentExit.price
+          : b.close;
+
+      const priceDelta = isShort
+        ? trade.avgEntry - markPrice
+        : markPrice - trade.avgEntry;
+
+      const floatingUnrealized = activeQty * priceDelta * multiplier;
+      // Actual Running P&L = banked partial profits + unrealized P&L on remaining open contracts
+      const runningPnl = realizedPnl + floatingUnrealized;
+      // Full-Hold Benchmark = holding 100% of initial position without taking early partials
+      const holdPnl = trade.quantity * priceDelta * multiplier;
+
+      let exitMarker: Point["exitMarker"] = undefined;
       if (currentExit) {
         usedExits.add(currentExit.id);
+        const legMove = isShort
+          ? trade.avgEntry - currentExit.price
+          : currentExit.price - trade.avgEntry;
         exitMarker = {
           reason: currentExit.reason || "TP",
-          quantity: currentExit.quantity,
-          pnl: currentExit.pnl,
+          quantity: Number(currentExit.quantity.toFixed(2)),
+          pnl:
+            currentExit.pnl !== undefined
+              ? currentExit.pnl
+              : Number((currentExit.quantity * legMove * multiplier).toFixed(2)),
           price: currentExit.price,
         };
       }
@@ -170,7 +214,7 @@ export function RunningPnlChart({
         timeLabel: formatTimestamp(new Date(t).toISOString(), timeZone).slice(11, 16),
         runningPnl: Number(runningPnl.toFixed(2)),
         holdPnl: Number(holdPnl.toFixed(2)),
-        price: b.close,
+        price: markPrice,
         activeQty: Number(activeQty.toFixed(2)),
         exitMarker,
       });
@@ -192,15 +236,16 @@ export function RunningPnlChart({
     }
 
     const runningValues = points.map((p) => p.runningPnl);
-    const maxMfe = Math.max(...runningValues, 0);
-    const maxMae = Math.min(...runningValues, 0);
+    const holdValues = points.map((p) => p.holdPnl);
+    const finalRunningPnl = points[points.length - 1]?.runningPnl ?? trade.netPnl;
     const finalHoldPnl = points[points.length - 1]?.holdPnl ?? trade.netPnl;
-    const deltaVsHold = trade.netPnl - finalHoldPnl;
+    const maxMfe = Math.max(...runningValues, ...holdValues, 0);
+    const maxMae = Math.min(...runningValues, ...holdValues, 0);
+    const deltaVsHold = Number((finalRunningPnl - finalHoldPnl).toFixed(2));
 
-    // Efficiency: Actual Realized vs Full-Hold Benchmark
     let efficiency = 100;
     if (Math.abs(finalHoldPnl) > 0.01) {
-      efficiency = Number(((trade.netPnl / finalHoldPnl) * 100).toFixed(1));
+      efficiency = Number(((finalRunningPnl / finalHoldPnl) * 100).toFixed(1));
     }
 
     return {

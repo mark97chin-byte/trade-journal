@@ -199,8 +199,55 @@ export async function GET(req: NextRequest) {
       const byHour = Array.from(hourMap.values()).sort((a, b) => b.count - a.count);
       const byDayOfWeek = Array.from(dowMap.values()).sort((a, b) => b.count - a.count);
 
+      // 8. Breakdown by Playbook & Matched Rules
+      try {
+        db.exec(`ALTER TABLE missed_trades ADD COLUMN rules_followed_json TEXT DEFAULT '[]'`);
+      } catch {}
+      let playbooksList: Array<{ id: string; name: string; rules_json: string }> = [];
+      try {
+        playbooksList = db.prepare(`SELECT id, name, rules_json FROM playbooks`).all() as any[];
+      } catch {}
+      const pbNameMap = new Map<string, string>();
+      for (const pb of playbooksList) pbNameMap.set(pb.id, pb.name);
+
+      const ruleMap = new Map<
+        string,
+        { rule: string; playbookName: string; count: number; wins: number; pnl: number; r: number }
+      >();
+
+      for (const m of missedRows) {
+        const pbName = m.playbook_id ? pbNameMap.get(m.playbook_id) || "Playbook" : "General";
+        let rules: string[] = [];
+        try {
+          rules = JSON.parse(m.rules_followed_json || "[]");
+        } catch {}
+        const isWin = (m.outcome || "WIN") === "WIN" ? 1 : 0;
+        const pnl = Number(m.theoretical_pnl || 0);
+        const r = Number(m.realized_r ?? m.planned_r ?? 0);
+
+        for (const ruleText of rules) {
+          const key = `${pbName}::${ruleText}`;
+          const cur = ruleMap.get(key) || {
+            rule: ruleText,
+            playbookName: pbName,
+            count: 0,
+            wins: 0,
+            pnl: 0,
+            r: 0,
+          };
+          cur.count++;
+          cur.wins += isWin;
+          cur.pnl += pnl;
+          cur.r += r;
+          ruleMap.set(key, cur);
+        }
+      }
+
+      const byPlaybookRule = Array.from(ruleMap.values()).sort((a, b) => b.count - a.count);
+
       return NextResponse.json({
         ok: true,
+        byPlaybookRule,
         summary: {
           executed: {
             count: execCount,

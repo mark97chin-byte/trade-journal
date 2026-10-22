@@ -19,6 +19,8 @@ import {
   Calendar as CalendarIcon,
   LayoutList,
   SlidersHorizontal,
+  CheckSquare,
+  Square,
 } from "lucide-react";
 import { FilterBar } from "@/components/filter-bar";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -34,6 +36,8 @@ import {
   type ExtractedRrSetup,
 } from "@/components/trade-market-data";
 import type { ChartExecution } from "@/components/trade-chart";
+import { RunningPnlChart } from "@/components/charts/running-pnl-chart";
+import type { TradeMarketResult } from "@/lib/market-data";
 import { useApi } from "@/lib/use-api";
 import { fmtMoney } from "@/lib/utils";
 
@@ -43,6 +47,139 @@ interface PartialTarget {
   price: number;
   pct: number;
   manualPct?: boolean;
+  hitTimeMs?: number | null;
+}
+
+interface MissedTradeRecord {
+  id: string;
+  symbol: string;
+  direction: "long" | "short";
+  observedAt: string;
+  exitAt: string | null;
+  outcome: "WIN" | "LOSS" | "BE";
+  playbookId: string | null;
+  entry: number | null;
+  stop: number | null;
+  target: number | null;
+  partialsJson: string;
+  accountSize: number;
+  riskPercent: number;
+  riskAmount: number;
+  contractMultiplier: number;
+  quantity: number;
+  plannedR: number | null;
+  realizedR: number | null;
+  theoreticalPnl: number;
+  maeR: number | null;
+  mfeR: number | null;
+  missReason: string;
+  session: string;
+  tagsJson: string;
+  mistakesJson: string;
+  rulesFollowedJson?: string;
+  notes: string;
+  reviewNotes: string;
+  rating: number | null;
+  notionPageId: string | null;
+  notionUrl: string | null;
+  createdAt: string;
+  archivedAt: string | null;
+}
+
+const MISS_REASONS = [
+  "Hesitation / Fear",
+  "Away from Desk / Missed Alert",
+  "Spread / Limit Unfilled by Ticks",
+  "Second-Guessed HTF Bias",
+  "News / High-Impact Volatility",
+  "In Another Trade / Max Risk Reached",
+  "Prematurely Cancelled Order",
+  "Other",
+];
+
+const ICT_SESSIONS = ["Asia", "London", "NY AM", "NY PM"];
+
+// Converts a UTC ISO string into "YYYY-MM-DDTHH:mm" formatted in America/New_York wall-clock time
+function utcIsoToNyInput(isoStr: string | null | undefined): string {
+  const d = isoStr ? new Date(isoStr) : new Date();
+  if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 16);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+  const hr = map.hour === "24" ? "00" : map.hour || "00";
+  return `${map.year}-${map.month}-${map.day}T${hr}:${map.minute}`;
+}
+
+// Converts a "YYYY-MM-DDTHH:mm" string (entered as America/New_York wall-clock time) back into true UTC ISO string
+function nyInputToUtcIso(nyLocalStr: string): string {
+  if (!nyLocalStr) return new Date().toISOString();
+  const m = nyLocalStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) {
+    const parsed = Date.parse(nyLocalStr);
+    return Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date().toISOString();
+  }
+  const yr = parseInt(m[1]!, 10);
+  const mo = parseInt(m[2]!, 10) - 1;
+  const dy = parseInt(m[3]!, 10);
+  const hr = parseInt(m[4]!, 10);
+  const mn = parseInt(m[5]!, 10);
+
+  const approxUtcMs = Date.UTC(yr, mo, dy, hr, mn);
+  // Determine America/New_York offset at that timestamp
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const approxDate = new Date(approxUtcMs);
+  const parts = dtf.formatToParts(approxDate);
+  const pMap: Record<string, number> = {};
+  for (const p of parts) {
+    const v = parseInt(p.value, 10);
+    if (!isNaN(v)) pMap[p.type] = v;
+  }
+  const nyRepresentedMs = Date.UTC(
+    pMap.year || yr,
+    (pMap.month || mo + 1) - 1,
+    pMap.day || dy,
+    (pMap.hour || 0) % 24,
+    pMap.minute || 0,
+    pMap.second || 0
+  );
+  const offsetMs = nyRepresentedMs - approxUtcMs;
+  return new Date(approxUtcMs - offsetMs).toISOString();
+}
+
+function deriveIctSessionFromIso(isoStr: string): string {
+  try {
+    const d = new Date(isoStr);
+    if (isNaN(d.getTime())) return "NY AM";
+    const hStr = new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      hour: "numeric",
+      hour12: false,
+    }).format(d);
+    const h = parseInt(hStr, 10) % 24;
+    if (h >= 2 && h < 8) return "London";
+    if (h >= 8 && h < 12) return "NY AM";
+    if (h >= 12 && h < 18) return "NY PM";
+    return "Asia";
+  } catch {
+    return "NY AM";
+  }
 }
 
 function rebalanceEqualPartialsForm(
@@ -74,54 +211,6 @@ function rebalanceEqualPartialsForm(
   });
 }
 
-interface MissedTradeRecord {
-  id: string;
-  symbol: string;
-  direction: "long" | "short";
-  observedAt: string;
-  exitAt: string | null;
-  outcome: "WIN" | "LOSS" | "BE";
-  playbookId: string | null;
-  entry: number | null;
-  stop: number | null;
-  target: number | null;
-  partialsJson: string;
-  accountSize: number;
-  riskPercent: number;
-  riskAmount: number;
-  contractMultiplier: number;
-  quantity: number;
-  plannedR: number | null;
-  realizedR: number | null;
-  theoreticalPnl: number;
-  maeR: number | null;
-  mfeR: number | null;
-  missReason: string;
-  session: string;
-  tagsJson: string;
-  mistakesJson: string;
-  notes: string;
-  reviewNotes: string;
-  rating: number | null;
-  notionPageId: string | null;
-  notionUrl: string | null;
-  createdAt: string;
-  archivedAt: string | null;
-}
-
-const MISS_REASONS = [
-  "Hesitation / Fear",
-  "Away from Desk / Missed Alert",
-  "Spread / Limit Unfilled by Ticks",
-  "Second-Guessed HTF Bias",
-  "News / High-Impact Volatility",
-  "In Another Trade / Max Risk Reached",
-  "Prematurely Cancelled Order",
-  "Other",
-];
-
-const ICT_SESSIONS = ["Asia", "London", "NY AM", "NY PM"];
-
 function inferDefaultPointMultiplier(symbol: string): number {
   const s = symbol.toUpperCase();
   if (s.includes("ES") && !s.includes("MES")) return 50;
@@ -142,8 +231,8 @@ function getMondayOfDate(dateStr: string): string {
   return mon.toISOString().slice(0, 10);
 }
 
-function MissedTradePeriodCompanion({ observedAt }: { observedAt: string }) {
-  const dateStr = (observedAt || new Date().toISOString()).slice(0, 10);
+function MissedTradePeriodCompanion({ observedIso }: { observedIso: string }) {
+  const dateStr = utcIsoToNyInput(observedIso).slice(0, 10);
   const mondayStr = getMondayOfDate(dateStr);
   const monthKey = dateStr.slice(0, 7);
   const yr = dateStr.slice(0, 4);
@@ -309,9 +398,10 @@ export default function MissedPage() {
 
 function MissedTradesWorkspace() {
   const { data, refresh } = useApi<{ trades: MissedTradeRecord[] }>("/api/workspace/missed");
-  const { data: books } = useApi<{ playbooks: { id: string; name: string }[] }>("/api/playbooks");
+  const { data: books } = useApi<{
+    playbooks: { id: string; name: string; rules?: string[]; rulesJson?: string }[];
+  }>("/api/playbooks");
 
-  // Top-level Page View Mode: "workspace" (Setup & Replay) vs "calendar" (Calendar & List)
   const [viewMode, setViewMode] = useState<"workspace" | "calendar">("workspace");
 
   // Calendar & List Filters
@@ -326,6 +416,7 @@ function MissedTradesWorkspace() {
   const [directionFilter, setDirectionFilter] = useState<string>("all");
 
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [marketResult, setMarketResult] = useState<TradeMarketResult | null>(null);
 
   // Layout split state
   const [leftWidth, setLeftWidth] = useState<number>(45);
@@ -333,19 +424,22 @@ function MissedTradesWorkspace() {
   const [rightCollapsed, setRightCollapsed] = useState(false);
   const isDraggingRef = useRef(false);
 
+  // Canonical UTC ISO timestamps for the active Missed Setup (prevents browser timezone shifts!)
+  const [entryIso, setEntryIso] = useState<string>(() => new Date().toISOString());
+  const [exitIso, setExitIso] = useState<string>(() =>
+    new Date(Date.now() + 3600_000).toISOString()
+  );
+
   // Active Missed Trade Form State
   const [symbol, setSymbol] = useState("NAS100");
   const [direction, setDirection] = useState<"long" | "short">("long");
-  const [observedAt, setObservedAt] = useState(() =>
-    new Date().toISOString().slice(0, 16)
-  );
-  const [exitAt, setExitAt] = useState(() =>
-    new Date(Date.now() + 3600_000).toISOString().slice(0, 16)
-  );
   const [outcome, setOutcome] = useState<"WIN" | "LOSS" | "BE">("WIN");
   const [playbookId, setPlaybookId] = useState<string>("none");
+  const [rulesFollowed, setRulesFollowed] = useState<string[]>([]);
   const [missReason, setMissReason] = useState<string>(MISS_REASONS[0]!);
-  const [session, setSession] = useState<string>("NY AM");
+
+  // ICT Session is automatically derived from entryIso in America/New_York time!
+  const derivedSession = useMemo(() => deriveIctSessionFromIso(entryIso), [entryIso]);
 
   // Entry, SL, Full TP & Multi-Partials
   const [entryStr, setEntryStr] = useState<string>("");
@@ -375,6 +469,20 @@ function MissedTradesWorkspace() {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const noteEditorRef = useRef<RichEditorHandle>(null);
 
+  // Extract rules for the currently selected Playbook
+  const activePlaybookRules = useMemo<string[]>(() => {
+    if (!playbookId || playbookId === "none" || !books?.playbooks) return [];
+    const found = books.playbooks.find((b) => b.id === playbookId);
+    if (!found) return [];
+    if (Array.isArray(found.rules)) return found.rules;
+    if (typeof (found as any).rulesJson === "string") {
+      try {
+        return JSON.parse((found as any).rulesJson);
+      } catch {}
+    }
+    return [];
+  }, [playbookId, books]);
+
   const allUnarchived = useMemo(
     () => (data?.trades || []).filter((t) => !t.archivedAt),
     [data]
@@ -382,7 +490,10 @@ function MissedTradesWorkspace() {
 
   const activeList = useMemo(() => {
     return allUnarchived.filter((t) => {
-      if (selectedDateFilter && (t.observedAt || "").slice(0, 10) !== selectedDateFilter)
+      if (
+        selectedDateFilter &&
+        utcIsoToNyInput(t.observedAt).slice(0, 10) !== selectedDateFilter
+      )
         return false;
       if (reasonFilter !== "all" && t.missReason !== reasonFilter) return false;
       if (sessionFilter !== "all" && t.session !== sessionFilter) return false;
@@ -410,14 +521,16 @@ function MissedTradesWorkspace() {
     setSelectedId(rec.id);
     setSymbol(rec.symbol);
     setDirection(rec.direction === "short" ? "short" : "long");
-    setObservedAt((rec.observedAt || new Date().toISOString()).slice(0, 16));
-    setExitAt(
-      (rec.exitAt || rec.observedAt || new Date().toISOString()).slice(0, 16)
-    );
+    setEntryIso(rec.observedAt || new Date().toISOString());
+    setExitIso(rec.exitAt || rec.observedAt || new Date().toISOString());
     setOutcome(rec.outcome || "WIN");
     setPlaybookId(rec.playbookId || "none");
+    try {
+      setRulesFollowed(JSON.parse(rec.rulesFollowedJson || "[]"));
+    } catch {
+      setRulesFollowed([]);
+    }
     setMissReason(rec.missReason || MISS_REASONS[0]!);
-    setSession(rec.session || "NY AM");
     setEntryStr(rec.entry != null ? String(rec.entry) : "");
     setStopStr(rec.stop != null ? String(rec.stop) : "");
     setTargetStr(rec.target != null ? String(rec.target) : "");
@@ -459,15 +572,16 @@ function MissedTradesWorkspace() {
     setSelectedId(`missed_${Date.now().toString(36)}`);
     setSymbol("NAS100");
     setDirection("long");
-    const nowLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
-      .toISOString()
-      .slice(0, 16);
-    setObservedAt(nowLocal);
-    setExitAt(nowLocal);
+    // If marketResult has bars loaded, anchor new setup to the latest loaded bar time
+    const latestBarMs =
+      marketResult?.bars?.[marketResult.bars.length - 1]?.time ?? Date.now();
+    const startIso = new Date(latestBarMs).toISOString();
+    setEntryIso(startIso);
+    setExitIso(startIso);
     setOutcome("WIN");
     setPlaybookId("none");
+    setRulesFollowed([]);
     setMissReason(MISS_REASONS[0]!);
-    setSession("NY AM");
     setEntryStr("");
     setStopStr("");
     setTargetStr("");
@@ -567,59 +681,121 @@ function MissedTradesWorkspace() {
     direction,
   ]);
 
-  const syntheticExecutions: ChartExecution[] = useMemo(() => {
+  // Build candle-aligned execution legs for RunningPnlChart using exact candle crossing timestamps
+  const runningPnlExecutions = useMemo(() => {
     const entry = parseFloat(entryStr);
     const target = parseFloat(targetStr);
     const stop = parseFloat(stopStr);
     if (!Number.isFinite(entry) || entry <= 0) return [];
 
-    const entrySide = direction === "short" ? "sell" : "buy";
-    const exitSide = direction === "short" ? "buy" : "sell";
-    const openIso = new Date(observedAt || Date.now()).toISOString();
-    const closeIso = new Date(exitAt || observedAt || Date.now()).toISOString();
+    const entrySide: "buy" | "sell" = direction === "short" ? "sell" : "buy";
+    const exitSide: "buy" | "sell" = direction === "short" ? "buy" : "sell";
+    const openMs = Date.parse(entryIso);
+    const closeMs = Math.max(openMs + 60_000, Date.parse(exitIso || entryIso));
 
-    const list: ChartExecution[] = [
+    // Scan loaded marketResult.bars in [openMs, closeMs] to find exact candle timestamp when each partial TP was hit
+    const tradeBars = (marketResult?.bars || []).filter(
+      (b) => b.time >= openMs && b.time <= closeMs
+    );
+
+    const rows: Array<{
+      id: string;
+      side: "buy" | "sell";
+      quantity: number;
+      price: number;
+      fee: number;
+      executedAt: string;
+      reason?: string;
+      pnl?: number;
+    }> = [
       {
+        id: "missed-entry-1",
         side: entrySide,
         quantity: calc.quantity,
         price: entry,
-        executedAt: openIso,
+        fee: 0,
+        executedAt: new Date(openMs).toISOString(),
+        reason: "Entry",
       },
     ];
 
+    let allocatedPct = 0;
+    let allocatedQty = 0;
+
     partials.forEach((p, idx) => {
       if (Number.isFinite(p.price) && p.price > 0 && p.pct > 0) {
-        const legQty = Number(((calc.quantity * p.pct) / 100).toFixed(2));
-        const openMs = Date.parse(openIso);
-        const closeMs = Date.parse(closeIso);
-        const legMs = openMs + ((closeMs - openMs) * (idx + 1)) / (partials.length + 1);
-        list.push({
+        const pct = Math.min(100 - allocatedPct, p.pct);
+        if (pct <= 0) return;
+        allocatedPct += pct;
+        const isFullHundred = Math.abs(allocatedPct - 100) < 0.001;
+        const legQty = isFullHundred
+          ? Number(Math.max(0, calc.quantity - allocatedQty).toFixed(2))
+          : Number(((calc.quantity * pct) / 100).toFixed(2));
+        allocatedQty = Number((allocatedQty + legQty).toFixed(2));
+
+        let hitMs = p.hitTimeMs ?? null;
+        if (!hitMs && tradeBars.length > 0) {
+          const hitBar = tradeBars.find((b) =>
+            direction === "long" ? b.high >= p.price : b.low <= p.price
+          );
+          if (hitBar) hitMs = hitBar.time;
+        }
+        if (!hitMs) {
+          hitMs = openMs + ((closeMs - openMs) * (idx + 1)) / (partials.length + 1);
+        }
+
+        const move = direction === "long" ? p.price - entry : entry - p.price;
+        const legPnl = Number((move * legQty * contractMultiplier).toFixed(2));
+        rows.push({
+          id: `missed-tp-${idx + 1}`,
           side: exitSide,
           quantity: legQty,
           price: p.price,
-          executedAt: new Date(legMs).toISOString(),
+          fee: 0,
+          executedAt: new Date(hitMs).toISOString(),
+          reason: `TP${idx + 1}`,
+          pnl: legPnl,
         });
       }
     });
 
-    const finalExitPrice =
+    const remQty = Number(Math.max(0, calc.quantity - allocatedQty).toFixed(2));
+    const finalPrice =
       outcome === "LOSS" && Number.isFinite(stop)
         ? stop
         : Number.isFinite(target)
         ? target
         : entry;
 
-    if (Number.isFinite(finalExitPrice) && finalExitPrice > 0) {
-      list.push({
+    if (remQty > 0 && Number.isFinite(finalPrice) && finalPrice > 0) {
+      const move = direction === "long" ? finalPrice - entry : entry - finalPrice;
+      const legPnl = Number((move * remQty * contractMultiplier).toFixed(2));
+      rows.push({
+        id: "missed-final-exit",
         side: exitSide,
-        quantity: calc.quantity,
-        price: finalExitPrice,
-        executedAt: closeIso,
+        quantity: remQty,
+        price: finalPrice,
+        fee: 0,
+        executedAt: new Date(closeMs).toISOString(),
+        reason: outcome === "LOSS" ? "SL" : "Full TP",
+        pnl: legPnl,
       });
     }
 
-    return list;
-  }, [entryStr, stopStr, targetStr, direction, observedAt, exitAt, calc.quantity, partials, outcome]);
+    return rows;
+  }, [
+    entryStr,
+    stopStr,
+    targetStr,
+    direction,
+    entryIso,
+    exitIso,
+    calc.quantity,
+    partials,
+    outcome,
+    contractMultiplier,
+    marketResult?.bars,
+  ]);
 
   const partialsPctTotal = useMemo(
     () => Number(partials.reduce((acc, p) => acc + (Number(p.pct) || 0), 0).toFixed(2)),
@@ -651,10 +827,11 @@ function MissedTradesWorkspace() {
           id: selectedId,
           symbol: symbol.trim().toUpperCase(),
           direction,
-          observedAt: new Date(observedAt).toISOString(),
-          exitAt: exitAt ? new Date(exitAt).toISOString() : null,
+          observedAt: entryIso,
+          exitAt: exitIso,
           outcome,
           playbookId: playbookId === "none" ? null : playbookId,
+          rulesFollowedJson: JSON.stringify(rulesFollowed),
           entry: entryStr !== "" ? Number(entryStr) : null,
           stop: stopStr !== "" ? Number(stopStr) : null,
           target: targetStr !== "" ? Number(targetStr) : null,
@@ -670,7 +847,7 @@ function MissedTradesWorkspace() {
           maeR: maeRStr !== "" ? Number(maeRStr) : null,
           mfeR: mfeRStr !== "" ? Number(mfeRStr) : null,
           missReason,
-          session,
+          session: derivedSession,
           tagsJson: JSON.stringify(tags),
           mistakesJson: JSON.stringify(mistakes),
           notes,
@@ -750,13 +927,15 @@ function MissedTradesWorkspace() {
     if (Array.isArray(setup.partials) && setup.partials.length > 0) {
       setPartials(setup.partials);
     }
-    setObservedAt(setup.entryTimeIso.slice(0, 16));
-    setExitAt(setup.exitTimeIso.slice(0, 16));
+    setEntryIso(setup.entryTimeIso);
+    setExitIso(setup.exitTimeIso);
     setOutcome(setup.outcome);
     setMfeRStr(String(setup.mfeR));
     setMaeRStr(String(setup.maeR));
     setStatusMsg(
-      `Populated from Position Tool (${setup.direction.toUpperCase()} • ${setup.realizedR > 0 ? `+${setup.realizedR}R` : `${setup.realizedR}R`} • ${setup.outcome})`
+      `Populated (${setup.direction.toUpperCase()} • ${
+        setup.realizedR > 0 ? `+${setup.realizedR}R` : `${setup.realizedR}R`
+      } • ${setup.outcome})`
     );
   };
 
@@ -789,7 +968,6 @@ function MissedTradesWorkspace() {
     return { count: list.length, totalMissedPnl, totalMissedR, winRate };
   }, [activeList]);
 
-  // Monthly Calendar Grid Builder for "Calendar & List" Tab
   const calendarDays = useMemo(() => {
     const [yrStr, moStr] = calendarMonth.split("-");
     const year = parseInt(yrStr || "2026", 10);
@@ -803,7 +981,7 @@ function MissedTradesWorkspace() {
       { count: number; pnl: number; r: number; items: MissedTradeRecord[] }
     >();
     for (const t of allUnarchived) {
-      const dKey = (t.observedAt || "").slice(0, 10);
+      const dKey = utcIsoToNyInput(t.observedAt).slice(0, 10);
       if (!dKey.startsWith(calendarMonth)) continue;
       const cur = byDate.get(dKey) || { count: 0, pnl: 0, r: 0, items: [] };
       cur.count++;
@@ -842,57 +1020,48 @@ function MissedTradesWorkspace() {
 
   return (
     <div className="flex flex-col min-h-screen">
-      <FilterBar
-        title="Missed trades"
-        actions={
-          <div className="flex items-center gap-2">
-            <div className="flex items-center rounded-lg border border-border bg-secondary/40 p-0.5 text-xs">
-              <button
-                type="button"
-                onClick={() => setViewMode("workspace")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
-                  viewMode === "workspace"
-                    ? "bg-card text-foreground shadow-2xs"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <SlidersHorizontal className="h-3.5 w-3.5" />
-                <span>Setup &amp; Replay</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setViewMode("calendar")}
-                className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
-                  viewMode === "calendar"
-                    ? "bg-card text-foreground shadow-2xs"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                <CalendarIcon className="h-3.5 w-3.5" />
-                <span>Calendar &amp; List ({allUnarchived.length})</span>
-              </button>
-            </div>
-
-            <Button size="sm" onClick={handleStartNewMissedTrade} className="text-xs font-semibold">
-              <Plus className="h-3.5 w-3.5 mr-1" />
-              Log Missed Setup
-            </Button>
-          </div>
-        }
-      />
+      <FilterBar title="Missed trades" />
 
       <div className="p-4 space-y-4">
-        {/* NEUTRAL SUMMARY BAR (CLEAN IN LIGHT & DARK MODE) */}
+        {/* 1. FIRST CARD: VAULT SUMMARY + VIEW TABS (Setup & Replay | Calendar & List) + LOG MISSED SETUP BUTTON */}
         <Card className="border-border/70 bg-card">
           <CardContent className="flex flex-wrap items-center justify-between gap-4 py-3">
-            <div>
-              <div className="text-xs font-bold uppercase tracking-wider text-foreground">
-                Missed Trades Vault (Isolated from Executed P&amp;L)
+            <div className="flex flex-wrap items-center gap-3">
+              <div className="flex items-center rounded-lg border border-border bg-secondary/40 p-0.5 text-xs">
+                <button
+                  type="button"
+                  onClick={() => setViewMode("workspace")}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
+                    viewMode === "workspace"
+                      ? "bg-card text-foreground shadow-2xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <SlidersHorizontal className="h-3.5 w-3.5" />
+                  <span>Setup &amp; Replay</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setViewMode("calendar")}
+                  className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 font-semibold transition ${
+                    viewMode === "calendar"
+                      ? "bg-card text-foreground shadow-2xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  <CalendarIcon className="h-3.5 w-3.5" />
+                  <span>Calendar &amp; List ({allUnarchived.length})</span>
+                </button>
               </div>
-              <p className="text-xs text-muted-foreground">
-                Setups recorded here do not affect your executed trade stats unless included in
-                Journals or Reports.
-              </p>
+
+              <Button
+                size="sm"
+                onClick={handleStartNewMissedTrade}
+                className="h-7 text-xs font-semibold"
+              >
+                <Plus className="h-3.5 w-3.5 mr-1" />
+                Log Missed Setup
+              </Button>
             </div>
 
             <div className="flex flex-wrap items-center gap-6 text-xs">
@@ -937,7 +1106,6 @@ function MissedTradesWorkspace() {
         {/* ===================================================================== */}
         {viewMode === "calendar" && (
           <div className="space-y-4">
-            {/* Monthly Calendar Card */}
             <Card className="border-border/70 bg-card">
               <CardHeader className="flex flex-row items-center justify-between pb-2">
                 <div className="flex items-center gap-2">
@@ -968,9 +1136,7 @@ function MissedTradesWorkspace() {
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() =>
-                      setCalendarMonth(new Date().toISOString().slice(0, 7))
-                    }
+                    onClick={() => setCalendarMonth(new Date().toISOString().slice(0, 7))}
                     className="h-7 px-2.5 text-xs"
                   >
                     This Month
@@ -1129,7 +1295,7 @@ function MissedTradesWorkspace() {
                     <table className="w-full text-left text-xs border-collapse">
                       <thead>
                         <tr className="border-b border-border text-muted-foreground">
-                          <th className="py-2 px-3">Date &amp; Session</th>
+                          <th className="py-2 px-3">Date (NY) &amp; Session</th>
                           <th className="py-2 px-3">Symbol</th>
                           <th className="py-2 px-3">Direction</th>
                           <th className="py-2 px-3">Reason Missed</th>
@@ -1150,8 +1316,10 @@ function MissedTradesWorkspace() {
                             className="hover:bg-secondary/40 cursor-pointer transition"
                           >
                             <td className="py-2.5 px-3 font-mono text-muted-foreground">
-                              {(item.observedAt || "").slice(0, 16).replace("T", " ")} •{" "}
-                              <strong className="text-foreground">{item.session}</strong>
+                              {utcIsoToNyInput(item.observedAt).replace("T", " ")} •{" "}
+                              <strong className="text-foreground">
+                                {deriveIctSessionFromIso(item.observedAt)}
+                              </strong>
                             </td>
                             <td className="py-2.5 px-3 font-mono font-bold text-foreground">
                               {item.symbol}
@@ -1225,76 +1393,6 @@ function MissedTradesWorkspace() {
         {/* ===================================================================== */}
         {viewMode === "workspace" && (
           <>
-            {/* Quick Selector Strip */}
-            <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-border/60 bg-card p-2.5">
-              <div className="flex flex-wrap items-center gap-1.5 overflow-x-auto max-w-full">
-                <button
-                  type="button"
-                  onClick={handleStartNewMissedTrade}
-                  className="inline-flex items-center gap-1 rounded-lg border border-border bg-secondary/50 hover:bg-secondary px-2.5 py-1.5 text-xs font-semibold text-foreground shrink-0"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>New</span>
-                </button>
-
-                {activeList.map((item) => {
-                  const active = item.id === selectedId;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => loadRecordIntoWorkspace(item)}
-                      className={`inline-flex items-center gap-2 rounded-lg border px-3 py-1.5 text-xs font-semibold transition shrink-0 ${
-                        active
-                          ? "border-foreground bg-secondary text-foreground shadow-2xs"
-                          : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <span className="font-mono font-bold">{item.symbol}</span>
-                      <span
-                        className={`uppercase text-[10px] ${
-                          item.direction === "short" ? "text-rose-500" : "text-emerald-500"
-                        }`}
-                      >
-                        {item.direction}
-                      </span>
-                      <span className="text-[10px] font-mono">
-                        {item.realizedR != null
-                          ? item.realizedR > 0
-                            ? `+${item.realizedR}R`
-                            : `${item.realizedR}R`
-                          : ""}
-                      </span>
-                      <span className="text-[10px] opacity-75">
-                        {(item.observedAt || "").slice(5, 10)}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-
-              <div className="flex items-center gap-2">
-                <select
-                  value={reasonFilter}
-                  onChange={(e) => setReasonFilter(e.target.value)}
-                  className="h-8 rounded-lg border border-border bg-background px-2.5 text-xs text-foreground"
-                >
-                  <option value="all">All Miss Reasons</option>
-                  {MISS_REASONS.map((r) => (
-                    <option key={r} value={r}>
-                      {r}
-                    </option>
-                  ))}
-                </select>
-                <Input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Filter symbol or notes..."
-                  className="h-8 w-44 text-xs"
-                />
-              </div>
-            </div>
-
             {/* KPI Header Bar */}
             <Card className="border-border/70 bg-card">
               <CardContent className="flex flex-wrap items-center justify-between gap-x-6 gap-y-3 py-3.5">
@@ -1356,6 +1454,10 @@ function MissedTradesWorkspace() {
                     </div>
                   </div>
                   <div>
+                    <div className="text-[10px] text-muted-foreground">Session (Auto NY)</div>
+                    <div className="font-semibold text-foreground">{derivedSession}</div>
+                  </div>
+                  <div>
                     <div className="text-[10px] text-muted-foreground">Why Missed</div>
                     <div className="font-semibold text-foreground">{missReason}</div>
                   </div>
@@ -1404,9 +1506,7 @@ function MissedTradesWorkspace() {
                 >
                   <Card className="border-border/70">
                     <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
-                      <CardTitle className="text-sm font-bold">
-                        Missed Setup Execution, Position Sizer &amp; Journal
-                      </CardTitle>
+                      <CardTitle className="text-sm font-bold">Missed Setup</CardTitle>
 
                       <div className="flex flex-wrap items-center gap-1.5">
                         {statusMsg && (
@@ -1414,17 +1514,20 @@ function MissedTradesWorkspace() {
                             {statusMsg}
                           </span>
                         )}
-                        {notionUrl && (
-                          <a
-                            href={notionUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                            className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground hover:bg-secondary"
-                          >
-                            <span>Open in Notion</span>
-                            <ExternalLink className="h-3 w-3 opacity-70" />
-                          </a>
-                        )}
+                        <a
+                          href={notionUrl || "https://www.notion.so"}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground hover:bg-secondary"
+                          title={
+                            notionUrl
+                              ? "Open linked Missed Trade page in Notion"
+                              : "Open Notion (Sync to Notion first to link this setup)"
+                          }
+                        >
+                          <span>Open in Notion</span>
+                          <ExternalLink className="h-3 w-3 opacity-70" />
+                        </a>
                         <button
                           type="button"
                           onClick={handlePullNotion}
@@ -1474,7 +1577,8 @@ function MissedTradesWorkspace() {
                     </CardHeader>
 
                     <CardContent className="space-y-4">
-                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5 text-xs">
+                      {/* 1. Symbol, Direction & Theoretical Outcome (ICT Session Auto-Derived) */}
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
                         <div>
                           <label className="block text-[11px] text-muted-foreground mb-0.5">
                             Symbol
@@ -1517,45 +1621,35 @@ function MissedTradesWorkspace() {
                             <option value="BE">BREAKEVEN</option>
                           </select>
                         </div>
-                        <div>
-                          <label className="block text-[11px] text-muted-foreground mb-0.5">
-                            ICT Session
-                          </label>
-                          <select
-                            value={session}
-                            onChange={(e) => setSession(e.target.value)}
-                            className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground"
-                          >
-                            {ICT_SESSIONS.map((s) => (
-                              <option key={s} value={s}>
-                                {s}
-                              </option>
-                            ))}
-                          </select>
-                        </div>
                       </div>
 
+                      {/* 2. NY Timestamps, Reason Missed & Playbook */}
                       <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
                         <div>
-                          <label className="block text-[11px] text-muted-foreground mb-0.5">
-                            Setup Entry Time (Observed At)
-                          </label>
+                          <div className="flex items-center justify-between mb-0.5">
+                            <label className="text-[11px] text-muted-foreground">
+                              Setup Entry Time (NY Time)
+                            </label>
+                            <span className="rounded bg-secondary px-1.5 py-0.2 text-[10px] font-semibold text-foreground">
+                              {derivedSession}
+                            </span>
+                          </div>
                           <input
                             type="datetime-local"
-                            value={observedAt}
-                            onChange={(e) => setObservedAt(e.target.value)}
-                            className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground"
+                            value={utcIsoToNyInput(entryIso)}
+                            onChange={(e) => setEntryIso(nyInputToUtcIso(e.target.value))}
+                            className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground font-mono"
                           />
                         </div>
                         <div>
                           <label className="block text-[11px] text-muted-foreground mb-0.5">
-                            Theoretical Exit Time (TP / SL Hit)
+                            Theoretical Exit Time (NY Time)
                           </label>
                           <input
                             type="datetime-local"
-                            value={exitAt}
-                            onChange={(e) => setExitAt(e.target.value)}
-                            className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground"
+                            value={utcIsoToNyInput(exitIso)}
+                            onChange={(e) => setExitIso(nyInputToUtcIso(e.target.value))}
+                            className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground font-mono"
                           />
                         </div>
                         <div>
@@ -1580,7 +1674,10 @@ function MissedTradesWorkspace() {
                           </label>
                           <select
                             value={playbookId}
-                            onChange={(e) => setPlaybookId(e.target.value)}
+                            onChange={(e) => {
+                              setPlaybookId(e.target.value);
+                              setRulesFollowed([]);
+                            }}
                             className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs text-foreground"
                           >
                             <option value="none">No Playbook</option>
@@ -1592,6 +1689,63 @@ function MissedTradesWorkspace() {
                           </select>
                         </div>
                       </div>
+
+                      {/* PLAYBOOK RULES CHECKLIST (Appears when a Playbook with rules is selected) */}
+                      {playbookId !== "none" && activePlaybookRules.length > 0 && (
+                        <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 space-y-2">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold text-foreground">
+                              Playbook Rules Matched ({rulesFollowed.length} /{" "}
+                              {activePlaybookRules.length})
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setRulesFollowed(
+                                  rulesFollowed.length === activePlaybookRules.length
+                                    ? []
+                                    : [...activePlaybookRules]
+                                )
+                              }
+                              className="text-[11px] underline text-muted-foreground hover:text-foreground"
+                            >
+                              {rulesFollowed.length === activePlaybookRules.length
+                                ? "Clear All"
+                                : "Check All Rules"}
+                            </button>
+                          </div>
+                          <div className="space-y-1.5">
+                            {activePlaybookRules.map((rule) => {
+                              const checked = rulesFollowed.includes(rule);
+                              return (
+                                <button
+                                  key={rule}
+                                  type="button"
+                                  onClick={() =>
+                                    setRulesFollowed((prev) =>
+                                      prev.includes(rule)
+                                        ? prev.filter((r) => r !== rule)
+                                        : [...prev, rule]
+                                    )
+                                  }
+                                  className={`w-full flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
+                                    checked
+                                      ? "border-foreground bg-secondary text-foreground font-medium"
+                                      : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
+                                  }`}
+                                >
+                                  {checked ? (
+                                    <CheckSquare className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                                  ) : (
+                                    <Square className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                  )}
+                                  <span>{rule}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      )}
 
                       {/* AUTOMATIC POSITION SIZER & KEY LEVELS */}
                       <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 space-y-3">
@@ -1711,7 +1865,7 @@ function MissedTradesWorkspace() {
                           </div>
                         </div>
 
-                        {/* MULTI-PARTIALS BUILDER (EQUAL DEFAULT SPLIT + <=100% VALIDATION + LOCKED FINAL FULL TP) */}
+                        {/* MULTI-PARTIALS BUILDER */}
                         <div className="space-y-2 border-t border-border/40 pt-2">
                           <div className="flex items-center justify-between">
                             <span className="text-[11px] font-semibold text-foreground">
@@ -1830,7 +1984,6 @@ function MissedTradesWorkspace() {
                             </div>
                           ))}
 
-                          {/* Final TP Row — Always Locked to Full Take Profit */}
                           <div className="flex items-center justify-between rounded-md border border-border/60 bg-background px-2.5 py-1.5 text-xs">
                             <span className="font-mono text-[11px] font-bold text-foreground">
                               Final TP (Full Take Profit)
@@ -1916,13 +2069,13 @@ function MissedTradesWorkspace() {
                           onChange={activeNoteTab === "review" ? setReviewNotes : setNotes}
                           ownerType="missed"
                           ownerId={`${selectedId || "new"}-${activeNoteTab}`}
-                          companionNode={<MissedTradePeriodCompanion observedAt={observedAt} />}
+                          companionNode={<MissedTradePeriodCompanion observedIso={entryIso} />}
                         />
                       </div>
                     </CardContent>
                   </Card>
 
-                  <MissedTradePeriodCompanion observedAt={observedAt} />
+                  <MissedTradePeriodCompanion observedIso={entryIso} />
                 </div>
               )}
 
@@ -1945,22 +2098,23 @@ function MissedTradesWorkspace() {
                   className="space-y-4 pl-0 lg:pl-3 min-w-[340px]"
                 >
                   <TradeMarketData
-                    key={`${selectedId || "new"}_${symbol}`}
+                    key={`missed_chart_${symbol}`}
                     trade={{
                       key: selectedId || "missed_sim",
                       symbol: symbol || "NAS100",
                       direction,
-                      openedAt: new Date(observedAt || Date.now()).toISOString(),
-                      closedAt: new Date(exitAt || observedAt || Date.now()).toISOString(),
+                      openedAt: entryIso,
+                      closedAt: exitIso,
                       netPnl: calc.theoreticalPnl,
                       avgEntry: parseFloat(entryStr) || 0,
                       avgExit: parseFloat(targetStr) || null,
                       currency: "USD",
                     }}
-                    executions={syntheticExecutions}
+                    executions={[]}
+                    onResultChange={setMarketResult}
                     onExtractRr={handleApplyExtractedRr}
                     onJumpDateChange={(iso) => {
-                      setObservedAt(iso.slice(0, 16));
+                      setEntryIso(iso);
                     }}
                     initialRrOverlay={
                       entryStr && stopStr && targetStr
@@ -1974,6 +2128,32 @@ function MissedTradesWorkspace() {
                         : null
                     }
                   />
+
+                  {/* RUNNING P&L EXCURSION CARD (100% ALIGNED WITH NY CANDLE TIMESTAMPS & PARTIAL FILLS) */}
+                  {parseFloat(entryStr) > 0 && runningPnlExecutions.length >= 2 && (
+                    <RunningPnlChart
+                      trade={{
+                        key: selectedId || "missed_sim",
+                        symbol: symbol || "NAS100",
+                        direction,
+                        openedAt: entryIso,
+                        closedAt: exitIso,
+                        quantity: calc.quantity,
+                        avgEntry: parseFloat(entryStr) || 0,
+                        avgExit:
+                          outcome === "LOSS"
+                            ? parseFloat(stopStr) || null
+                            : parseFloat(targetStr) || null,
+                        grossPnl: calc.theoreticalPnl,
+                        netPnl: calc.theoreticalPnl,
+                        contractMultiplier,
+                        currency: "USD",
+                      }}
+                      executions={runningPnlExecutions}
+                      bars={marketResult?.bars}
+                      timeZone="America/New_York"
+                    />
+                  )}
                 </div>
               )}
             </div>
