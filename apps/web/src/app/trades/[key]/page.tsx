@@ -763,6 +763,45 @@ function AnnotationsCard({
     flush,
   } = useAutosave(`/api/trades/${encodeURIComponent(trade.key)}`, "PATCH", () => void onPatch({}));
 
+  const { data: configData } = useApi<{
+    config?: {
+      templates?: Array<{ id: string; name: string; content: string }>;
+      defaultTemplates?: Record<string, string>;
+    };
+  }>("/api/journal/config");
+
+  const autoPopulatedRef = useRef(false);
+  useEffect(() => {
+    if (autoPopulatedRef.current || !configData?.config) return;
+    const { templates = [], defaultTemplates = {} } = configData.config;
+
+    let didPopulate = false;
+
+    // 1. Auto-populate Setup & Execution Notes if empty
+    if (!notes.trim() && defaultTemplates.trade_setup) {
+      const tpl = templates.find((t) => t.id === defaultTemplates.trade_setup);
+      if (tpl?.content && tpl.content.trim()) {
+        setNotes(tpl.content);
+        debounced({ notes: tpl.content });
+        didPopulate = true;
+      }
+    }
+
+    // 2. Auto-populate Post-Trade Review if empty
+    if (!reviewNotes.trim() && defaultTemplates.trade_review) {
+      const tpl = templates.find((t) => t.id === defaultTemplates.trade_review);
+      if (tpl?.content && tpl.content.trim()) {
+        setReviewNotes(tpl.content);
+        debounced({ reviewNotes: tpl.content });
+        didPopulate = true;
+      }
+    }
+
+    if (didPopulate) {
+      autoPopulatedRef.current = true;
+    }
+  }, [configData, notes, reviewNotes, debounced]);
+
   // Support Ctrl+S / Cmd+S keyboard shortcut to save immediately
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
@@ -1028,6 +1067,8 @@ function AnnotationsCard({
             key={`${trade.key}-${activeNoteTab}`}
             editorRef={noteEditor}
             value={activeNoteTab === "review" ? reviewNotes : notes}
+            ownerType="trade"
+            ownerId={activeNoteTab === "review" ? `${trade.key}-review` : trade.key}
             onChange={(value) => {
               if (activeNoteTab === "review") {
                 setReviewNotes(value);

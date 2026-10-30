@@ -3906,6 +3906,8 @@ export function RichEditor({
                     { key: "year_review", label: "Yearly — Annual Review" },
                     { key: "missed_prep", label: "Missed Trade — Setup & Context" },
                     { key: "missed_review", label: "Missed Trade — Post-Mortem Review" },
+                    { key: "trade_setup", label: "Trade Entry — Execution & Setup Notes" },
+                    { key: "trade_review", label: "Trade Entry — Post-Trade Review" },
                   ] as const
                 ).map((slot) => (
                   <div

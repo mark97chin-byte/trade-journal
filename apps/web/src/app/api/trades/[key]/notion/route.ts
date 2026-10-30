@@ -16,6 +16,9 @@ function ensureNotionColumns() {
   try {
     db.run(sql`ALTER TABLE trades ADD COLUMN notion_url TEXT`);
   } catch {}
+  try {
+    db.run(sql`ALTER TABLE trades ADD COLUMN review_notes TEXT DEFAULT ''`);
+  } catch {}
 }
 
 async function resolveTradePage(decodedKey: string, token: string) {
@@ -24,9 +27,8 @@ async function resolveTradePage(decodedKey: string, token: string) {
   const row = getTradeByKey(decodedKey) as any;
   if (!row) return null;
 
-  // Also check raw SQL in case getTradeByKey omits custom columns
   const rawRows = db.all(
-    sql`SELECT notion_page_id AS notionPageId, notion_url AS notionUrl FROM trades WHERE key = ${decodedKey} LIMIT 1`
+    sql`SELECT notion_page_id AS notionPageId, notion_url AS notionUrl, review_notes AS reviewNotes FROM trades WHERE key = ${decodedKey} LIMIT 1`
   ) as any[];
   const raw = rawRows?.[0] || {};
 
@@ -72,7 +74,7 @@ async function resolveTradePage(decodedKey: string, token: string) {
     }
   }
 
-  return { row, pageId, notionUrl };
+  return { row, pageId, notionUrl, rawReviewNotes: raw.reviewNotes || row.review_notes || row.reviewNotes || "" };
 }
 
 export const GET = handler(async (_request: Request, { params }: Params) => {
@@ -110,13 +112,10 @@ export const POST = handler(async (request: Request, { params }: Params) => {
   };
 
   ensureNotionColumns();
-  try {
-    db.run(sql`ALTER TABLE trades ADD COLUMN review_notes TEXT DEFAULT ''`);
-  } catch {}
 
-  // 1. Update SQLite if notes or reviewNotes were provided
+  // 1. Update SQLite
   if (body.reviewNotes !== undefined) {
-    db.run(sql`UPDATE trades SET review_notes = ${body.reviewNotes} WHERE key = ${decodedKey}`);
+    db.run(sql`UPDATE trades SET review_notes = ${body.reviewNotes}, reviewed_at = COALESCE(reviewed_at, CURRENT_TIMESTAMP) WHERE key = ${decodedKey}`);
   }
   if (body.notes !== undefined) {
     db.run(sql`UPDATE trades SET notes = ${body.notes} WHERE key = ${decodedKey}`);
@@ -126,12 +125,11 @@ export const POST = handler(async (request: Request, { params }: Params) => {
   if (!resolved) return bad(`Trade '${decodedKey}' not found`, 404);
   if (!resolved.pageId) return bad(`No linked Notion page found for trade '${decodedKey}'`, 404);
 
-  // 2. Query latest state to assemble complete page body for Notion
   const row = getTradeByKey(decodedKey) as any;
   const currentNotes = (typeof body.notes === "string" ? body.notes : (row?.notes || "")).trim();
-  const rawRev = (db.all(sql`SELECT review_notes FROM trades WHERE key = ${decodedKey}`) as any[])?.[0]?.review_notes;
-  const currentReview = (typeof body.reviewNotes === "string" ? body.reviewNotes : (rawRev || row?.review_notes || row?.reviewNotes || "")).trim();
+  const currentReview = (typeof body.reviewNotes === "string" ? body.reviewNotes : (resolved.rawReviewNotes || "")).trim();
 
+  // 2. Merge setup notes and review questionnaire into the Notion page
   let fullHtmlToPush = "";
   if (currentNotes && currentReview) {
     if (currentNotes.includes(currentReview)) {
@@ -147,10 +145,10 @@ export const POST = handler(async (request: Request, { params }: Params) => {
     fullHtmlToPush = currentNotes;
   }
 
-  // 3. Push complete HTML blocks to Notion page body
+  // 3. Push HTML blocks to Notion page
   await pushHtmlToNotionPage(resolved.pageId, fullHtmlToPush, token);
 
-  // 4. Mark the 'Reviewed' checkbox property as checked in Notion
+  // 4. Mark "Reviewed" in Notion page properties
   try {
     const { patchNotionTradePage } = await import("@/lib/notion-sync");
     void patchNotionTradePage(resolved.pageId, { reviewed: true });

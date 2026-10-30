@@ -470,9 +470,29 @@ export function PeriodReviewCompanionCard({
       ? `${existingReview}${newSectionHtml}`
       : newSectionHtml;
 
+    // 1. Save directly to SQLite
     await handleSaveInlineTradeNote("review", combinedHtml);
     setTradeNoteSubTab("review");
     setTradeNoteDraftHtml(combinedHtml);
+
+    // 2. Immediately sync to Notion
+    setTradeSaveStatus("Syncing to Notion...");
+    try {
+      const res = await fetch(`/api/trades/${encodeURIComponent(activeTrade.key)}/notion`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reviewNotes: combinedHtml }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data?.ok) {
+        setTradeSaveStatus("Saved & Synced to Notion!");
+      } else {
+        setTradeSaveStatus(data?.error ? `Saved (${data.error})` : "Saved (No Notion link)");
+      }
+    } catch {
+      setTradeSaveStatus("Saved locally");
+    }
+    setTimeout(() => setTradeSaveStatus(null), 3500);
   };
 
   // Missed Trade Post-Review Population
@@ -1067,6 +1087,35 @@ export function PeriodReviewCompanionCard({
                       </button>
                     )}
 
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        setTradeSaveStatus("Syncing to Notion...");
+                        try {
+                          const res = await fetch(`/api/trades/${encodeURIComponent(activeTrade.key)}/notion`, {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({
+                              reviewNotes: activeTradeNotes.reviewNotes,
+                              notes: activeTradeNotes.notes,
+                            }),
+                          });
+                          const data = await res.json().catch(() => ({}));
+                          if (res.ok && data?.ok) {
+                            setTradeSaveStatus("Synced to Notion!");
+                          } else {
+                            setTradeSaveStatus(data?.error || "Sync failed");
+                          }
+                        } catch {
+                          setTradeSaveStatus("Sync error");
+                        }
+                        setTimeout(() => setTradeSaveStatus(null), 3500);
+                      }}
+                      className="inline-flex items-center gap-1 rounded border border-border/60 bg-secondary/50 hover:bg-secondary px-2 py-0.5 text-[10px] font-semibold text-foreground transition"
+                      title="Sync current trade notes & review directly to Notion"
+                    >
+                      <span>Sync Notion</span>
+                    </button>
                     <Link
                       href={`/trades/${encodeURIComponent(activeTrade.key)}`}
                       className="text-[10px] text-indigo-400 hover:underline inline-flex items-center gap-1"
