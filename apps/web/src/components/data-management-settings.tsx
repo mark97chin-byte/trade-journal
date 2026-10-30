@@ -129,6 +129,39 @@ export function DataManagementSettings() {
     return "mark@fedora-mark-desktop";
   });
   const [mt5Log, setMt5Log] = useState<string | null>(null);
+  const [syncSettings, setSyncSettings] = useState<any>(null);
+  const [tailscaleInfo, setTailscaleInfo] = useState<any>(null);
+  const [newDevName, setNewDevName] = useState("");
+  const [newDevTarget, setNewDevTarget] = useState("");
+  const [newDevOs, setNewDevOs] = useState<"linux" | "windows">("linux");
+
+  const [gdriveConfig, setGdriveConfig] = useState<any>({
+    rcloneRemotePath: "gdrive:TradeJournalBackups",
+    keepCount: 3,
+    schedule: "daily",
+  });
+  const [snapshots, setSnapshots] = useState<any[]>([]);
+
+  const fetchSyncAndGDriveStatus = async () => {
+    try {
+      const [sRes, gRes] = await Promise.all([
+        fetch("/api/mt5/sync").then((r) => r.json()),
+        fetch("/api/settings/gdrive-backup").then((r) => r.json()),
+      ]);
+      if (sRes?.ok) {
+        setSyncSettings(sRes.settings);
+        setTailscaleInfo(sRes.tailscale);
+      }
+      if (gRes?.ok) {
+        setGdriveConfig(gRes.config);
+        setSnapshots(gRes.snapshots || []);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    void fetchSyncAndGDriveStatus();
+  }, []);
 
   const allSeries = useMemo(
     () => telemetry?.candleBreakdown?.series || [],
@@ -302,7 +335,7 @@ export function DataManagementSettings() {
       const res = await fetch("/api/mt5/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ desktopHost: desktopHost.trim() }),
+        body: JSON.stringify({ useConfiguredDevices: true }),
       });
       const data = await res.json();
       setMt5Log(data.log || data.error || "Finished");
@@ -886,48 +919,548 @@ export function DataManagementSettings() {
         </CardContent>
       </Card>
 
-      {/* 4. TABLET-FRIENDLY MT5 TRADE SYNC (TAILSCALE DESKTOP BRIDGE) */}
+      {/* 4. MULTI-DEVICE TAILSCALE SYNC, DEVICE CYCLING & SCHEDULER */}
       <Card>
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base font-bold flex items-center gap-2">
-            <Terminal className="h-4 w-4 text-muted-foreground" />
-            <span>1-Tap MT5 Trade Sync (Local Desktop or Tailscale Remote Bridge)</span>
-          </CardTitle>
-          <p className="text-xs text-muted-foreground">
-            Your 2019 Galaxy Tab A has 3 GB RAM, so running Windows MT5 inside Wine locally on the
-            tablet will exceed Android memory limits. Instead, tapping <strong>Sync MT5 Trades Now</strong>{" "}
-            from your tablet triggers <code>sync-mt5.sh</code> on your Fedora desktop over Tailscale SSH
-            and streams the updated trades directly to your tablet!
-          </p>
-        </CardHeader>
-        <CardContent className="space-y-3">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <input
-              type="text"
-              value={desktopHost}
-              onChange={(e) => setDesktopHost(e.target.value)}
-              placeholder="Desktop SSH target (e.g. mark@100.x.y.z or mark@fedora-mark-desktop)"
-              className="h-9 flex-1 min-w-[240px] rounded-lg border border-border bg-background px-3 text-xs text-foreground font-mono"
-            />
-            <Button
-              onClick={() => void handleTriggerMt5Sync()}
-              disabled={busyAction !== null}
-              variant="secondary" className="border border-border text-foreground text-xs font-semibold h-9"
-            >
-              <RefreshCw
-                className={`h-4 w-4 mr-1.5 ${busyAction === "mt5_sync" ? "animate-spin" : ""}`}
-              />
-              {busyAction === "mt5_sync"
-                ? "Syncing MT5 Trades..."
-                : "Sync MT5 Trades Now"}
-            </Button>
+        <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
+          <div>
+            <CardTitle className="text-base font-bold flex items-center gap-2">
+              <Terminal className="h-4 w-4 text-muted-foreground" />
+              <span>Multi-Device Tailscale Trade Sync &amp; Auto-Failover Scheduler</span>
+            </CardTitle>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              Automatically detects devices on your Tailscale network (Fedora Desktop, Linux Laptop,
+              Windows Desktop, Tablet). Cycles through your enabled machines in priority order until
+              it finds an online host ready to sync.
+            </p>
           </div>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void fetchSyncAndGDriveStatus()}
+            className="h-8 text-xs"
+          >
+            <RefreshCw className="h-3.5 w-3.5 mr-1.5" />
+            Scan Tailscale Network
+          </Button>
+        </CardHeader>
+        <CardContent className="space-y-4 text-xs">
+          {/* Discovered Tailscale Peers */}
+          {(tailscaleInfo?.peers !== undefined) && (
+            <div className="rounded-xl border border-border/60 bg-secondary/20 p-3 space-y-2">
+              <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                Live Tailscale Network Devices ({tailscaleInfo?.peers?.length || 0} discovered • {tailscaleInfo?.mode === 'direct_probe' ? 'Direct TCP Mode' : 'Tailscale CLI Mode'})
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                {tailscaleInfo.peers.map((peer: any, idx: number) => (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-background px-3 py-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-bold text-foreground truncate flex items-center gap-1.5">
+                        <span
+                          className={`h-2 w-2 rounded-full ${
+                            peer.online ? "bg-emerald-400" : "bg-rose-400"
+                          }`}
+                        />
+                        <span>{peer.hostname}</span>
+                        {peer.isSelf && (
+                          <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[9px] text-indigo-300">
+                            THIS DEVICE
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground font-mono">
+                        {peer.ip} • {peer.os} •{" "}
+                        {peer.isSelf
+                          ? "Local Exec Ready"
+                          : peer.sshReachable
+                          ? "SSH Port 22 Ready"
+                          : "Port 22 Closed"}
+                      </div>
+                    </div>
+                    {!peer.isSelf && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (!syncSettings) return;
+                          const exists = (syncSettings.devices || []).some(
+                            (d: any) =>
+                              d.sshTarget.includes(peer.hostname) || d.sshTarget.includes(peer.ip)
+                          );
+                          if (exists) return;
+                          const nextDevs = [
+                            ...(syncSettings.devices || []),
+                            {
+                              id: `dev_${Date.now()}`,
+                              name: `${peer.hostname} (${peer.os})`,
+                              sshTarget: `mark@${peer.ip}`,
+                              osType: peer.os.toLowerCase().includes("win") ? "windows" : "linux",
+                              repoPath: "~/trade-journal-dev",
+                              enabled: true,
+                            },
+                          ];
+                          const next = { ...syncSettings, devices: nextDevs };
+                          setSyncSettings(next);
+                          void fetch("/api/mt5/sync", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ action: "save_settings", ...next }),
+                          });
+                        }}
+                        className="rounded border border-border bg-secondary hover:bg-secondary/80 px-2 py-1 text-[10px] font-semibold text-foreground shrink-0"
+                      >
+                        + Add to Sync List
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Sync Mode, Target Selector & Schedule */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-muted-foreground mb-1">
+                Sync Device Selection Mode
+              </label>
+              <select
+                value={syncSettings?.selectedDeviceId || "auto_cycle"}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  const next = {
+                    ...(syncSettings || {}),
+                    selectedDeviceId: val,
+                    autoCycle: val === "auto_cycle",
+                  };
+                  setSyncSettings(next);
+                  void fetch("/api/mt5/sync", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "save_settings", ...next }),
+                  });
+                }}
+                className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"
+              >
+                <option value="auto_cycle">
+                  Auto-Cycle Priority List (Try each online device)
+                </option>
+                {(syncSettings?.devices || []).map((d: any) => (
+                  <option key={d.id} value={d.id}>
+                    Pin to: {d.name} ({d.sshTarget})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-muted-foreground mb-1">
+                Automated Sync Schedule
+              </label>
+              <select
+                value={syncSettings?.schedule || "manual"}
+                onChange={(e) => {
+                  const next = { ...(syncSettings || {}), schedule: e.target.value };
+                  setSyncSettings(next);
+                  void fetch("/api/mt5/sync", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "save_settings", ...next }),
+                  });
+                }}
+                className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"
+              >
+                <option value="manual">Manual Trigger Only</option>
+                <option value="15m">Every 15 Minutes</option>
+                <option value="1h">Every 1 Hour</option>
+                <option value="4h">Every 4 Hours</option>
+                <option value="daily">Daily at NY Session Close</option>
+              </select>
+            </div>
+
+            <div className="flex flex-col justify-end">
+              <Button
+                onClick={() => void handleTriggerMt5Sync()}
+                disabled={busyAction !== null}
+                className="bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold h-9 w-full"
+              >
+                <RefreshCw
+                  className={`h-4 w-4 mr-1.5 ${busyAction === "mt5_sync" ? "animate-spin" : ""}`}
+                />
+                {busyAction === "mt5_sync"
+                  ? "Cycling Devices & Syncing..."
+                  : "Sync MT5 Trades Now"}
+              </Button>
+            </div>
+          </div>
+
+          {/* Configured Sync Devices List */}
+          {syncSettings?.devices && (
+            <div className="space-y-2 pt-1">
+              <div className="text-[11px] font-semibold text-foreground">
+                Configured Sync Machines (Priority Order for Auto-Cycle):
+              </div>
+              <div className="divide-y divide-border/40 rounded-lg border border-border/60 bg-background">
+                {syncSettings.devices.map((dev: any, idx: number) => (
+                  <div
+                    key={dev.id}
+                    className="flex flex-wrap items-center justify-between gap-2 px-3 py-2"
+                  >
+                    <label className="flex items-center gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={Boolean(dev.enabled)}
+                        onChange={(e) => {
+                          const updated = syncSettings.devices.map((d: any, i: number) =>
+                            i === idx ? { ...d, enabled: e.target.checked } : d
+                          );
+                          const next = { ...syncSettings, devices: updated };
+                          setSyncSettings(next);
+                          void fetch("/api/mt5/sync", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ action: "save_settings", ...next }),
+                          });
+                        }}
+                        className="h-3.5 w-3.5 accent-foreground"
+                      />
+                      <span className="font-mono text-[10px] text-muted-foreground">
+                        #{idx + 1}
+                      </span>
+                      <span className="font-bold text-foreground">{dev.name}</span>
+                      <span className="rounded bg-secondary px-1.5 py-0.5 font-mono text-[10px] text-foreground">
+                        {dev.sshTarget}
+                      </span>
+                      <span className="rounded bg-muted/40 px-1.5 py-0.5 text-[10px] uppercase text-muted-foreground">
+                        {dev.osType}
+                      </span>
+                    </label>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (idx === 0) return;
+                          const copy = [...syncSettings.devices];
+                          const temp = copy[idx - 1];
+                          copy[idx - 1] = copy[idx];
+                          copy[idx] = temp;
+                          const next = { ...syncSettings, devices: copy };
+                          setSyncSettings(next);
+                          void fetch("/api/mt5/sync", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ action: "save_settings", ...next }),
+                          });
+                        }}
+                        className="rounded border border-border/60 px-1.5 py-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+                        title="Move up priority"
+                      >
+                        ↑
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const updated = syncSettings.devices.filter(
+                            (_: any, i: number) => i !== idx
+                          );
+                          const next = { ...syncSettings, devices: updated };
+                          setSyncSettings(next);
+                          void fetch("/api/mt5/sync", {
+                            method: "POST",
+                            headers: { "Content-Type": "application/json" },
+                            body: JSON.stringify({ action: "save_settings", ...next }),
+                          });
+                        }}
+                        className="rounded bg-rose-500/15 hover:bg-rose-500/25 px-2 py-0.5 text-[10px] text-rose-400"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add Custom Machine */}
+              <div className="flex flex-wrap items-center gap-2 pt-1">
+                <input
+                  type="text"
+                  value={newDevName}
+                  onChange={(e) => setNewDevName(e.target.value)}
+                  placeholder="Device Label (e.g. Linux Laptop or Windows PC)"
+                  className="h-8 flex-1 min-w-[160px] rounded-lg border border-border bg-background px-2.5 text-xs"
+                />
+                <input
+                  type="text"
+                  value={newDevTarget}
+                  onChange={(e) => setNewDevTarget(e.target.value)}
+                  placeholder="SSH Target (e.g. mark@100.x.y.z)"
+                  className="h-8 flex-1 min-w-[160px] rounded-lg border border-border bg-background px-2.5 text-xs font-mono"
+                />
+                <select
+                  value={newDevOs}
+                  onChange={(e) => setNewDevOs(e.target.value as "linux" | "windows")}
+                  className="h-8 rounded-lg border border-border bg-background px-2 text-xs"
+                >
+                  <option value="linux">Linux (Fedora / Laptop)</option>
+                  <option value="windows">Windows Desktop</option>
+                </select>
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    if (!newDevName.trim() || !newDevTarget.trim() || !syncSettings) return;
+                    const nextDevs = [
+                      ...syncSettings.devices,
+                      {
+                        id: `dev_${Date.now()}`,
+                        name: newDevName.trim(),
+                        sshTarget: newDevTarget.trim(),
+                        osType: newDevOs,
+                        repoPath: "~/trade-journal-dev",
+                        enabled: true,
+                      },
+                    ];
+                    const next = { ...syncSettings, devices: nextDevs };
+                    setSyncSettings(next);
+                    setNewDevName("");
+                    setNewDevTarget("");
+                    void fetch("/api/mt5/sync", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "save_settings", ...next }),
+                    });
+                  }}
+                  className="h-8 text-xs font-semibold"
+                >
+                  + Add Machine
+                </Button>
+              </div>
+            </div>
+          )}
+
+          {syncSettings?.lastSyncAt && (
+            <div className="text-[11px] text-muted-foreground">
+              Last Synced: <strong className="text-foreground">{syncSettings.lastSyncAt}</strong>{" "}
+              via <strong className="text-emerald-400">{syncSettings.lastSyncDevice}</strong>
+            </div>
+          )}
 
           {mt5Log && (
             <pre className="max-h-48 overflow-y-auto rounded-lg border border-border/60 bg-[#0d0f14] p-3 font-mono text-[11px] text-slate-300 whitespace-pre-wrap">
               {mt5Log}
             </pre>
           )}
+        </CardContent>
+      </Card>
+
+      {/* 5. INCREMENTAL GOOGLE DRIVE SNAPSHOT BACKUPS (ROLLING 2-3 SNAPSHOTS) */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-base font-bold flex items-center gap-2">
+            <CloudUpload className="h-4 w-4 text-emerald-400" />
+            <span>Incremental Google Drive Snapshot Backups (Rolling 2–3 Backups)</span>
+          </CardTitle>
+          <p className="text-xs text-muted-foreground">
+            Complete disaster-recovery snapshot of all trades, daily/periodic journals, templates,
+            custom decision-tree questions, and high-res WebP chart images. Uses SHA-256 change
+            detection and automatically keeps the latest {gdriveConfig.keepCount || 3} snapshots.
+          </p>
+        </CardHeader>
+        <CardContent className="space-y-4 text-xs">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-[11px] font-semibold text-foreground mb-1">
+                Google Drive Remote / Folder Path (rclone or local mount)
+              </label>
+              <input
+                type="text"
+                value={gdriveConfig.rcloneRemotePath || ""}
+                onChange={(e) =>
+                  setGdriveConfig((prev: any) => ({
+                    ...prev,
+                    rcloneRemotePath: e.target.value,
+                  }))
+                }
+                placeholder="gdrive:TradeJournalBackups or ~/GoogleDrive/Backups"
+                className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs font-mono text-foreground"
+              />
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-foreground mb-1">
+                Rolling Snapshots to Keep
+              </label>
+              <select
+                value={gdriveConfig.keepCount || 3}
+                onChange={(e) =>
+                  setGdriveConfig((prev: any) => ({
+                    ...prev,
+                    keepCount: Number(e.target.value),
+                  }))
+                }
+                className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"
+              >
+                <option value={2}>Keep Latest 2 Snapshots</option>
+                <option value={3}>Keep Latest 3 Snapshots (Recommended)</option>
+                <option value={5}>Keep Latest 5 Snapshots</option>
+              </select>
+            </div>
+
+            <div>
+              <label className="block text-[11px] font-semibold text-foreground mb-1">
+                Backup Schedule
+              </label>
+              <select
+                value={gdriveConfig.schedule || "daily"}
+                onChange={(e) =>
+                  setGdriveConfig((prev: any) => ({
+                    ...prev,
+                    schedule: e.target.value,
+                  }))
+                }
+                className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"
+              >
+                <option value="manual">Manual Snapshot Only</option>
+                <option value="on_sync">After Every Trade Sync</option>
+                <option value="6h">Every 6 Hours (Incremental)</option>
+                <option value="daily">Daily Incremental Snapshot</option>
+              </select>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5">
+            <Button
+              onClick={async () => {
+                setBusyAction("gdrive_snap");
+                setStatusMsg(null);
+                try {
+                  await fetch("/api/settings/gdrive-backup", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "save_config", ...gdriveConfig }),
+                  });
+                  const res = await fetch("/api/settings/gdrive-backup", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ action: "create_snapshot", force: true }),
+                  });
+                  const data = await res.json();
+                  if (data.ok) {
+                    setSnapshots(data.snapshots || []);
+                    setStatusMsg({ type: "ok", text: data.message });
+                  } else {
+                    setStatusMsg({ type: "err", text: data.error || "Snapshot failed" });
+                  }
+                } catch (err: any) {
+                  setStatusMsg({ type: "err", text: err?.message || "Backup error" });
+                } finally {
+                  setBusyAction(null);
+                }
+              }}
+              disabled={busyAction !== null}
+              className="bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
+            >
+              <CloudUpload className="h-4 w-4 mr-1.5" />
+              {busyAction === "gdrive_snap"
+                ? "Creating & Syncing Snapshot..."
+                : "Create Incremental Snapshot & Sync to Google Drive"}
+            </Button>
+
+            <Button
+              variant="outline"
+              onClick={async () => {
+                const res = await fetch("/api/settings/gdrive-backup", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "save_config", ...gdriveConfig }),
+                });
+                const data = await res.json();
+                if (data.ok) {
+                  setStatusMsg({ type: "ok", text: data.message });
+                }
+              }}
+              className="text-xs"
+            >
+              Save Backup Settings
+            </Button>
+          </div>
+
+          {/* Rolling Snapshot Recovery Points List */}
+          <div className="space-y-2 pt-2 border-t border-border/50">
+            <div className="text-[11px] font-bold text-foreground">
+              Available Rolling Snapshots ({snapshots.length} of {gdriveConfig.keepCount || 3} max):
+            </div>
+            {snapshots.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-border/50 p-4 text-center text-muted-foreground">
+                No snapshots created yet. Click{" "}
+                <strong>Create Incremental Snapshot &amp; Sync to Google Drive</strong> above.
+              </div>
+            ) : (
+              <div className="divide-y divide-border/40 rounded-lg border border-border/60 bg-background">
+                {snapshots.map((snap: any) => (
+                  <div
+                    key={snap.filename}
+                    className="flex flex-wrap items-center justify-between gap-2 px-3 py-2"
+                  >
+                    <div>
+                      <div className="font-mono font-bold text-foreground">{snap.filename}</div>
+                      <div className="text-[10px] text-muted-foreground">
+                        Created: {snap.createdAt.slice(0, 19).replace("T", " ")} • Size:{" "}
+                        {formatBytes(snap.sizeBytes)} • SHA-256: <code>{snap.sha256}</code>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href={`/api/settings/gdrive-backup?download=${encodeURIComponent(
+                          snap.filename
+                        )}`}
+                        download
+                        className="rounded border border-border bg-secondary/60 hover:bg-secondary px-2.5 py-1 text-[10px] font-semibold text-foreground"
+                      >
+                        Download
+                      </a>
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          if (
+                            !window.confirm(
+                              `Restore all journals, trades, templates, and images from ${snap.filename}?`
+                            )
+                          )
+                            return;
+                          setBusyAction("restore");
+                          try {
+                            const res = await fetch("/api/settings/gdrive-backup", {
+                              method: "POST",
+                              headers: { "Content-Type": "application/json" },
+                              body: JSON.stringify({
+                                action: "restore_snapshot",
+                                filename: snap.filename,
+                              }),
+                            });
+                            const data = await res.json();
+                            if (data.ok) {
+                              setStatusMsg({ type: "ok", text: data.message });
+                              void fetchTelemetry();
+                            } else {
+                              setStatusMsg({ type: "err", text: data.error || "Restore failed" });
+                            }
+                          } finally {
+                            setBusyAction(null);
+                          }
+                        }}
+                        className="rounded border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-2.5 py-1 text-[10px] font-semibold text-emerald-300"
+                      >
+                        Restore Snapshot
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         </CardContent>
       </Card>
     </div>

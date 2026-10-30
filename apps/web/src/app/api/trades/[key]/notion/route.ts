@@ -1,7 +1,8 @@
 import { eq, sql } from "drizzle-orm";
 import { db, trades } from "@/db";
 import { bad, handler, ok } from "@/server/api";
-import { getTradeByKey } from "@/server/trades-query";
+import { getTradeByKey, rowToTrade } from "@/server/trades-query";
+import { tradeR } from "@luxalgo/journal-core";
 import { pullFromNotionPage, pushHtmlToNotionPage } from "@/server/notion-sync";
 
 export const dynamic = "force-dynamic";
@@ -21,7 +22,98 @@ function ensureNotionColumns() {
   } catch {}
 }
 
-async function resolveTradePage(decodedKey: string, token: string) {
+async function createNotionTradePageIfNeeded(decodedKey: string, row: any, token: string, tradesDbId: string) {
+  try {
+    const dbRes = await fetch(`[https://api.notion.com/v1/databases/$](https://api.notion.com/v1/databases/$){tradesDbId}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Notion-Version": "2022-06-28",
+      },
+    });
+    if (!dbRes.ok) return null;
+    const dbMeta = await dbRes.json();
+    const availableProps = dbMeta.properties || {};
+
+    let titleProp = "Name";
+    for (const [k, v] of Object.entries(availableProps)) {
+      if ((v as any).type === "title") {
+        titleProp = k;
+        break;
+      }
+    }
+
+    const tradeObj = rowToTrade(row);
+    const rVal = tradeR(tradeObj);
+    const dateStr = (row.openedAt || new Date().toISOString()).slice(0, 10);
+    const titleText = `${row.symbol} ${(row.direction || "LONG").toUpperCase()} (${dateStr})`;
+
+    const properties: Record<string, any> = {
+      [titleProp]: {
+        title: [{ text: { content: titleText } }],
+      },
+    };
+
+    if ("LuxAlgo ID" in availableProps && availableProps["LuxAlgo ID"].type === "rich_text") {
+      properties["LuxAlgo ID"] = { rich_text: [{ text: { content: decodedKey } }] };
+    }
+    if ("Symbol" in availableProps) {
+      if (availableProps["Symbol"].type === "select") {
+        properties["Symbol"] = { select: { name: String(row.symbol || "NAS100") } };
+      } else if (availableProps["Symbol"].type === "rich_text") {
+        properties["Symbol"] = { rich_text: [{ text: { content: String(row.symbol || "") } }] };
+      }
+    }
+    for (const sideKey of ["Direction", "Side", "Type"]) {
+      if (sideKey in availableProps && availableProps[sideKey].type === "select") {
+        properties[sideKey] = { select: { name: String(row.direction || "long").toUpperCase() } };
+      }
+    }
+    for (const pnlKey of ["Net P&L", "Net PnL", "PnL", "P&L"]) {
+      if (pnlKey in availableProps && availableProps[pnlKey].type === "number") {
+        properties[pnlKey] = { number: Number((row.netPnl || 0).toFixed(2)) };
+      }
+    }
+    for (const rKey of ["Realized R", "R", "R Multiple"]) {
+      if (rKey in availableProps && availableProps[rKey].type === "number" && rVal != null) {
+        properties[rKey] = { number: Number(rVal.toFixed(2)) };
+      }
+    }
+    for (const dtKey of ["Date", "Open Date", "Opened At"]) {
+      if (dtKey in availableProps && availableProps[dtKey].type === "date" && row.openedAt) {
+        properties[dtKey] = { date: { start: row.openedAt } };
+      }
+    }
+
+    const createRes = await fetch("[https://api.notion.com/v1/pages](https://api.notion.com/v1/pages)", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Notion-Version": "2022-06-28",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        parent: { database_id: tradesDbId },
+        properties,
+      }),
+    });
+
+    if (!createRes.ok) return null;
+    const created = await createRes.json();
+    if (created?.id) {
+      const pageId = created.id;
+      const notionUrl = created.url || `[https://www.notion.so/$](https://www.notion.so/$){created.id.replace(/-/g, "")}`;
+      db.run(
+        sql`UPDATE trades SET notion_page_id = ${pageId}, notion_url = ${notionUrl} WHERE key = ${decodedKey}`
+      );
+      return { pageId, notionUrl };
+    }
+  } catch (err) {
+    console.warn("Auto-create Notion trade page failed:", err);
+  }
+  return null;
+}
+
+async function resolveTradePage(decodedKey: string, token: string, autoCreate = true) {
   ensureNotionColumns();
 
   const row = getTradeByKey(decodedKey) as any;
@@ -43,7 +135,7 @@ async function resolveTradePage(decodedKey: string, token: string) {
 
   if (!pageId && tradesDbId && token) {
     try {
-      const res = await fetch(`https://api.notion.com/v1/databases/${tradesDbId}/query`, {
+      const res = await fetch(`[https://api.notion.com/v1/databases/$](https://api.notion.com/v1/databases/$){tradesDbId}/query`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -63,7 +155,7 @@ async function resolveTradePage(decodedKey: string, token: string) {
         const page = data.results?.[0];
         if (page?.id) {
           pageId = page.id;
-          notionUrl = page.url || `https://www.notion.so/${page.id.replace(/-/g, "")}`;
+          notionUrl = page.url || `[https://www.notion.so/$](https://www.notion.so/$){page.id.replace(/-/g, "")}`;
           db.run(
             sql`UPDATE trades SET notion_page_id = ${pageId}, notion_url = ${notionUrl} WHERE key = ${decodedKey}`
           );
@@ -74,7 +166,24 @@ async function resolveTradePage(decodedKey: string, token: string) {
     }
   }
 
-  return { row, pageId, notionUrl, rawReviewNotes: raw.reviewNotes || row.review_notes || row.reviewNotes || "" };
+  if (!pageId && autoCreate && tradesDbId && token) {
+    const created = await createNotionTradePageIfNeeded(decodedKey, row, token, tradesDbId);
+    if (created) {
+      pageId = created.pageId;
+      notionUrl = created.notionUrl;
+    }
+  }
+
+  if (pageId && !notionUrl) {
+    notionUrl = `[https://www.notion.so/$](https://www.notion.so/$){pageId.replace(/-/g, "")}`;
+  }
+
+  return {
+    row,
+    pageId,
+    notionUrl,
+    rawReviewNotes: raw.reviewNotes || row.review_notes || row.reviewNotes || "",
+  };
 }
 
 export const GET = handler(async (_request: Request, { params }: Params) => {
@@ -84,7 +193,7 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
 
   if (!token) return bad("Missing NOTION_TOKEN in server environment (.env)", 400);
 
-  const resolved = await resolveTradePage(decodedKey, token);
+  const resolved = await resolveTradePage(decodedKey, token, true);
   if (!resolved) return bad(`Trade '${decodedKey}' not found`, 404);
   if (!resolved.pageId) return bad(`No linked Notion page found for trade '${decodedKey}'`, 404);
 
@@ -113,23 +222,25 @@ export const POST = handler(async (request: Request, { params }: Params) => {
 
   ensureNotionColumns();
 
-  // 1. Update SQLite
   if (body.reviewNotes !== undefined) {
-    db.run(sql`UPDATE trades SET review_notes = ${body.reviewNotes}, reviewed_at = COALESCE(reviewed_at, CURRENT_TIMESTAMP) WHERE key = ${decodedKey}`);
+    db.run(
+      sql`UPDATE trades SET review_notes = ${body.reviewNotes}, reviewed_at = COALESCE(reviewed_at, CURRENT_TIMESTAMP) WHERE key = ${decodedKey}`
+    );
   }
   if (body.notes !== undefined) {
     db.run(sql`UPDATE trades SET notes = ${body.notes} WHERE key = ${decodedKey}`);
   }
 
-  const resolved = await resolveTradePage(decodedKey, token);
+  const resolved = await resolveTradePage(decodedKey, token, true);
   if (!resolved) return bad(`Trade '${decodedKey}' not found`, 404);
-  if (!resolved.pageId) return bad(`No linked Notion page found for trade '${decodedKey}'`, 404);
+  if (!resolved.pageId) return bad(`Could not find or create Notion page for trade '${decodedKey}'`, 404);
 
   const row = getTradeByKey(decodedKey) as any;
   const currentNotes = (typeof body.notes === "string" ? body.notes : (row?.notes || "")).trim();
-  const currentReview = (typeof body.reviewNotes === "string" ? body.reviewNotes : (resolved.rawReviewNotes || "")).trim();
+  const currentReview = (
+    typeof body.reviewNotes === "string" ? body.reviewNotes : (resolved.rawReviewNotes || "")
+  ).trim();
 
-  // 2. Merge setup notes and review questionnaire into the Notion page
   let fullHtmlToPush = "";
   if (currentNotes && currentReview) {
     if (currentNotes.includes(currentReview)) {
@@ -145,13 +256,15 @@ export const POST = handler(async (request: Request, { params }: Params) => {
     fullHtmlToPush = currentNotes;
   }
 
-  // 3. Push HTML blocks to Notion page
-  await pushHtmlToNotionPage(resolved.pageId, fullHtmlToPush, token);
+  if (fullHtmlToPush) {
+    await pushHtmlToNotionPage(resolved.pageId, fullHtmlToPush, token);
+  }
 
-  // 4. Mark "Reviewed" in Notion page properties
   try {
     const { patchNotionTradePage } = await import("@/lib/notion-sync");
-    void patchNotionTradePage(resolved.pageId, { reviewed: true });
+    if (body.reviewNotes !== undefined) {
+      void patchNotionTradePage(resolved.pageId, { reviewed: true });
+    }
   } catch {}
 
   return ok({

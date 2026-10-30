@@ -37,6 +37,7 @@ export type JournalPeriod = "day" | "week" | "month" | "quarter" | "year";
 
 interface JournalViewProps {
   trades: JournalTrade[];
+  activeEntrySlugs?: string[];
 }
 
 const fmtCurrency = (val: number) => {
@@ -495,17 +496,15 @@ function SubPeriodStrip({
         <button
           key={i}
           type="button"
-          disabled={d.count === 0}
           onClick={() => {
-            if (d.count === 0) return;
             triggerClick(
               () => onItemSingleClick?.(d),
               () => onItemDoubleClick?.(d)
             );
           }}
-          className={`rounded-lg py-1.5 px-2 flex flex-col items-center justify-center text-center transition ${
+          className={`rounded-lg py-1.5 px-2 flex flex-col items-center justify-center text-center transition cursor-pointer ${
             d.count === 0
-              ? "bg-[#181a24]/40 text-muted-foreground/40 border border-transparent"
+              ? "bg-[#181a24]/40 text-muted-foreground/60 border border-border/20 hover:border-indigo-500/40 hover:text-foreground"
               : d.pnl >= 0
               ? "bg-profit/10 border border-profit/25 hover:border-profit/25 cursor-pointer text-profit"
               : "bg-loss/10 border border-loss/25 hover:border-loss/25 cursor-pointer text-loss"
@@ -533,17 +532,22 @@ function SubPeriodStrip({
 // --- TOP INTERACTIVE CALENDAR FOR DAY TAB ---
 function InteractiveDayCalendar({
   trades,
+  activeEntrySlugs = [],
+  currentMonth,
+  onChangeMonth,
   selectedDate,
   onSelectDate,
   onDoubleClickDate,
 }: {
   trades: JournalTrade[];
+  activeEntrySlugs?: string[];
+  currentMonth: Date;
+  onChangeMonth: (d: Date) => void;
   selectedDate: string | null;
   onSelectDate: (dateStr: string | null) => void;
   onDoubleClickDate: (dateStr: string) => void;
 }) {
   const triggerClick = useDelayedClick();
-  const [currentMonth, setCurrentMonth] = useState(() => new Date());
 
   const year = currentMonth.getFullYear();
   const month = currentMonth.getMonth();
@@ -565,8 +569,8 @@ function InteractiveDayCalendar({
 
   const monthName = currentMonth.toLocaleString("default", { month: "long" });
 
-  const prevMonth = () => setCurrentMonth(new Date(year, month - 1, 1));
-  const nextMonth = () => setCurrentMonth(new Date(year, month + 1, 1));
+  const prevMonth = () => onChangeMonth(new Date(year, month - 1, 1));
+  const nextMonth = () => onChangeMonth(new Date(year, month + 1, 1));
 
   return (
     <div className="rounded-xl border border-border/70 bg-[#12141d] p-4 shadow-sm mb-6 select-none">
@@ -745,18 +749,44 @@ function TradesTable({ trades }: { trades: JournalTrade[] }) {
 }
 
 // --- MAIN JOURNAL COMPONENT ---
-export function JournalView({ trades }: JournalViewProps) {
+export function JournalView({ trades, activeEntrySlugs = [] }: JournalViewProps) {
   const router = useRouter();
   const [period, setPeriod] = useState<JournalPeriod>("day");
+  const [calendarMonth, setCalendarMonth] = useState<Date>(() => new Date());
   const [selectedCalendarDate, setSelectedCalendarDate] = useState<string | null>(null);
   const [activeSubFilterId, setActiveSubFilterId] = useState<string | null>(null);
+  const [hideEmptyEntries, setHideEmptyEntries] = useState<boolean>(false);
 
   // Pagination for Day View
-  const [daysPerPage, setDaysPerPage] = useState<number>(10);
+  const [daysPerPage, setDaysPerPage] = useState<number>(15);
   const [currentPage, setCurrentPage] = useState<number>(1);
 
   // Card expansion toggles
   const [expandedCards, setExpandedCards] = useState<Record<string, boolean>>({});
+
+  const activeSlugSet = useMemo(() => new Set(activeEntrySlugs), [activeEntrySlugs]);
+
+  // Compute current date ceilings so the default list never looks forward past Today
+  const { todayStr, currentMondayStr, currentMonthKey, currentQuarterKey, currentYearKey } =
+    useMemo(() => {
+      const now = new Date();
+      const yr = now.getFullYear();
+      const mo = now.getMonth() + 1;
+      const dy = now.getDate();
+      const tStr = `${yr}-${String(mo).padStart(2, "0")}-${String(dy).padStart(2, "0")}`;
+      const monStr = getMondayDateStr( `${tStr}T12:00:00Z`);
+      const mKey = `${yr}-${String(mo).padStart(2, "0")}`;
+      const qNum = Math.floor((mo - 1) / 3) + 1;
+      const qKey = `${yr}-Q${qNum}`;
+      const yKey = `${yr}`;
+      return {
+        todayStr: tStr,
+        currentMondayStr: monStr,
+        currentMonthKey: mKey,
+        currentQuarterKey: qKey,
+        currentYearKey: yKey,
+      };
+    }, []);
 
   const toggleCard = (id: string) => {
     setExpandedCards((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -780,15 +810,40 @@ export function JournalView({ trades }: JournalViewProps) {
     }
   };
 
-  // Group trades by Day
+  // 1. ALL DAYS (Populates every day of the viewed month up to Today, plus any past dates with trades/notes)
   const dayGroups = useMemo(() => {
     const map = new Map<string, JournalTrade[]>();
     trades.forEach((t) => {
       const d = t.openedAt.slice(0, 10);
-      const arr = map.get(d) || [];
-      arr.push(t);
-      map.set(d, arr);
+      if (d <= todayStr || d === selectedCalendarDate) {
+        const arr = map.get(d) || [];
+        arr.push(t);
+        map.set(d, arr);
+      }
     });
+
+    // Populate days of the currently selected calendarMonth, capped at todayStr
+    const yr = calendarMonth.getFullYear();
+    const mo = calendarMonth.getMonth();
+    const daysInMo = new Date(yr, mo + 1, 0).getDate();
+    for (let d = 1; d <= daysInMo; d++) {
+      const dateStr = `${yr}-${String(mo + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+      if (dateStr <= todayStr && !map.has(dateStr)) {
+        map.set(dateStr, []);
+      }
+    }
+
+    // If the user explicitly clicked a future date on the calendar, include that specific date so they can open it
+    if (selectedCalendarDate && !map.has(selectedCalendarDate)) {
+      map.set(selectedCalendarDate, []);
+    }
+
+    // Also include any past/today dates with custom written journal notes
+    for (const slug of activeEntrySlugs) {
+      if (/^\d{4}-\d{2}-\d{2}$/.test(slug) && slug <= todayStr && !map.has(slug)) {
+        map.set(slug, []);
+      }
+    }
 
     const entries = Array.from(map.entries()).sort(
       (a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime()
@@ -803,29 +858,68 @@ export function JournalView({ trades }: JournalViewProps) {
         day: "2-digit",
         year: "numeric",
       });
+      const hasNotes =
+        activeSlugSet.has(dateStr) || activeSlugSet.has(`${dateStr}-review`);
       return {
         id: dateStr,
         title: dateFormatted,
         dateStr,
         trades: trs,
         netPnl,
+        hasNotes,
+        isEmpty: trs.length === 0 && !hasNotes,
         journalHref: `/journal/${dateStr}`,
       };
     });
-  }, [trades]);
+  }, [trades, calendarMonth, activeEntrySlugs, activeSlugSet, todayStr, selectedCalendarDate]);
 
-  // Group trades by Week (Monday - Sunday)
+  // 2. ALL WEEKS (Capped at currentMondayStr so current week is always at the top)
   const weekGroups = useMemo(() => {
     const map = new Map<string, JournalTrade[]>();
 
     trades.forEach((t) => {
-      const weekKey = getMondayDateStr(t.openedAt);
-      const arr = map.get(weekKey) || [];
-      arr.push(t);
-      map.set(weekKey, arr);
+      const d = t.openedAt.slice(0, 10);
+      if (d <= todayStr) {
+        const weekKey = getMondayDateStr(t.openedAt);
+        const arr = map.get(weekKey) || [];
+        arr.push(t);
+        map.set(weekKey, arr);
+      }
     });
 
+    const viewedYear = calendarMonth.getFullYear();
+    const startOfYear = new Date(Date.UTC(viewedYear, 0, 1, 12, 0, 0));
+    const endOfYear = new Date(Date.UTC(viewedYear, 11, 31, 12, 0, 0));
+    for (
+      let ms = startOfYear.getTime();
+      ms <= endOfYear.getTime();
+      ms += 7 * 86_400_000
+    ) {
+      const wkMonday = getMondayDateStr(new Date(ms));
+      if (wkMonday <= currentMondayStr && !map.has(wkMonday)) {
+        map.set(wkMonday, []);
+      }
+    }
+
+    if (!map.has(currentMondayStr)) {
+      map.set(currentMondayStr, []);
+    }
+
+    for (const slug of activeEntrySlugs) {
+      if (slug.startsWith("week-")) {
+        const wkKey = slug.replace("week-", "").replace("-review", "");
+        if (
+          /^\d{4}-\d{2}-\d{2}$/.test(wkKey) &&
+          wkKey <= currentMondayStr &&
+          !map.has(wkKey)
+        ) {
+          map.set(wkKey, []);
+        }
+      }
+    }
+
     return Array.from(map.entries())
+      .filter(([mondayStr]) => mondayStr <= currentMondayStr || mondayStr === activeSubFilterId)
       .sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime())
       .map(([mondayStr, trs]) => {
         const mon = new Date(`${mondayStr}T12:00:00Z`);
@@ -874,6 +968,10 @@ export function JournalView({ trades }: JournalViewProps) {
           if (running > maxPk) maxPk = running;
         });
 
+        const hasNotes =
+          activeSlugSet.has(`week-${mondayStr}`) ||
+          activeSlugSet.has(`week-${mondayStr}-review`);
+
         return {
           id: mondayStr,
           title,
@@ -882,23 +980,53 @@ export function JournalView({ trades }: JournalViewProps) {
           subItems: dayItems,
           maxDrawdown: maxDd,
           maxPeak: maxPk,
+          hasNotes,
+          isEmpty: trs.length === 0 && !hasNotes,
           journalHref: `/journal/week-${mondayStr}`,
         };
       });
-  }, [trades]);
+  }, [
+    trades,
+    calendarMonth,
+    activeEntrySlugs,
+    activeSlugSet,
+    todayStr,
+    currentMondayStr,
+    activeSubFilterId,
+  ]);
 
-  // Group trades by Month (Weeks W1-W5 + Days 1..31)
+  // 3. ALL MONTHS (Capped at currentMonthKey so current month is always at the top)
   const monthGroups = useMemo(() => {
     const map = new Map<string, JournalTrade[]>();
     trades.forEach((t) => {
       const mKey = t.openedAt.slice(0, 7);
-      const arr = map.get(mKey) || [];
-      arr.push(t);
-      map.set(mKey, arr);
+      if (mKey <= currentMonthKey) {
+        const arr = map.get(mKey) || [];
+        arr.push(t);
+        map.set(mKey, arr);
+      }
     });
 
+    const viewedYear = calendarMonth.getFullYear();
+    for (let m = 1; m <= 12; m++) {
+      const mKey = `${viewedYear}-${String(m).padStart(2, "0")}`;
+      if (mKey <= currentMonthKey && !map.has(mKey)) {
+        map.set(mKey, []);
+      }
+    }
+
+    for (const slug of activeEntrySlugs) {
+      if (slug.startsWith("month-")) {
+        const mKey = slug.replace("month-", "").replace("-review", "");
+        if (/^\d{4}-\d{2}$/.test(mKey) && mKey <= currentMonthKey && !map.has(mKey)) {
+          map.set(mKey, []);
+        }
+      }
+    }
+
     return Array.from(map.entries())
-      .sort((a, b) => new Date(b[0]).getTime() - new Date(a[0]).getTime())
+      .filter(([mKey]) => mKey <= currentMonthKey || mKey === activeSubFilterId)
+      .sort((a, b) => new Date(`${b[0]}-01`).getTime() - new Date(`${a[0]}-01`).getTime())
       .map(([mKey, trs]) => {
         const [yrStr, moStr] = mKey.split("-");
         const yr = parseInt(yrStr!, 10);
@@ -916,7 +1044,9 @@ export function JournalView({ trades }: JournalViewProps) {
           });
           const repMonday = matching[0]
             ? getMondayDateStr(matching[0].openedAt)
-            : `${mKey}-${String((w - 1) * 7 + 1).padStart(2, "0")}`;
+            : getMondayDateStr(
+                `${mKey}-${String(Math.min(daysInMonth, (w - 1) * 7 + 1)).padStart(2, "0")}T12:00:00Z`
+              );
 
           return {
             label: `W${w}`,
@@ -955,6 +1085,10 @@ export function JournalView({ trades }: JournalViewProps) {
             if (running > maxPk) maxPk = running;
           });
 
+        const hasNotes =
+          activeSlugSet.has(`month-${mKey}`) ||
+          activeSlugSet.has(`month-${mKey}-review`);
+
         return {
           id: mKey,
           title,
@@ -964,39 +1098,47 @@ export function JournalView({ trades }: JournalViewProps) {
           dayItems,
           maxDrawdown: maxDd,
           maxPeak: maxPk,
+          hasNotes,
+          isEmpty: trs.length === 0 && !hasNotes,
           journalHref: `/journal/month-${mKey}`,
         };
       });
-  }, [trades]);
+  }, [
+    trades,
+    calendarMonth,
+    activeEntrySlugs,
+    activeSlugSet,
+    currentMonthKey,
+    activeSubFilterId,
+  ]);
 
-  // Group trades by Quarter (Months + Weeks + Days)
+  // 4. ALL QUARTERS (Capped at currentQuarterKey)
   const quarterGroups = useMemo(() => {
     const map = new Map<string, JournalTrade[]>();
     trades.forEach((t) => {
       const d = new Date(t.openedAt);
       const q = Math.floor(d.getMonth() / 3) + 1;
       const qKey = `${d.getFullYear()}-Q${q}`;
-      const arr = map.get(qKey) || [];
-      arr.push(t);
-      map.set(qKey, arr);
+      if (qKey <= currentQuarterKey) {
+        const arr = map.get(qKey) || [];
+        arr.push(t);
+        map.set(qKey, arr);
+      }
     });
 
+    const viewedYear = calendarMonth.getFullYear();
+    for (let q = 1; q <= 4; q++) {
+      const qKey = `${viewedYear}-Q${q}`;
+      if (qKey <= currentQuarterKey && !map.has(qKey)) map.set(qKey, []);
+    }
+
     const monthNames = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
 
     return Array.from(map.entries())
+      .filter(([qKey]) => qKey <= currentQuarterKey || qKey === activeSubFilterId)
       .sort((a, b) => b[0].localeCompare(a[0]))
       .map(([qKey, trs]) => {
         const [yrStr, qStr] = qKey.split("-");
@@ -1072,6 +1214,10 @@ export function JournalView({ trades }: JournalViewProps) {
             if (running > maxPk) maxPk = running;
           });
 
+        const hasNotes =
+          activeSlugSet.has(`quarter-${qKey}`) ||
+          activeSlugSet.has(`quarter-${qKey}-review`);
+
         return {
           id: qKey,
           title,
@@ -1082,37 +1228,37 @@ export function JournalView({ trades }: JournalViewProps) {
           dayItems,
           maxDrawdown: maxDd,
           maxPeak: maxPk,
+          hasNotes,
+          isEmpty: trs.length === 0 && !hasNotes,
           journalHref: `/journal/quarter-${qKey}`,
         };
       });
-  }, [trades]);
+  }, [trades, calendarMonth, activeSlugSet, currentQuarterKey, activeSubFilterId]);
 
-  // Group trades by Year (Quarterly + Monthly + 52-Week P&L breakdowns)
+  // 5. ALL YEARS (Capped at currentYearKey)
   const yearGroups = useMemo(() => {
     const map = new Map<string, JournalTrade[]>();
     trades.forEach((t) => {
       const yKey = t.openedAt.slice(0, 4);
-      const arr = map.get(yKey) || [];
-      arr.push(t);
-      map.set(yKey, arr);
+      if (yKey <= currentYearKey) {
+        const arr = map.get(yKey) || [];
+        arr.push(t);
+        map.set(yKey, arr);
+      }
+    });
+
+    const curYr = parseInt(currentYearKey, 10);
+    [String(curYr), String(curYr - 1)].forEach((yKey) => {
+      if (!map.has(yKey)) map.set(yKey, []);
     });
 
     const monthNames = [
-      "Jan",
-      "Feb",
-      "Mar",
-      "Apr",
-      "May",
-      "Jun",
-      "Jul",
-      "Aug",
-      "Sep",
-      "Oct",
-      "Nov",
-      "Dec",
+      "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+      "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
     ];
 
     return Array.from(map.entries())
+      .filter(([yKey]) => yKey <= currentYearKey)
       .sort((a, b) => b[0].localeCompare(a[0]))
       .map(([yKey, trs]) => {
         const yr = parseInt(yKey, 10);
@@ -1179,6 +1325,10 @@ export function JournalView({ trades }: JournalViewProps) {
             if (running > maxPk) maxPk = running;
           });
 
+        const hasNotes =
+          activeSlugSet.has(`year-${yKey}`) ||
+          activeSlugSet.has(`year-${yKey}-review`);
+
         return {
           id: yKey,
           title: yKey,
@@ -1189,16 +1339,23 @@ export function JournalView({ trades }: JournalViewProps) {
           weekItems,
           maxDrawdown: maxDd,
           maxPeak: maxPk,
+          hasNotes,
+          isEmpty: trs.length === 0 && !hasNotes,
           journalHref: `/journal/year-${yKey}`,
         };
       });
-  }, [trades]);
+  }, [trades, activeSlugSet, currentYearKey]);
 
-  // Filter dayGroups if calendar date selected
+  // Filter dayGroups by calendar date AND hideEmptyEntries toggle
   const filteredDayGroups = useMemo(() => {
-    if (!selectedCalendarDate) return dayGroups;
-    return dayGroups.filter((g) => g.dateStr === selectedCalendarDate);
-  }, [dayGroups, selectedCalendarDate]);
+    let list = dayGroups;
+    if (selectedCalendarDate) {
+      list = list.filter((g) => g.dateStr === selectedCalendarDate);
+    } else if (hideEmptyEntries) {
+      list = list.filter((g) => !g.isEmpty);
+    }
+    return list;
+  }, [dayGroups, selectedCalendarDate, hideEmptyEntries]);
 
   // Paginate Day View
   const paginatedDays = useMemo(() => {
@@ -1213,19 +1370,39 @@ export function JournalView({ trades }: JournalViewProps) {
       : Math.max(1, Math.ceil(filteredDayGroups.length / daysPerPage));
 
   const filteredWeekGroups = useMemo(() => {
-    if (!activeSubFilterId || period !== "week") return weekGroups;
-    return weekGroups.filter((w) => w.id === activeSubFilterId);
-  }, [weekGroups, activeSubFilterId, period]);
+    let list = weekGroups;
+    if (activeSubFilterId && period === "week") {
+      list = list.filter((w) => w.id === activeSubFilterId);
+    } else if (hideEmptyEntries) {
+      list = list.filter((w) => !w.isEmpty);
+    }
+    return list;
+  }, [weekGroups, activeSubFilterId, period, hideEmptyEntries]);
 
   const filteredMonthGroups = useMemo(() => {
-    if (!activeSubFilterId || period !== "month") return monthGroups;
-    return monthGroups.filter((m) => m.id === activeSubFilterId);
-  }, [monthGroups, activeSubFilterId, period]);
+    let list = monthGroups;
+    if (activeSubFilterId && period === "month") {
+      list = list.filter((m) => m.id === activeSubFilterId);
+    } else if (hideEmptyEntries) {
+      list = list.filter((m) => !m.isEmpty);
+    }
+    return list;
+  }, [monthGroups, activeSubFilterId, period, hideEmptyEntries]);
 
   const filteredQuarterGroups = useMemo(() => {
-    if (!activeSubFilterId || period !== "quarter") return quarterGroups;
-    return quarterGroups.filter((q) => q.id === activeSubFilterId);
-  }, [quarterGroups, activeSubFilterId, period]);
+    let list = quarterGroups;
+    if (activeSubFilterId && period === "quarter") {
+      list = list.filter((q) => q.id === activeSubFilterId);
+    } else if (hideEmptyEntries) {
+      list = list.filter((q) => !q.isEmpty);
+    }
+    return list;
+  }, [quarterGroups, activeSubFilterId, period, hideEmptyEntries]);
+
+  const filteredYearGroups = useMemo(() => {
+    if (!hideEmptyEntries) return yearGroups;
+    return yearGroups.filter((y) => !y.isEmpty);
+  }, [yearGroups, hideEmptyEntries]);
 
   return (
     <div className="space-y-6">
@@ -1249,25 +1426,46 @@ export function JournalView({ trades }: JournalViewProps) {
           )}
         </div>
 
-        {/* Period Selector Toggle */}
-        <div className="flex items-center rounded-xl bg-secondary/50 p-1 border border-border/60">
-          {(["day", "week", "month", "quarter", "year"] as JournalPeriod[]).map((p) => (
-            <button
-              key={p}
-              onClick={() => {
-                setPeriod(p);
-                setActiveSubFilterId(null);
-                setCurrentPage(1);
-              }}
-              className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition ${
-                period === p
-                  ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs text-foreground shadow"
-                  : "text-muted-foreground hover:text-foreground"
-              }`}
-            >
-              {p}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* Hide Empty Entries Toggle */}
+          <button
+            type="button"
+            onClick={() => {
+              setHideEmptyEntries((v) => !v);
+              setCurrentPage(1);
+            }}
+            className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-1.5 text-xs font-semibold transition ${
+              hideEmptyEntries
+                ? "border-indigo-500 bg-indigo-600 text-white shadow"
+                : "border-border/60 bg-secondary/40 text-muted-foreground hover:text-foreground"
+            }`}
+            title="Toggle hiding periods that have 0 trades and no custom journal notes"
+          >
+            <span>
+              {hideEmptyEntries ? "✓ Empty Entries Hidden" : "Hide Empty Entries"}
+            </span>
+          </button>
+
+          {/* Period Selector Toggle */}
+          <div className="flex items-center rounded-xl bg-secondary/50 p-1 border border-border/60">
+            {(["day", "week", "month", "quarter", "year"] as JournalPeriod[]).map((p) => (
+              <button
+                key={p}
+                onClick={() => {
+                  setPeriod(p);
+                  setActiveSubFilterId(null);
+                  setCurrentPage(1);
+                }}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold capitalize transition ${
+                  period === p
+                    ? "bg-secondary text-foreground border border-border font-semibold shadow-2xs text-foreground shadow"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {p}
+              </button>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1276,6 +1474,12 @@ export function JournalView({ trades }: JournalViewProps) {
         <div className="space-y-4">
           <InteractiveDayCalendar
             trades={trades}
+            activeEntrySlugs={activeEntrySlugs}
+            currentMonth={calendarMonth}
+            onChangeMonth={(m) => {
+              setCalendarMonth(m);
+              setCurrentPage(1);
+            }}
             selectedDate={selectedCalendarDate}
             onSelectDate={(d) => {
               setSelectedCalendarDate(d);
@@ -1283,7 +1487,6 @@ export function JournalView({ trades }: JournalViewProps) {
             }}
             onDoubleClickDate={(dateStr) => router.push(`/journal/${dateStr}`)}
           />
-
           <div className="space-y-4">
             {paginatedDays.map((dg) => {
               const isExpanded = !!expandedCards[dg.id];
@@ -1680,7 +1883,7 @@ export function JournalView({ trades }: JournalViewProps) {
       {/* --- YEAR TAB (Compact Multi-Column Layout) --- */}
       {period === "year" && (
         <div className="space-y-4">
-          {yearGroups.map((group) => {
+          {filteredYearGroups.map((group) => {
             const isExpanded = !!expandedCards[group.id];
             const isWin = group.netPnl >= 0;
 
