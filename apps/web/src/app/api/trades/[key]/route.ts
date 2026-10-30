@@ -13,7 +13,14 @@ export const revalidate = 0;
 
 type Params = { params: Promise<{ key: string }> };
 
+function ensureTradeReviewNotesColumn() {
+  try {
+    (db as any).$client.prepare("ALTER TABLE trades ADD COLUMN review_notes TEXT DEFAULT ''").run();
+  } catch {}
+}
+
 export const GET = handler(async (_request: Request, { params }: Params) => {
+  ensureTradeReviewNotesColumn();
   const { key } = await params;
   const row = getTradeByKey(key);
   if (!row) return bad("Trade not found", 404);
@@ -42,6 +49,7 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
             trade: {
               ...row,
               status: trade.status,
+              reviewNotes: (row as any).review_notes ?? (row as any).reviewNotes ?? (db as any).$client.prepare("SELECT review_notes FROM trades WHERE key = ?").get(key)?.review_notes ?? "",
               riskAmount: tradeRisk(trade),
             realizedR: tradeR(trade),
             plannedR: plannedR(trade),
@@ -59,6 +67,7 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
 
 interface AnnotateBody {
   notes?: string | null;
+  reviewNotes?: string | null;
   tags?: string[];
   mistakes?: string[];
   playbookId?: string | null;
@@ -69,6 +78,7 @@ interface AnnotateBody {
 }
 
 export const PATCH = handler(async (request: Request, { params }: Params) => {
+  ensureTradeReviewNotesColumn();
   const { key } = await params;
   const decoded = key;
   const row = getTradeByKey(decoded);
@@ -118,10 +128,17 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
   if (body.profitTarget !== undefined) patch.profitTarget = body.profitTarget;
   if (body.reviewed !== undefined) patch.reviewedAt = body.reviewed ? nowIso() : null;
 
-  if (!Object.keys(patch).length) return ok({ updated: true });
+  if (body.reviewNotes !== undefined) {
+    (db as any).$client
+      .prepare("UPDATE trades SET review_notes = ? WHERE key = ?")
+      .run(body.reviewNotes ?? "", decoded);
+  }
+  if (!Object.keys(patch).length && body.reviewNotes === undefined) return ok({ updated: true });
 
   // 1. Update SQLite
-  db.update(trades).set(patch).where(eq(trades.key, decoded)).run();
+  if (Object.keys(patch).length > 0) {
+    db.update(trades).set(patch).where(eq(trades.key, decoded)).run();
+  }
 
   // 2. Sync to Notion if this trade is linked to a Notion page
   const notionPageId = (row as any).notionPageId ?? (row as any).notion_page_id;

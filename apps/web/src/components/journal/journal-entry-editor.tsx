@@ -1310,8 +1310,17 @@ export function JournalEntryEditor({
                     startDate={range.startDate}
                     endDate={range.endDate}
                     anchorDate={range.anchorDate}
+                    currentSlug={initialEntry.slug}
+                    currentPrepContent={content}
+                    currentReviewContent={reviewContent}
+                    onSyncCurrentEntryEdit={(tab, nextHtml) => {
+                      if (tab === "review") setReviewContent(nextHtml);
+                      else setContent(nextHtml);
+                      setEditorKey((k) => k + 1);
+                    }}
                     trades={trades}
                     missedTrades={periodMissedTrades}
+                    isSplitMode={true}
                     onInsertReflectionHtml={(html) => {
                       if (noteEditorRef.current?.insertHtml) {
                         noteEditorRef.current.insertHtml(html);
@@ -1447,8 +1456,17 @@ export function JournalEntryEditor({
               startDate={range.startDate}
               endDate={range.endDate}
               anchorDate={range.anchorDate}
+              currentSlug={initialEntry.slug}
+              currentPrepContent={content}
+              currentReviewContent={reviewContent}
+              onSyncCurrentEntryEdit={(tab, nextHtml) => {
+                if (tab === "review") setReviewContent(nextHtml);
+                else setContent(nextHtml);
+                setEditorKey((k) => k + 1);
+              }}
               trades={trades}
               missedTrades={periodMissedTrades}
+              isSplitMode={false}
               onInsertReflectionHtml={(html) => {
                 if (noteEditorRef.current?.insertHtml) {
                   noteEditorRef.current.insertHtml(html);

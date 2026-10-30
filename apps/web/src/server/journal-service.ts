@@ -59,6 +59,7 @@ export interface SavedNoteTemplate {
 export type PeriodKey = "day" | "week" | "month" | "quarter" | "year";
 
 export interface JournalConfigData {
+  reviewQuestions?: Record<string, any>;
   templates: SavedNoteTemplate[];
   defaultTemplates: Record<string, string>; // e.g., "day_prep": "tpl-prep", "week_review": "tpl-review"
   checklists: Record<PeriodKey, Array<{ id: string; label: string }>>;

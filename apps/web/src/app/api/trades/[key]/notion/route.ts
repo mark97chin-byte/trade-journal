@@ -104,15 +104,57 @@ export const POST = handler(async (request: Request, { params }: Params) => {
 
   if (!token) return bad("Missing NOTION_TOKEN in server environment (.env)", 400);
 
-  const body = (await request.json().catch(() => ({}))) as { notes?: string };
-  const notesHtml = typeof body.notes === "string" ? body.notes : "";
+  const body = (await request.json().catch(() => ({}))) as {
+    notes?: string;
+    reviewNotes?: string;
+  };
+
+  ensureNotionColumns();
+  try {
+    db.run(sql`ALTER TABLE trades ADD COLUMN review_notes TEXT DEFAULT ''`);
+  } catch {}
+
+  // 1. Update SQLite if notes or reviewNotes were provided
+  if (body.reviewNotes !== undefined) {
+    db.run(sql`UPDATE trades SET review_notes = ${body.reviewNotes} WHERE key = ${decodedKey}`);
+  }
+  if (body.notes !== undefined) {
+    db.run(sql`UPDATE trades SET notes = ${body.notes} WHERE key = ${decodedKey}`);
+  }
 
   const resolved = await resolveTradePage(decodedKey, token);
   if (!resolved) return bad(`Trade '${decodedKey}' not found`, 404);
   if (!resolved.pageId) return bad(`No linked Notion page found for trade '${decodedKey}'`, 404);
 
-  db.update(trades).set({ notes: notesHtml }).where(eq(trades.key, decodedKey)).run();
-  await pushHtmlToNotionPage(resolved.pageId, notesHtml, token);
+  // 2. Query latest state to assemble complete page body for Notion
+  const row = getTradeByKey(decodedKey) as any;
+  const currentNotes = (typeof body.notes === "string" ? body.notes : (row?.notes || "")).trim();
+  const rawRev = (db.all(sql`SELECT review_notes FROM trades WHERE key = ${decodedKey}`) as any[])?.[0]?.review_notes;
+  const currentReview = (typeof body.reviewNotes === "string" ? body.reviewNotes : (rawRev || row?.review_notes || row?.reviewNotes || "")).trim();
+
+  let fullHtmlToPush = "";
+  if (currentNotes && currentReview) {
+    if (currentNotes.includes(currentReview)) {
+      fullHtmlToPush = currentNotes;
+    } else if (currentReview.includes(currentNotes)) {
+      fullHtmlToPush = currentReview;
+    } else {
+      fullHtmlToPush = `${currentNotes}<p><br/></p><hr/><p><strong>Post-Trade Review</strong></p>${currentReview}`;
+    }
+  } else if (currentReview) {
+    fullHtmlToPush = currentReview;
+  } else {
+    fullHtmlToPush = currentNotes;
+  }
+
+  // 3. Push complete HTML blocks to Notion page body
+  await pushHtmlToNotionPage(resolved.pageId, fullHtmlToPush, token);
+
+  // 4. Mark the 'Reviewed' checkbox property as checked in Notion
+  try {
+    const { patchNotionTradePage } = await import("@/lib/notion-sync");
+    void patchNotionTradePage(resolved.pageId, { reviewed: true });
+  } catch {}
 
   return ok({
     ok: true,

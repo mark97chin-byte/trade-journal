@@ -812,7 +812,7 @@ function AnnotationsCard({
       const res = await fetch(`/api/trades/${encodeURIComponent(trade.key)}/notion`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notes }),
+        body: JSON.stringify({ notes, reviewNotes }),
       });
       const rawText = await res.text();
       let data: any = {};
