@@ -423,7 +423,7 @@ function richTextToHtml(richTextArr: any[] = []): string {
       if (ann.underline) text = `<u>${text}</u>`;
       if (ann.strikethrough) text = `<s>${text}</s>`;
       if (ann.color && ann.color !== "default") {
-        text = `<span class="tz-color-${ann.color}">${text}</span>`;
+        text = `<span class="tz-color-${ann.color}" data-notion-color="${ann.color}">${text}</span>`;
       }
       if (rt.href) {
         text = `<a href="${rt.href}" target="_blank" rel="noopener noreferrer" class="text-indigo-400 underline">${text}</a>`;
@@ -431,6 +431,42 @@ function richTextToHtml(richTextArr: any[] = []): string {
       return text;
     })
     .join("");
+}
+
+const VALID_NOTION_COLOR_SET = new Set<string>([
+  "gray",
+  "brown",
+  "orange",
+  "yellow",
+  "green",
+  "blue",
+  "purple",
+  "pink",
+  "red",
+  "gray_background",
+  "brown_background",
+  "orange_background",
+  "yellow_background",
+  "green_background",
+  "blue_background",
+  "purple_background",
+  "pink_background",
+  "red_background",
+]);
+
+function extractNotionColorFromEl(el: HTMLElement | null | undefined): string | undefined {
+  if (!el) return undefined;
+  const directAttr = el.getAttribute("data-notion-color");
+  if (directAttr && VALID_NOTION_COLOR_SET.has(directAttr)) {
+    return directAttr;
+  }
+  const classAttr = el.getAttribute("class") || "";
+  const matches = classAttr.match(/tz-color-([a-z_]+)/g);
+  if (matches && matches.length > 0) {
+    const last = matches[matches.length - 1]!.replace("tz-color-", "");
+    if (VALID_NOTION_COLOR_SET.has(last)) return last;
+  }
+  return undefined;
 }
 
 // Convert Notion Block Tree -> RichEditor HTML (Async for Local WebP Image Ingestion)
@@ -461,7 +497,7 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
       type === "heading_3" ||
       type === "heading_4"
     ) {
-      const level = type.slice(-1);
+      const level = type === "heading_4" ? "3" : type.slice(-1);
       if (data.is_toggleable || (b.children && b.children.length > 0)) {
         out.push(`
           <div class="tz-toggle tz-toggle-h${level}${colorClass}" data-notion-type="${type}" data-toggle-type="${type}" data-open="false"${colorAttr}>
@@ -505,7 +541,48 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
       }
     } else if (type === "quote") {
       out.push(
-        `<blockquote class="tz-quote${colorClass}" data-notion-type="quote"${colorAttr}><div data-placeholder="Empty quote">${textHtml}</div>${childrenHtml}</blockquote>`
+        `<blockquote class="tz-quote${colorClass}" data-notion-type="quote" data-placeholder="Empty quote"${colorAttr}><div data-placeholder="Empty quote">${textHtml || "<br/>"}</div>${childrenHtml}</blockquote>`
+      );
+    } else if (type === "table") {
+      const hasColHeader = Boolean(data.has_column_header);
+      const hasRowHeader = Boolean(data.has_row_header);
+      const rows = b.children || [];
+      const rowHtmlList: string[] = [];
+      for (let rIdx = 0; rIdx < rows.length; rIdx++) {
+        const rBlock = rows[rIdx];
+        const cells: any[][] = rBlock?.table_row?.cells || [];
+        const isHeaderRow = hasColHeader && rIdx === 0;
+        const cellHtmlList = cells.map((cellRichText, cIdx) => {
+          const isHeaderCell = isHeaderRow || (hasRowHeader && cIdx === 0);
+          const tag = isHeaderCell ? "th" : "td";
+
+          // Detect if the cell has a uniform Notion color so the entire cell box is styled
+          const nonEmptyRt = (cellRichText || []).filter((rt: any) => (rt?.plain_text || "").length > 0);
+          const firstColor = nonEmptyRt[0]?.annotations?.color;
+          const isUniformCellColor =
+            firstColor &&
+            firstColor !== "default" &&
+            nonEmptyRt.every((rt: any) => rt?.annotations?.color === firstColor);
+
+          const cellColorAttrs = isUniformCellColor
+            ? ` class="tz-color-${firstColor}" data-notion-color="${firstColor}"`
+            : "";
+
+          const cellInner = isUniformCellColor
+            ? richTextToHtml(
+                cellRichText.map((rt: any) => ({
+                  ...rt,
+                  annotations: { ...(rt.annotations || {}), color: "default" },
+                }))
+              ).trim() || "<br/>"
+            : richTextToHtml(cellRichText) || "<br/>";
+
+          return `<${tag}${cellColorAttrs}>${cellInner}</${tag}>`;
+        });
+        rowHtmlList.push(`<tr>${cellHtmlList.join("")}</tr>`);
+      }
+      out.push(
+        `<table class="tz-table" data-notion-type="table" data-has-column-header="${hasColHeader ? "true" : "false"}" data-has-row-header="${hasRowHeader ? "true" : "false"}"><tbody>${rowHtmlList.join("")}</tbody></table>`
       );
     } else if (type === "to_do") {
       const checkedAttr = data.checked ? ' checked="checked"' : "";
@@ -516,9 +593,9 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
         </div>
       `);
     } else if (type === "bulleted_list_item") {
-      out.push(`<ul><li>${textHtml}${childrenHtml}</li></ul>`);
+      out.push(`<ul><li class="${colorClass.trim()}"${colorAttr}>${textHtml}${childrenHtml}</li></ul>`);
     } else if (type === "numbered_list_item") {
-      out.push(`<ol><li>${textHtml}${childrenHtml}</li></ol>`);
+      out.push(`<ol><li class="${colorClass.trim()}"${colorAttr}>${textHtml}${childrenHtml}</li></ol>`);
     } else if (type === "divider") {
       out.push(`<hr class="tz-divider" data-notion-type="divider" />`);
     } else if (
@@ -576,13 +653,17 @@ export async function notionBlocksToHtml(blocks: any[], slug?: string): Promise<
   return out.join("\n");
 }
 
-function toRichText(text: string): any[] {
+function toRichText(text: string, color?: string): any[] {
   const clean = (text || "").replace(/\s+/g, " ").trim();
   if (!clean) return [];
-  return [{ type: "text", text: { content: clean.slice(0, 1950) } }];
+  const item: any = { type: "text", text: { content: clean.slice(0, 1950) } };
+  if (color && VALID_NOTION_COLOR_SET.has(color)) {
+    item.annotations = { color };
+  }
+  return [item];
 }
 
-function extractRichTextFromNode(rootNode: Node): any[] {
+function extractRichTextFromNode(rootNode: Node, inheritedColor?: string): any[] {
   const segments: any[] = [];
 
   function walk(
@@ -606,7 +687,10 @@ function extractRichTextFromNode(rootNode: Node): any[] {
       if (ann.underline) activeAnn.underline = true;
       if (ann.strikethrough) activeAnn.strikethrough = true;
       if (ann.code) activeAnn.code = true;
-      if (ann.color && ann.color !== "default") activeAnn.color = ann.color;
+      const effectiveColor = ann.color || inheritedColor;
+      if (effectiveColor && VALID_NOTION_COLOR_SET.has(effectiveColor)) {
+        activeAnn.color = effectiveColor;
+      }
       if (Object.keys(activeAnn).length > 0) {
         item.annotations = activeAnn;
       }
@@ -637,10 +721,9 @@ function extractRichTextFromNode(rootNode: Node): any[] {
       }
     }
 
-    const classAttr = el.getAttribute("class") || "";
-    const colorMatch = classAttr.match(/tz-color-([a-z_]+)/);
-    if (colorMatch?.[1]) {
-      nextAnn.color = colorMatch[1];
+    const detectedColor = extractNotionColorFromEl(el);
+    if (detectedColor) {
+      nextAnn.color = detectedColor;
     }
 
     for (const child of el.childNodes) {
@@ -648,9 +731,13 @@ function extractRichTextFromNode(rootNode: Node): any[] {
     }
   }
 
-  walk(rootNode, {});
+  walk(rootNode, { color: inheritedColor });
+  // Trim trailing newline-only segments added by <br/> placeholders
+  while (segments.length > 0 && segments[segments.length - 1]?.text?.content === "\n") {
+    segments.pop();
+  }
   if (segments.length === 0) {
-    return toRichText(rootNode.text || "");
+    return toRichText(rootNode.text || "", inheritedColor);
   }
   return segments.slice(0, 95);
 }
@@ -707,6 +794,7 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
     if (node.nodeType !== 1) return null;
     const el = node as HTMLElement;
     const tag = el.tagName?.toUpperCase();
+    const blockColor = extractNotionColorFromEl(el);
 
     if (el.classList.contains("tz-notion-btn-wrapper") || el.classList.contains("tz-add-ticker-btn")) {
       const label =
@@ -807,12 +895,15 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
     }
 
     if (el.classList.contains("tz-banner")) {
-      const color = el.getAttribute("data-notion-color") || "gray_background";
-      const text = el.text?.trim() || "Section";
+      const color = blockColor || "gray_background";
+      const rt = extractRichTextFromNode(el);
       return {
         object: "block",
         type: "paragraph",
-        paragraph: { rich_text: toRichText(text), color },
+        paragraph: {
+          rich_text: rt.length > 0 ? rt : toRichText("Section"),
+          color,
+        },
       };
     }
 
@@ -822,55 +913,64 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
         ? checkbox.hasAttribute("checked") || checkbox.getAttribute("checked") === "checked"
         : false;
       const textEl = el.querySelector(".tz-check-text") || el;
-      const text = textEl.text?.trim() || "To-do item";
+      const rt = extractRichTextFromNode(textEl);
       return {
         object: "block",
         type: "to_do",
-        to_do: { rich_text: toRichText(text), checked },
+        to_do: {
+          rich_text: rt.length > 0 ? rt : toRichText("To-do item"),
+          checked,
+          ...(blockColor ? { color: blockColor } : {}),
+        },
       };
     }
 
     if (el.classList.contains("tz-callout")) {
       const rawEmoji = el.getAttribute("data-icon") || el.querySelector(".tz-callout-icon")?.text?.trim() || "💡";
-      const color = el.getAttribute("data-notion-color") || "blue_background";
+      const color = blockColor || "blue_background";
       const contentEl = el.querySelector(".tz-callout-content") || el;
-      const text = contentEl.text?.trim() || "Note";
+      const rt = extractRichTextFromNode(contentEl);
       return {
         object: "block",
         type: "callout",
         callout: {
           icon: { type: "emoji", emoji: rawEmoji },
           color,
-          rich_text: toRichText(text),
+          rich_text: rt.length > 0 ? rt : toRichText("Note"),
         },
       };
     }
 
     if (tag === "BLOCKQUOTE" || el.classList.contains("tz-quote")) {
-      const text = el.text?.trim() || " ";
+      const rt = extractRichTextFromNode(el);
       return {
         object: "block",
         type: "quote",
-        quote: { rich_text: toRichText(text || " ") },
+        quote: {
+          rich_text: rt.length > 0 ? rt : toRichText(" "),
+          ...(blockColor ? { color: blockColor } : {}),
+        },
       };
     }
 
     if (el.classList.contains("tz-toggle")) {
       const headerEl = findDirectChildByClass(el, "tz-toggle-header");
       const titleEl = headerEl ? findDirectChildByClass(headerEl, "tz-toggle-title") : el.querySelector(".tz-toggle-title");
-      const titleText = titleEl?.text?.trim() || "Toggle";
+      const titleRt = titleEl ? extractRichTextFromNode(titleEl) : toRichText("Toggle");
 
       const bodyEl = findDirectChildByClass(el, "tz-toggle-body");
       const children = bodyEl ? await parseNodes(bodyEl.childNodes) : [];
 
       const toggleKind = el.getAttribute("data-toggle-type") || el.getAttribute("data-notion-type") || "toggle";
       if (toggleKind === "heading_1" || toggleKind === "heading_2" || toggleKind === "heading_3" || toggleKind === "heading_4") {
+        const mappedKind = toggleKind === "heading_4" ? "heading_3" : toggleKind;
         return {
           object: "block",
-          type: toggleKind,
-          [toggleKind]: {
-            rich_text: toRichText(titleText),
+          type: mappedKind,
+          [mappedKind]: {
+            rich_text: titleRt.length > 0 ? titleRt : toRichText("Toggle Heading"),
             is_toggleable: true,
+            ...(blockColor ? { color: blockColor } : {}),
           },
           _children: children,
         };
@@ -880,7 +980,8 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
         object: "block",
         type: "toggle",
         toggle: {
-          rich_text: toRichText(titleText),
+          rich_text: titleRt.length > 0 ? titleRt : toRichText("Toggle"),
+          ...(blockColor ? { color: blockColor } : {}),
         },
         _children: children,
       };
@@ -912,17 +1013,78 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
       }
     }
 
+    if (tag === "TABLE" || el.classList.contains("tz-table")) {
+      const trEls = el.querySelectorAll("tr");
+      if (!trEls.length) return null;
+
+      let maxCols = 0;
+      const parsedRows: Array<{ cells: any[][]; hasTh: boolean }> = [];
+
+      for (const tr of trEls) {
+        const cellEls = tr.querySelectorAll("th, td");
+        if (!cellEls.length) continue;
+        if (cellEls.length > maxCols) maxCols = cellEls.length;
+        const rowColor = extractNotionColorFromEl(tr);
+        const rowCells: any[][] = [];
+        let rowHasTh = false;
+        for (const cellEl of cellEls) {
+          if (cellEl.tagName?.toUpperCase() === "TH") rowHasTh = true;
+          const cellColor = extractNotionColorFromEl(cellEl) || rowColor;
+          let rt = extractRichTextFromNode(cellEl, cellColor);
+          if (rt.length === 0 && cellColor) {
+            rt = [{ type: "text", text: { content: " " }, annotations: { color: cellColor } }];
+          }
+          rowCells.push(rt);
+        }
+        parsedRows.push({ cells: rowCells, hasTh: rowHasTh });
+      }
+
+      if (maxCols === 0 || parsedRows.length === 0) return null;
+
+      const hasColumnHeader =
+        el.getAttribute("data-has-column-header") === "true" ||
+        parsedRows[0]?.hasTh === true;
+      const hasRowHeader = el.getAttribute("data-has-row-header") === "true";
+
+      const tableRows = parsedRows.map((r) => {
+        const paddedCells = Array.from({ length: maxCols }, (_, cIdx) => r.cells[cIdx] || []);
+        return {
+          object: "block",
+          type: "table_row",
+          table_row: {
+            cells: paddedCells,
+          },
+        };
+      });
+
+      return {
+        object: "block",
+        type: "table",
+        table: {
+          table_width: maxCols,
+          has_column_header: hasColumnHeader,
+          has_row_header: hasRowHeader,
+          children: tableRows.slice(0, 100),
+        },
+      };
+    }
+
     if (tag === "UL" || tag === "OL") {
       const listType = tag === "OL" ? "numbered_list_item" : "bulleted_list_item";
       const items: any[] = [];
       for (const li of el.childNodes) {
         if (li.nodeType === 1 && (li as HTMLElement).tagName?.toUpperCase() === "LI") {
-          const t = li.text?.trim();
-          if (t) {
+          const liEl = li as HTMLElement;
+          const liColor = extractNotionColorFromEl(liEl) || blockColor;
+          const rt = extractRichTextFromNode(liEl);
+          if (rt.length > 0) {
             items.push({
               object: "block",
               type: listType,
-              [listType]: { rich_text: extractRichTextFromNode(li) },
+              [listType]: {
+                rich_text: rt,
+                ...(liColor ? { color: liColor } : {}),
+              },
             });
           }
         }
@@ -932,28 +1094,34 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
 
     if (tag === "H1" || tag === "H2" || tag === "H3") {
       const hType = `heading_${tag.charAt(1)}`;
-      const t = el.text?.trim();
-      if (!t) return null;
+      const rt = extractRichTextFromNode(el);
+      if (rt.length === 0) return null;
       return {
         object: "block",
         type: hType,
-        [hType]: { rich_text: extractRichTextFromNode(el) },
+        [hType]: {
+          rich_text: rt,
+          ...(blockColor ? { color: blockColor } : {}),
+        },
       };
     }
 
     const hasComplexChild = el.querySelector(
-      ".tz-toggle, .tz-column-list, .tz-callout, .tz-banner, .tz-check-row, figure, img, ul, ol, blockquote, hr"
+      ".tz-toggle, .tz-column-list, .tz-callout, .tz-banner, .tz-check-row, figure, img, ul, ol, blockquote, hr, table, .tz-table"
     );
     if (hasComplexChild) {
       return await parseNodes(el.childNodes);
     }
 
-    const plain = el.text?.trim();
-    if (plain) {
+    const rt = extractRichTextFromNode(el);
+    if (rt.length > 0) {
       return {
         object: "block",
         type: "paragraph",
-        paragraph: { rich_text: extractRichTextFromNode(el) },
+        paragraph: {
+          rich_text: rt,
+          ...(blockColor ? { color: blockColor } : {}),
+        },
       };
     }
 

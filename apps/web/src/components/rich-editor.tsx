@@ -319,16 +319,23 @@ blockquote {
   color: #ffffff;
 }
 
-/* Empty Quote Placeholder */
-.tz-quote div:empty:before,
+/* Empty Quote Placeholder (Only displays when the quote has no text) */
+.tz-quote[data-quote-empty="true"] > div:first-child:before,
+.tz-quote > div[data-placeholder]:only-child:empty:before,
 blockquote:empty:before {
   content: attr(data-placeholder);
   color: #94a3b8;
   pointer-events: none;
 }
-.dark .tz-quote div:empty:before,
+.dark .tz-quote[data-quote-empty="true"] > div:first-child:before,
+.dark .tz-quote > div[data-placeholder]:only-child:empty:before,
 .dark blockquote:empty:before {
   color: #64748b;
+}
+.tz-table td:focus,
+.tz-table th:focus {
+  outline: 1px solid rgba(99, 102, 241, 0.5);
+  background: rgba(99, 102, 241, 0.06);
 }
 
 .tz-rich-content {
@@ -640,28 +647,38 @@ blockquote:empty:before {
   border-radius: 0.25rem;
 }
 
-/* Official Notion 10 Text Colors */
-.tz-color-default { color: #f1f5f9; }
-.tz-color-gray { color: #94a3b8 !important; }
-.tz-color-brown { color: #d6a27e !important; }
-.tz-color-orange { color: #fb923c !important; }
-.tz-color-yellow { color: #facc15 !important; }
-.tz-color-green { color: #34d399 !important; }
-.tz-color-blue { color: #60a5fa !important; }
-.tz-color-purple { color: #c084fc !important; }
-.tz-color-pink { color: #f472b6 !important; }
-.tz-color-red { color: #f87171 !important; }
+/* Official Notion 10 Text Colors (Applies to inline spans, blocks, and table cells) */
+.tz-color-default { color: inherit; }
+.tz-color-gray, .tz-color-gray * { color: #94a3b8 !important; }
+.tz-color-brown, .tz-color-brown * { color: #d6a27e !important; }
+.tz-color-orange, .tz-color-orange * { color: #fb923c !important; }
+.tz-color-yellow, .tz-color-yellow * { color: #facc15 !important; }
+.tz-color-green, .tz-color-green * { color: #34d399 !important; }
+.tz-color-blue, .tz-color-blue * { color: #60a5fa !important; }
+.tz-color-purple, .tz-color-purple * { color: #c084fc !important; }
+.tz-color-pink, .tz-color-pink * { color: #f472b6 !important; }
+.tz-color-red, .tz-color-red * { color: #f87171 !important; }
 
 /* Official Notion 10 Highlight / Background Colors */
-.tz-color-gray_background { background-color: rgba(148, 163, 184, 0.18) !important; border-color: rgba(148, 163, 184, 0.32) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-brown_background { background-color: rgba(180, 120, 80, 0.22) !important; border-color: rgba(180, 120, 80, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-orange_background { background-color: rgba(249, 115, 22, 0.20) !important; border-color: rgba(249, 115, 22, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-yellow_background { background-color: rgba(234, 179, 8, 0.20) !important; border-color: rgba(234, 179, 8, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-green_background { background-color: rgba(16, 185, 129, 0.20) !important; border-color: rgba(16, 185, 129, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-blue_background { background-color: rgba(59, 130, 246, 0.20) !important; border-color: rgba(59, 130, 246, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-purple_background { background-color: rgba(168, 85, 247, 0.20) !important; border-color: rgba(168, 85, 247, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-pink_background { background-color: rgba(236, 72, 153, 0.20) !important; border-color: rgba(236, 72, 153, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
-.tz-color-red_background { background-color: rgba(239, 68, 68, 0.20) !important; border-color: rgba(239, 68, 68, 0.36) !important; padding: 0.08rem 0.25rem; border-radius: 0.25rem; }
+.tz-color-gray_background { background-color: rgba(148, 163, 184, 0.20) !important; border-color: rgba(148, 163, 184, 0.35) !important; }
+.tz-color-brown_background { background-color: rgba(180, 120, 80, 0.24) !important; border-color: rgba(180, 120, 80, 0.38) !important; }
+.tz-color-orange_background { background-color: rgba(249, 115, 22, 0.22) !important; border-color: rgba(249, 115, 22, 0.38) !important; }
+.tz-color-yellow_background { background-color: rgba(234, 179, 8, 0.22) !important; border-color: rgba(234, 179, 8, 0.38) !important; }
+.tz-color-green_background { background-color: rgba(16, 185, 129, 0.22) !important; border-color: rgba(16, 185, 129, 0.38) !important; }
+.tz-color-blue_background { background-color: rgba(59, 130, 246, 0.22) !important; border-color: rgba(59, 130, 246, 0.38) !important; }
+.tz-color-purple_background { background-color: rgba(168, 85, 247, 0.22) !important; border-color: rgba(168, 85, 247, 0.38) !important; }
+.tz-color-pink_background { background-color: rgba(236, 72, 153, 0.22) !important; border-color: rgba(236, 72, 153, 0.38) !important; }
+.tz-color-red_background { background-color: rgba(239, 68, 68, 0.22) !important; border-color: rgba(239, 68, 68, 0.38) !important; }
+
+span[class*="tz-color-"][class*="_background"] {
+  padding: 0.08rem 0.28rem;
+  border-radius: 0.25rem;
+}
+.tz-table td[class*="tz-color-"],
+.tz-table th[class*="tz-color-"] {
+  padding: 0.48rem 0.7rem !important;
+  border-radius: 0 !important;
+}
 `;
 
 const FONT_FAMILIES = [
@@ -908,6 +925,22 @@ export function RichEditor({
   }>({ open: false, x: 0, y: 0, filter: "" });
 
   const [selectedImg, setSelectedImg] = useState<HTMLImageElement | null>(null);
+  const [activeTableCell, setActiveTableCell] = useState<HTMLTableCellElement | null>(null);
+  const [tableSubMenu, setTableSubMenu] = useState<null | "del_row" | "del_col" | "color">(null);
+  const [tableColorScope, setTableColorScope] = useState<"cell" | "row" | "col">("cell");
+  const [lastUsedColor, setLastUsedColor] = useState<{
+    id: NotionColor;
+    label: string;
+    mode: "inline-text" | "inline-bg" | "block-bg";
+  }>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem("tz_last_used_notion_color");
+        if (saved) return JSON.parse(saved);
+      } catch {}
+    }
+    return { id: "gray_background", label: "Gray background", mode: "inline-bg" };
+  });
   // Notion Line-by-Line Block Engine (Vertical Reorder + Clickable Block Menu)
   const [hoveredBlock, setHoveredBlock] = useState<{
     el: HTMLElement;
@@ -1182,22 +1215,150 @@ export function RichEditor({
     const chosen = sel?.toString() || "code";
     exec("insertHTML", `<code class="tz-inline-code">${escapeHtml(chosen)}</code>`);
   };
-  const applyNotionColor = (id: string, color: string, mode: string) => {
-    if (mode === "inline-text") exec("foreColor", color);
-    else if (mode === "inline-bg") exec("hiliteColor", color);
-    else {
-      restoreSelection();
-      const anchor = window.getSelection()?.anchorNode;
-      const el = anchor?.nodeType === Node.ELEMENT_NODE ? anchor as HTMLElement : anchor?.parentElement;
-      const block = el?.closest("p,h1,h2,h3,blockquote,.tz-toggle,.tz-callout,.tz-banner") as HTMLElement | null;
-      if (block) {
-        for (const name of Array.from(block.classList)) {
-          if (name.startsWith("tz-color-") && name.endsWith("_background")) block.classList.remove(name);
-        }
-        block.classList.add(`tz-color-${id}`);
-        block.setAttribute("data-notion-color", id);
-        emitChange();
+  const setElementNotionColor = (el: HTMLElement, id: NotionColor) => {
+    for (const cls of Array.from(el.classList)) {
+      if (cls.startsWith("tz-color-")) {
+        el.classList.remove(cls);
       }
+    }
+    if (id === "default") {
+      el.removeAttribute("data-notion-color");
+    } else {
+      el.classList.add(`tz-color-${id}`);
+      el.setAttribute("data-notion-color", id);
+    }
+  };
+
+  const applyColorToTableScope = (
+    cell: HTMLTableCellElement,
+    scope: "cell" | "row" | "col",
+    id: NotionColor,
+    label?: string
+  ) => {
+    const tr = cell.closest("tr");
+    const table = cell.closest("table");
+    if (!tr || !table) return;
+
+    if (scope === "cell") {
+      setElementNotionColor(cell, id);
+    } else if (scope === "row") {
+      setElementNotionColor(tr as HTMLElement, id);
+      Array.from(tr.children).forEach((c) => setElementNotionColor(c as HTMLElement, id));
+    } else if (scope === "col") {
+      const colIdx = Array.from(tr.children).indexOf(cell);
+      if (colIdx !== -1) {
+        table.querySelectorAll("tr").forEach((r) => {
+          const targetCell = r.children[colIdx] as HTMLElement | undefined;
+          if (targetCell) setElementNotionColor(targetCell, id);
+        });
+      }
+    }
+
+    const foundLabel =
+      label ||
+      NOTION_TEXT_COLORS.find((c) => c.id === id)?.label ||
+      NOTION_BG_COLORS.find((c) => c.id === id)?.label ||
+      id;
+    const nextLast = {
+      id,
+      label: foundLabel,
+      mode: (id.endsWith("_background") ? "inline-bg" : "inline-text") as "inline-text" | "inline-bg",
+    };
+    setLastUsedColor(nextLast);
+    try {
+      localStorage.setItem("tz_last_used_notion_color", JSON.stringify(nextLast));
+    } catch {}
+    emitChange(true);
+  };
+
+  const applyNotionColor = (
+    id: NotionColor,
+    _colorCss: string,
+    mode: "inline-text" | "inline-bg" | "block-bg",
+    customLabel?: string
+  ) => {
+    if (readOnly) return;
+    const foundLabel =
+      customLabel ||
+      (mode === "inline-text"
+        ? NOTION_TEXT_COLORS.find((c) => c.id === id)?.label
+        : NOTION_BG_COLORS.find((c) => c.id === id)?.label) ||
+      id;
+
+    const nextLast = { id, label: foundLabel, mode };
+    setLastUsedColor(nextLast);
+    try {
+      localStorage.setItem("tz_last_used_notion_color", JSON.stringify(nextLast));
+    } catch {}
+
+    // If multi-blocks are selected via lasso, color all selected blocks
+    if (selectedBlocksRef.current.size > 0) {
+      selectedBlocksRef.current.forEach((b) => setElementNotionColor(b, id));
+      setOpenPopover(null);
+      emitChange(true);
+      return;
+    }
+
+    restoreSelection();
+    const sel = window.getSelection();
+    const hasTextSelection = Boolean(sel && sel.rangeCount > 0 && !sel.getRangeAt(0).collapsed);
+
+    // 1. If user highlighted specific text and chose text or background color -> wrap in Notion color span
+    if (hasTextSelection && (mode === "inline-text" || mode === "inline-bg") && sel) {
+      const range = sel.getRangeAt(0);
+      const selectedText = range.toString();
+      if (selectedText) {
+        if (id === "default") {
+          document.execCommand("removeFormat", false);
+          const parentSpan = (
+            range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
+              ? (range.commonAncestorContainer as HTMLElement)
+              : range.commonAncestorContainer.parentElement
+          )?.closest('span[class*="tz-color-"]') as HTMLElement | null;
+          if (parentSpan && contentRef.current?.contains(parentSpan)) {
+            setElementNotionColor(parentSpan, "default");
+          }
+        } else {
+          const span = document.createElement("span");
+          span.className = `tz-color-${id}`;
+          span.setAttribute("data-notion-color", id);
+          try {
+            range.surroundContents(span);
+          } catch {
+            const frag = range.extractContents();
+            span.appendChild(frag);
+            range.insertNode(span);
+          }
+          const newRange = document.createRange();
+          newRange.selectNodeContents(span);
+          sel.removeAllRanges();
+          sel.addRange(newRange);
+          rememberSelection();
+        }
+        setOpenPopover(null);
+        emitChange(true);
+        return;
+      }
+    }
+
+    // 2. If cursor is inside a table cell (and no text is highlighted, or block-bg mode) -> color the cell/scope
+    const anchor = sel?.anchorNode;
+    const anchorEl =
+      anchor?.nodeType === Node.ELEMENT_NODE ? (anchor as HTMLElement) : anchor?.parentElement;
+    const cellEl = (anchorEl?.closest("td, th") as HTMLTableCellElement | null) || activeTableCell;
+    if (cellEl && contentRef.current?.contains(cellEl)) {
+      applyColorToTableScope(cellEl, tableColorScope, id, foundLabel);
+      setOpenPopover(null);
+      return;
+    }
+
+    // 3. Otherwise color the active block (Paragraph, Heading, Toggle, Callout, Quote, To-Do, List Item)
+    const block = anchorEl?.closest(
+      "p,h1,h2,h3,blockquote,li,.tz-toggle,.tz-callout,.tz-check-row,.tz-banner"
+    ) as HTMLElement | null;
+    if (block && contentRef.current?.contains(block)) {
+      setElementNotionColor(block, id);
+      emitChange(true);
     }
     setOpenPopover(null);
   };
@@ -1213,11 +1374,11 @@ export function RichEditor({
   const insertCallout = (icon: string, bg: string) => insertHtmlAtCursor(
     `<div class="tz-callout tz-color-${bg}" data-notion-type="callout" data-notion-color="${bg}" data-icon="${icon}"><span class="tz-callout-icon" contenteditable="false">${icon}</span><div class="tz-callout-content"><p>Callout note...</p></div></div>`
   );
-  const insertQuoteBlock = () => insertHtmlAtCursor('<blockquote class="tz-quote" data-notion-type="quote"><div>Quote...</div></blockquote>');
+  const insertQuoteBlock = () => insertHtmlAtCursor('<blockquote class="tz-quote" data-notion-type="quote" data-quote-empty="true"><div data-placeholder="Empty quote"><br/></div></blockquote>');
   const insertDivider = () => insertHtmlAtCursor('<hr class="tz-divider" data-notion-type="divider"/>');
   const insertChecklistItem = () => insertHtmlAtCursor('<div class="tz-check-row" data-notion-type="to_do"><input type="checkbox" class="tz-inline-checkbox" contenteditable="false"/><div class="tz-check-text">To-do item</div></div>');
   const insertCodeBlock = (lang: string) => insertHtmlAtCursor(`<div class="tz-code-block" data-notion-type="code"><div class="tz-code-header">${escapeHtml(lang)}</div><pre><code>Code...</code></pre></div>`);
-  const insertTable = () => insertHtmlAtCursor('<table class="tz-table" data-notion-type="table"><tbody><tr><th>Column 1</th><th>Column 2</th></tr><tr><td> </td><td> </td></tr></tbody></table>');
+  const insertTable = () => insertHtmlAtCursor('<table class="tz-table" data-notion-type="table" data-has-column-header="true"><tbody><tr><th>Column 1</th><th>Column 2</th><th>Column 3</th></tr><tr><td><br/></td><td><br/></td><td><br/></td></tr><tr><td><br/></td><td><br/></td><td><br/></td></tr></tbody></table><p><br/></p>');
   const insertBookmarkBlock = () => {
     const raw = window.prompt("Bookmark URL (https://...):");
     if (!raw) return;
@@ -1328,6 +1489,8 @@ export function RichEditor({
       emitChange();
     }
     setSelectedImg(target.tagName === "IMG" ? target as HTMLImageElement : null);
+    const cell = target.closest("td, th") as HTMLTableCellElement | null;
+    setActiveTableCell(cell && contentRef.current?.contains(cell) ? cell : null);
     rememberSelection();
   };
 
@@ -1386,10 +1549,68 @@ export function RichEditor({
     }
   };
 
-  // Ensure every bare text node or div is normalized into a discrete movable block
+  // Ensure every bare text node or div is normalized into a discrete movable block + normalize quotes
   const ensureLineBlocks = useCallback(() => {
     const container = contentRef.current;
     if (!container) return;
+
+    // Normalize all quote blocks so typing never creates text above/below the "Empty quote" placeholder div
+    container.querySelectorAll<HTMLElement>("blockquote, .tz-quote").forEach((q) => {
+      let innerDiv = q.querySelector<HTMLElement>(":scope > div");
+      if (!innerDiv) {
+        innerDiv = document.createElement("div");
+        innerDiv.setAttribute("data-placeholder", "Empty quote");
+        while (q.firstChild) {
+          innerDiv.appendChild(q.firstChild);
+        }
+        if (!innerDiv.innerHTML.trim()) innerDiv.innerHTML = "<br/>";
+        q.appendChild(innerDiv);
+      } else {
+        // Move any stray text nodes or sibling elements that landed directly inside <blockquote> into innerDiv
+        const strayNodes = Array.from(q.childNodes).filter(
+          (n) =>
+            n !== innerDiv &&
+            !(n.nodeType === Node.ELEMENT_NODE && (n as HTMLElement).classList.contains("tz-toggle"))
+        );
+        if (strayNodes.length > 0) {
+          // Remove placeholder <br> in innerDiv before merging stray typed characters
+          if ((innerDiv.textContent || "").trim() === "") {
+            innerDiv.innerHTML = "";
+          }
+          strayNodes.forEach((n) => {
+            if (n.nodeType === Node.TEXT_NODE) {
+              innerDiv!.appendChild(n);
+            } else if (n.nodeType === Node.ELEMENT_NODE) {
+              const el = n as HTMLElement;
+              if (el.tagName === "DIV" || el.tagName === "P") {
+                while (el.firstChild) innerDiv!.appendChild(el.firstChild);
+                el.remove();
+              } else {
+                innerDiv!.appendChild(el);
+              }
+            }
+          });
+          // Place cursor at the end of innerDiv so typing continues smoothly
+          const sel = window.getSelection();
+          if (sel && q.contains(sel.anchorNode)) {
+            const r = document.createRange();
+            r.selectNodeContents(innerDiv);
+            r.collapse(false);
+            sel.removeAllRanges();
+            sel.addRange(r);
+          }
+        }
+      }
+      const hasText = (q.textContent || "").replace(/\u200B/g, "").trim().length > 0;
+      if (hasText) {
+        q.removeAttribute("data-quote-empty");
+        innerDiv.removeAttribute("data-placeholder");
+      } else {
+        q.setAttribute("data-quote-empty", "true");
+        innerDiv.setAttribute("data-placeholder", "Empty quote");
+        if (!innerDiv.innerHTML.trim()) innerDiv.innerHTML = "<br/>";
+      }
+    });
 
     Array.from(container.childNodes).forEach((node) => {
       if (node.nodeType === Node.TEXT_NODE && (node.textContent || "").trim()) {
@@ -1757,7 +1978,7 @@ export function RichEditor({
           <div class="tz-callout-content"><div>${textContent || "Callout note..."}</div></div>
         </div>`;
     } else if (kind === "quote") {
-      replacementHtml = `<blockquote class="tz-quote" data-notion-type="quote"><div data-placeholder="Empty quote">${textContent || ""}</div></blockquote>`;
+      replacementHtml = `<blockquote class="tz-quote" data-notion-type="quote" data-quote-empty="${textContent ? "false" : "true"}"><div data-placeholder="Empty quote">${textContent || "<br/>"}</div></blockquote>`;
     } else if (kind === "todo") {
       replacementHtml = `
         <div class="tz-check-row" data-notion-type="to_do">
@@ -1813,6 +2034,102 @@ export function RichEditor({
   };
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    // Ctrl+Shift+H / Cmd+Shift+H -> Apply Last Used Notion Color (Matches Notion shortcut)
+    if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "h") {
+      e.preventDefault();
+      applyNotionColor(lastUsedColor.id, "", lastUsedColor.mode, lastUsedColor.label);
+      return;
+    }
+
+    // Table Cell ArrowUp / ArrowDown Vertical Cell Navigation
+    if ((e.key === "ArrowDown" || e.key === "ArrowUp") && !e.shiftKey && !e.altKey) {
+      const sel = window.getSelection();
+      const anchorNode = sel?.anchorNode;
+      const anchorEl =
+        anchorNode?.nodeType === Node.ELEMENT_NODE
+          ? (anchorNode as HTMLElement)
+          : anchorNode?.parentElement;
+      const currentCell = anchorEl?.closest("td, th") as HTMLTableCellElement | null;
+      const currentTr = currentCell?.closest("tr");
+      const currentTable = currentCell?.closest("table");
+      if (currentCell && currentTr && currentTable && contentRef.current?.contains(currentTable)) {
+        const allRows = Array.from(currentTable.querySelectorAll("tr"));
+        const rIdx = allRows.indexOf(currentTr);
+        const cIdx = Array.from(currentTr.children).indexOf(currentCell);
+        const targetRow = e.key === "ArrowDown" ? allRows[rIdx + 1] : allRows[rIdx - 1];
+        if (targetRow && targetRow.children[cIdx]) {
+          e.preventDefault();
+          const targetCell = targetRow.children[cIdx] as HTMLTableCellElement;
+          setActiveTableCell(targetCell);
+          const r = document.createRange();
+          r.selectNodeContents(targetCell);
+          r.collapse(e.key === "ArrowDown");
+          sel?.removeAllRanges();
+          sel?.addRange(r);
+          rememberSelection();
+          return;
+        }
+      }
+    }
+
+    // Table Cell Tab / Shift+Tab Navigation
+    if (e.key === "Tab") {
+      const sel = window.getSelection();
+      const anchorNode = sel?.anchorNode;
+      const anchorEl =
+        anchorNode?.nodeType === Node.ELEMENT_NODE
+          ? (anchorNode as HTMLElement)
+          : anchorNode?.parentElement;
+      const currentCell = anchorEl?.closest("td, th") as HTMLTableCellElement | null;
+      const tableEl = currentCell?.closest("table") as HTMLTableElement | null;
+      if (currentCell && tableEl && contentRef.current?.contains(tableEl)) {
+        e.preventDefault();
+        const cells = Array.from(tableEl.querySelectorAll<HTMLTableCellElement>("th, td"));
+        const idx = cells.indexOf(currentCell);
+        if (!e.shiftKey) {
+          if (idx >= 0 && idx < cells.length - 1) {
+            const nextCell = cells[idx + 1]!;
+            setActiveTableCell(nextCell);
+            const r = document.createRange();
+            r.selectNodeContents(nextCell);
+            r.collapse(false);
+            sel?.removeAllRanges();
+            sel?.addRange(r);
+          } else {
+            // At the very last cell: append a new row automatically
+            const lastRow = tableEl.querySelector("tbody")?.lastElementChild || tableEl.rows[tableEl.rows.length - 1];
+            const colCount = lastRow ? lastRow.children.length : 2;
+            const newTr = document.createElement("tr");
+            for (let c = 0; c < colCount; c++) {
+              const td = document.createElement("td");
+              td.innerHTML = "<br/>";
+              newTr.appendChild(td);
+            }
+            (tableEl.querySelector("tbody") || tableEl).appendChild(newTr);
+            const firstNewCell = newTr.querySelector("td") as HTMLTableCellElement | null;
+            if (firstNewCell) {
+              setActiveTableCell(firstNewCell);
+              const r = document.createRange();
+              r.setStart(firstNewCell, 0);
+              r.collapse(true);
+              sel?.removeAllRanges();
+              sel?.addRange(r);
+            }
+            emitChange();
+          }
+        } else if (idx > 0) {
+          const prevCell = cells[idx - 1]!;
+          setActiveTableCell(prevCell);
+          const r = document.createRange();
+          r.selectNodeContents(prevCell);
+          r.collapse(false);
+          sel?.removeAllRanges();
+          sel?.addRange(r);
+        }
+        return;
+      }
+    }
+
     if (e.key === "Escape") {
       setSlashMenu((s) => ({ ...s, open: false }));
       setOpenPopover(null);
@@ -1883,17 +2200,41 @@ export function RichEditor({
                 caretRect.top === 0 ||
                 caretRect.top - blockRect.top < 14;
 
+              const focusBlockTarget = (blk: HTMLElement, collapseToStart: boolean) => {
+                let target: HTMLElement = blk;
+                if (blk.tagName === "BLOCKQUOTE" || blk.classList.contains("tz-quote")) {
+                  let qDiv = blk.querySelector<HTMLElement>(":scope > div");
+                  if (!qDiv) {
+                    qDiv = document.createElement("div");
+                    qDiv.setAttribute("data-placeholder", "Empty quote");
+                    qDiv.innerHTML = blk.innerHTML || "<br/>";
+                    blk.innerHTML = "";
+                    blk.appendChild(qDiv);
+                  }
+                  if (!(qDiv.textContent || "").trim() && !qDiv.querySelector("br")) {
+                    qDiv.innerHTML = "<br/>";
+                  }
+                  target = qDiv;
+                }
+                const r = document.createRange();
+                if (!(target.textContent || "").trim() && target.firstChild?.nodeName === "BR") {
+                  r.setStart(target, 0);
+                  r.collapse(true);
+                } else {
+                  r.selectNodeContents(target);
+                  r.collapse(collapseToStart);
+                }
+                sel.removeAllRanges();
+                sel.addRange(r);
+                blk.scrollIntoView({ block: "nearest" });
+                rememberSelection();
+              };
+
               if (e.key === "ArrowDown" && atBottomLine) {
                 const nextBlock = allCandidates[idx + 1];
                 if (nextBlock) {
                   e.preventDefault();
-                  const nextRange = document.createRange();
-                  nextRange.selectNodeContents(nextBlock);
-                  nextRange.collapse(true);
-                  sel.removeAllRanges();
-                  sel.addRange(nextRange);
-                  nextBlock.scrollIntoView({ block: "nearest" });
-                  rememberSelection();
+                  focusBlockTarget(nextBlock, true);
                   return;
                 } else {
                   // At the very last block in the editor: create a new empty paragraph below if current has content
@@ -1917,13 +2258,7 @@ export function RichEditor({
                 const prevBlock = allCandidates[idx - 1];
                 if (prevBlock) {
                   e.preventDefault();
-                  const prevRange = document.createRange();
-                  prevRange.selectNodeContents(prevBlock);
-                  prevRange.collapse(false);
-                  sel.removeAllRanges();
-                  sel.addRange(prevRange);
-                  prevBlock.scrollIntoView({ block: "nearest" });
-                  rememberSelection();
+                  focusBlockTarget(prevBlock, false);
                   return;
                 }
               }
@@ -2519,74 +2854,116 @@ export function RichEditor({
                 </button>
 
                 {openPopover === "color" && (
-                  <div className="absolute left-0 top-full z-50 mt-1 w-64 rounded-xl border border-slate-200 dark:border-border/80 bg-card p-3 shadow-2xl space-y-3">
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-                        Notion Text Color (10)
+                  <div className="absolute left-0 top-full z-50 mt-1 w-64 max-h-[440px] overflow-y-auto rounded-xl border border-slate-200 dark:border-border/80 bg-card p-2 shadow-2xl space-y-2 text-xs">
+                    {/* Table Scope Selector when inside a Table */}
+                    {activeTableCell && (
+                      <div className="rounded-lg bg-secondary/40 p-1 flex items-center gap-1">
+                        {(["cell", "row", "col"] as const).map((sc) => (
+                          <button
+                            key={sc}
+                            type="button"
+                            onClick={() => setTableColorScope(sc)}
+                            className={`flex-1 rounded-md py-1 text-[10px] font-semibold capitalize transition ${
+                              tableColorScope === sc
+                                ? "bg-indigo-600 text-white shadow-2xs"
+                                : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            {sc === "cell" ? "This Cell" : sc === "row" ? "Entire Row" : "Entire Col"}
+                          </button>
+                        ))}
                       </div>
-                      <div className="grid grid-cols-5 gap-1.5">
+                    )}
+
+                    {/* LAST USED COLOR (Matches Notion's top section + Ctrl+Shift+H) */}
+                    <div>
+                      <div className="px-2 py-0.5 text-[10px] font-semibold text-muted-foreground flex items-center justify-between">
+                        <span>Last used</span>
+                        <span className="text-[9px] font-mono opacity-75">Ctrl+⇧+H</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          applyNotionColor(
+                            lastUsedColor.id,
+                            "",
+                            lastUsedColor.mode,
+                            lastUsedColor.label
+                          )
+                        }
+                        className="flex w-full items-center justify-between rounded-lg px-2 py-1.5 text-left text-xs text-foreground hover:bg-secondary/60 transition"
+                      >
+                        <div className="flex items-center gap-2.5">
+                          <span
+                            className="flex h-5 w-5 items-center justify-center rounded border text-[11px] font-bold"
+                            style={{
+                              color: lastUsedColor.id.endsWith("_background")
+                                ? "#f8fafc"
+                                : NOTION_TEXT_COLORS.find((c) => c.id === lastUsedColor.id)?.hex ||
+                                  "#f8fafc",
+                              backgroundColor: lastUsedColor.id.endsWith("_background")
+                                ? NOTION_BG_COLORS.find((c) => c.id === lastUsedColor.id)?.rgba ||
+                                  "transparent"
+                                : "transparent",
+                              borderColor: "rgba(148,163,184,0.35)",
+                            }}
+                          >
+                            {lastUsedColor.id.endsWith("_background") ? "" : "A"}
+                          </span>
+                          <span className="truncate">{lastUsedColor.label}</span>
+                        </div>
+                      </button>
+                    </div>
+
+                    <div className="border-t border-border/40 pt-1">
+                      <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground">
+                        Text color
+                      </div>
+                      <div className="space-y-0.5">
                         {NOTION_TEXT_COLORS.map((c) => (
                           <button
-                            key={c.id}
+                            key={`text-${c.id}`}
                             type="button"
-                            onClick={() =>
-                              applyNotionColor(c.id, c.hex, "inline-text")
-                            }
-                            className="flex h-6 items-center justify-center rounded border border-white/15 text-xs font-bold hover:scale-105 transition-transform"
-                            style={{ color: c.hex, background: "#0d0f14" }}
-                            title={c.label}
+                            onClick={() => applyNotionColor(c.id, c.hex, "inline-text", c.label)}
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-xs text-foreground hover:bg-secondary/60 transition"
                           >
-                            A
+                            <span
+                              className="flex h-5 w-5 items-center justify-center rounded border text-[11px] font-bold shrink-0"
+                              style={{
+                                color: c.hex,
+                                borderColor: c.border,
+                                background: "rgba(15, 23, 42, 0.35)",
+                              }}
+                            >
+                              A
+                            </span>
+                            <span>{c.label}</span>
                           </button>
                         ))}
                       </div>
                     </div>
 
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-                        Text Highlight Background (10)
+                    <div className="border-t border-border/40 pt-1">
+                      <div className="px-2 py-1 text-[10px] font-semibold text-muted-foreground">
+                        Background color
                       </div>
-                      <div className="grid grid-cols-5 gap-1.5">
+                      <div className="space-y-0.5">
                         {NOTION_BG_COLORS.map((c) => (
                           <button
-                            key={c.id}
+                            key={`bg-${c.id}`}
                             type="button"
-                            onClick={() =>
-                              applyNotionColor(c.id, c.rgba, "inline-bg")
-                            }
-                            className="h-6 rounded border hover:scale-105 transition-transform"
-                            style={{
-                              backgroundColor:
-                                c.rgba === "transparent" ? "#0d0f14" : c.rgba,
-                              borderColor: c.border,
-                            }}
-                            title={c.label}
-                          />
-                        ))}
-                      </div>
-                    </div>
-
-                    <div>
-                      <div className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
-                        Block Background (Callout / Toggle / Quote)
-                      </div>
-                      <div className="grid grid-cols-5 gap-1.5">
-                        {NOTION_BG_COLORS.map((c) => (
-                          <button
-                            key={`block-${c.id}`}
-                            type="button"
-                            onClick={() =>
-                              applyNotionColor(c.id, c.rgba, "block-bg")
-                            }
-                            className="flex h-6 items-center justify-center rounded border text-[9px] text-foreground/80 hover:scale-105 transition-transform"
-                            style={{
-                              backgroundColor:
-                                c.rgba === "transparent" ? "#0d0f14" : c.rgba,
-                              borderColor: c.border,
-                            }}
-                            title={`Block: ${c.label}`}
+                            onClick={() => applyNotionColor(c.id, c.rgba, "inline-bg", c.label)}
+                            className="flex w-full items-center gap-2.5 rounded-lg px-2 py-1 text-left text-xs text-foreground hover:bg-secondary/60 transition"
                           >
-                            ▣
+                            <span
+                              className="h-5 w-5 rounded border shrink-0"
+                              style={{
+                                backgroundColor:
+                                  c.rgba === "transparent" ? "rgba(15, 23, 42, 0.35)" : c.rgba,
+                                borderColor: c.border,
+                              }}
+                            />
+                            <span>{c.label}</span>
                           </button>
                         ))}
                       </div>
@@ -3026,6 +3403,524 @@ export function RichEditor({
           </div>
         )}
 
+        {/* ACTIVE TABLE CONTROLS BAR (FULL ROW/COL TARGETING, REORDERING, HEADERS & NOTION COLORS) */}
+        {activeTableCell && !readOnly && (() => {
+          const currentTr = activeTableCell.closest("tr");
+          const currentTable = activeTableCell.closest("table");
+          if (!currentTr || !currentTable) return null;
+          const allRows = Array.from(currentTable.querySelectorAll("tr"));
+          const rowIdx = allRows.indexOf(currentTr);
+          const rowCells = Array.from(currentTr.children) as HTMLTableCellElement[];
+          const colIdx = rowCells.indexOf(activeTableCell);
+          const rowCount = allRows.length;
+          const colCount = rowCells.length;
+          const firstRowCells = Array.from(allRows[0]?.children || []);
+          const hasHeaderRow =
+            currentTable.getAttribute("data-has-column-header") === "true" ||
+            Boolean(allRows[0]?.querySelector("th"));
+          const hasHeaderCol = currentTable.getAttribute("data-has-row-header") === "true";
+
+          return (
+            <div className="relative flex flex-wrap items-center justify-between gap-2 border-b border-indigo-500/30 bg-[#151824] px-3 py-1.5 text-xs">
+              <div className="flex items-center gap-2">
+                <span className="inline-flex items-center gap-1.5 rounded-md bg-indigo-500/15 border border-indigo-500/30 px-2 py-0.5 text-[11px] font-semibold text-indigo-300">
+                  <TableIcon className="h-3.5 w-3.5" />
+                  <span>
+                    Row {rowIdx + 1}/{rowCount} • Col {colIdx + 1}/{colCount}
+                  </span>
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1">
+                {/* Insert Rows */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newTr = document.createElement("tr");
+                    for (let i = 0; i < colCount; i++) {
+                      const isRowHdr = hasHeaderCol && i === 0;
+                      const cell = document.createElement(isRowHdr ? "th" : "td");
+                      cell.innerHTML = "<br/>";
+                      newTr.appendChild(cell);
+                    }
+                    currentTr.parentElement?.insertBefore(newTr, currentTr);
+                    emitChange(true);
+                  }}
+                  className="rounded border border-border/70 bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-secondary"
+                  title="Insert row above current row"
+                >
+                  + Row ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const newTr = document.createElement("tr");
+                    for (let i = 0; i < colCount; i++) {
+                      const isRowHdr = hasHeaderCol && i === 0;
+                      const cell = document.createElement(isRowHdr ? "th" : "td");
+                      cell.innerHTML = "<br/>";
+                      newTr.appendChild(cell);
+                    }
+                    currentTr.parentElement?.insertBefore(newTr, currentTr.nextSibling);
+                    emitChange(true);
+                  }}
+                  className="rounded border border-border/70 bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-secondary"
+                  title="Insert row below current row"
+                >
+                  + Row ↓
+                </button>
+
+                {/* Move & Duplicate Row */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const prev = currentTr.previousElementSibling;
+                    if (prev && currentTr.parentElement) {
+                      currentTr.parentElement.insertBefore(currentTr, prev);
+                      emitChange(true);
+                    }
+                  }}
+                  className="rounded border border-border/70 bg-card px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  title="Move current row up"
+                >
+                  Move ↑
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const next = currentTr.nextElementSibling;
+                    if (next && currentTr.parentElement) {
+                      currentTr.parentElement.insertBefore(next, currentTr);
+                      emitChange(true);
+                    }
+                  }}
+                  className="rounded border border-border/70 bg-card px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  title="Move current row down"
+                >
+                  Move ↓
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const clone = currentTr.cloneNode(true) as HTMLTableRowElement;
+                    currentTr.parentElement?.insertBefore(clone, currentTr.nextSibling);
+                    emitChange(true);
+                  }}
+                  className="rounded border border-border/70 bg-card px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  title="Duplicate current row"
+                >
+                  Dup Row
+                </button>
+
+                <div className="mx-0.5 h-3.5 w-px bg-border/40" />
+
+                {/* Insert & Move Columns */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    allRows.forEach((r, rIdx) => {
+                      const refCell = r.children[colIdx];
+                      const isHdr = rIdx === 0 && hasHeaderRow;
+                      const cell = document.createElement(isHdr ? "th" : "td");
+                      cell.innerHTML = isHdr ? `Col ${colIdx + 1}` : "<br/>";
+                      r.insertBefore(cell, refCell || null);
+                    });
+                    emitChange(true);
+                  }}
+                  className="rounded border border-border/70 bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-secondary"
+                  title="Insert column to the left"
+                >
+                  + Col ←
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    allRows.forEach((r, rIdx) => {
+                      const refCell = r.children[colIdx];
+                      const isHdr = rIdx === 0 && hasHeaderRow;
+                      const cell = document.createElement(isHdr ? "th" : "td");
+                      cell.innerHTML = isHdr ? `Col ${colIdx + 2}` : "<br/>";
+                      r.insertBefore(cell, refCell ? refCell.nextSibling : null);
+                    });
+                    emitChange(true);
+                  }}
+                  className="rounded border border-border/70 bg-card px-2 py-0.5 text-[11px] font-medium text-foreground hover:bg-secondary"
+                  title="Insert column to the right"
+                >
+                  + Col →
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (colIdx <= 0) return;
+                    allRows.forEach((r) => {
+                      const c = r.children[colIdx];
+                      const prev = r.children[colIdx - 1];
+                      if (c && prev) r.insertBefore(c, prev);
+                    });
+                    emitChange(true);
+                  }}
+                  className="rounded border border-border/70 bg-card px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  title="Move current column left"
+                >
+                  Col ←
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (colIdx >= colCount - 1) return;
+                    allRows.forEach((r) => {
+                      const c = r.children[colIdx];
+                      const next = r.children[colIdx + 1];
+                      if (c && next) r.insertBefore(next, c);
+                    });
+                    emitChange(true);
+                  }}
+                  className="rounded border border-border/70 bg-card px-1.5 py-0.5 text-[11px] text-muted-foreground hover:text-foreground hover:bg-secondary"
+                  title="Move current column right"
+                >
+                  Col →
+                </button>
+
+                <div className="mx-0.5 h-3.5 w-px bg-border/40" />
+
+                {/* Header Row & Header Column Toggles */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    const firstRow = allRows[0];
+                    if (!firstRow) return;
+                    const nextState = !hasHeaderRow;
+                    currentTable.setAttribute("data-has-column-header", nextState ? "true" : "false");
+                    Array.from(firstRow.children).forEach((c, cIdx) => {
+                      const shouldBeTh = nextState || (hasHeaderCol && cIdx === 0);
+                      const rep = document.createElement(shouldBeTh ? "th" : "td");
+                      rep.innerHTML = c.innerHTML;
+                      rep.className = c.className;
+                      const nc = c.getAttribute("data-notion-color");
+                      if (nc) rep.setAttribute("data-notion-color", nc);
+                      firstRow.replaceChild(rep, c);
+                    });
+                    setActiveTableCell(currentTable.querySelector("th, td") as HTMLTableCellElement | null);
+                    emitChange(true);
+                  }}
+                  className={`rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                    hasHeaderRow
+                      ? "border-indigo-500/60 bg-indigo-600/25 text-indigo-200"
+                      : "border-border/70 bg-card text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Header Row
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const nextState = !hasHeaderCol;
+                    currentTable.setAttribute("data-has-row-header", nextState ? "true" : "false");
+                    allRows.forEach((r, rIdx) => {
+                      const firstCell = r.children[0];
+                      if (!firstCell) return;
+                      const shouldBeTh = nextState || (hasHeaderRow && rIdx === 0);
+                      const rep = document.createElement(shouldBeTh ? "th" : "td");
+                      rep.innerHTML = firstCell.innerHTML;
+                      rep.className = firstCell.className;
+                      const nc = firstCell.getAttribute("data-notion-color");
+                      if (nc) rep.setAttribute("data-notion-color", nc);
+                      r.replaceChild(rep, firstCell);
+                    });
+                    setActiveTableCell(currentTable.querySelector("th, td") as HTMLTableCellElement | null);
+                    emitChange(true);
+                  }}
+                  className={`rounded border px-2 py-0.5 text-[11px] font-medium transition ${
+                    hasHeaderCol
+                      ? "border-indigo-500/60 bg-indigo-600/25 text-indigo-200"
+                      : "border-border/70 bg-card text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  Header Col
+                </button>
+
+                <div className="mx-0.5 h-3.5 w-px bg-border/40" />
+
+                {/* Cell / Row / Column Color Popover Trigger */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setTableSubMenu(tableSubMenu === "color" ? null : "color")}
+                    className="inline-flex items-center gap-1 rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-0.5 text-[11px] font-semibold text-indigo-200 hover:bg-indigo-500/25"
+                  >
+                    <span>🎨 Color Cell/Row/Col</span>
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+
+                  {tableSubMenu === "color" && (
+                    <div className="absolute right-0 top-full z-50 mt-1 w-64 max-h-96 overflow-y-auto rounded-xl border border-border bg-card p-2 shadow-2xl space-y-2">
+                      <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-1">
+                        Apply Color To:
+                      </div>
+                      <div className="grid grid-cols-3 gap-1 rounded-lg bg-secondary/40 p-1">
+                        {(
+                          [
+                            { id: "cell", label: `Cell (${rowIdx + 1},${colIdx + 1})` },
+                            { id: "row", label: `Row #${rowIdx + 1}` },
+                            { id: "col", label: `Col #${colIdx + 1}` },
+                          ] as const
+                        ).map((sc) => (
+                          <button
+                            key={sc.id}
+                            type="button"
+                            onClick={() => setTableColorScope(sc.id)}
+                            className={`rounded py-1 text-[10px] font-semibold transition ${
+                              tableColorScope === sc.id
+                                ? "bg-indigo-600 text-white"
+                                : "text-muted-foreground hover:text-foreground"
+                            }`}
+                          >
+                            {sc.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="px-1 text-[10px] font-semibold text-muted-foreground">
+                        Background Color (10)
+                      </div>
+                      <div className="space-y-0.5">
+                        {NOTION_BG_COLORS.map((c) => (
+                          <button
+                            key={`tbl-bg-${c.id}`}
+                            type="button"
+                            onClick={() => {
+                              applyColorToTableScope(activeTableCell, tableColorScope, c.id, c.label);
+                              setTableSubMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs text-foreground hover:bg-secondary/60"
+                          >
+                            <span
+                              className="h-4 w-4 rounded border shrink-0"
+                              style={{
+                                backgroundColor: c.rgba === "transparent" ? "#0d0f14" : c.rgba,
+                                borderColor: c.border,
+                              }}
+                            />
+                            <span>{c.label}</span>
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="border-t border-border/40 pt-1 px-1 text-[10px] font-semibold text-muted-foreground">
+                        Text Color (10)
+                      </div>
+                      <div className="space-y-0.5">
+                        {NOTION_TEXT_COLORS.map((c) => (
+                          <button
+                            key={`tbl-txt-${c.id}`}
+                            type="button"
+                            onClick={() => {
+                              applyColorToTableScope(activeTableCell, tableColorScope, c.id, c.label);
+                              setTableSubMenu(null);
+                            }}
+                            className="flex w-full items-center gap-2 rounded-lg px-2 py-1 text-left text-xs text-foreground hover:bg-secondary/60"
+                          >
+                            <span
+                              className="flex h-4 w-4 items-center justify-center rounded border text-[10px] font-bold shrink-0"
+                              style={{ color: c.hex, borderColor: c.border, background: "#0d0f14" }}
+                            >
+                              A
+                            </span>
+                            <span>{c.label}</span>
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Choose Which Row to Remove / Clear Dropdown */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setTableSubMenu(tableSubMenu === "del_row" ? null : "del_row")}
+                    className="inline-flex items-center gap-1 rounded bg-rose-500/15 px-2 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/25"
+                  >
+                    <span>Remove Row</span>
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+
+                  {tableSubMenu === "del_row" && (
+                    <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-xl border border-border bg-card p-1.5 shadow-2xl space-y-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          Array.from(currentTr.children).forEach((c) => {
+                            c.innerHTML = "<br/>";
+                          });
+                          setTableSubMenu(null);
+                          emitChange(true);
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/60"
+                      >
+                        <span>Clear Row #{rowIdx + 1} Contents</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (allRows.length <= 1) {
+                            currentTable.remove();
+                            setActiveTableCell(null);
+                          } else {
+                            currentTr.remove();
+                            setActiveTableCell(
+                              currentTable.querySelector("td, th") as HTMLTableCellElement | null
+                            );
+                          }
+                          setTableSubMenu(null);
+                          emitChange(true);
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold text-rose-400 hover:bg-rose-500/15"
+                      >
+                        <span>Delete Active Row (#{rowIdx + 1})</span>
+                      </button>
+                      <div className="my-1 border-t border-border/40" />
+                      <div className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Or Pick Any Row to Delete:
+                      </div>
+                      <div className="max-h-40 overflow-y-auto space-y-0.5">
+                        {allRows.map((r, idx) => {
+                          const preview = (r.textContent || "").trim().slice(0, 18) || "Empty";
+                          return (
+                            <button
+                              key={`del-r-${idx}`}
+                              type="button"
+                              onClick={() => {
+                                if (allRows.length <= 1) {
+                                  currentTable.remove();
+                                  setActiveTableCell(null);
+                                } else {
+                                  r.remove();
+                                  setActiveTableCell(
+                                    currentTable.querySelector("td, th") as HTMLTableCellElement | null
+                                  );
+                                }
+                                setTableSubMenu(null);
+                                emitChange(true);
+                              }}
+                              className="flex w-full items-center justify-between rounded-lg px-2.5 py-1 text-left text-xs text-foreground hover:bg-rose-500/15 hover:text-rose-300"
+                            >
+                              <span>Row #{idx + 1}</span>
+                              <span className="text-[10px] text-muted-foreground truncate max-w-[100px]">
+                                {preview}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Choose Which Column to Remove / Clear Dropdown */}
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setTableSubMenu(tableSubMenu === "del_col" ? null : "del_col")}
+                    className="inline-flex items-center gap-1 rounded bg-rose-500/15 px-2 py-0.5 text-[11px] font-medium text-rose-300 hover:bg-rose-500/25"
+                  >
+                    <span>Remove Col</span>
+                    <ChevronDown className="h-3 w-3" />
+                  </button>
+
+                  {tableSubMenu === "del_col" && (
+                    <div className="absolute right-0 top-full z-50 mt-1 w-56 rounded-xl border border-border bg-card p-1.5 shadow-2xl space-y-0.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          allRows.forEach((r) => {
+                            const target = r.children[colIdx];
+                            if (target) target.innerHTML = "<br/>";
+                          });
+                          setTableSubMenu(null);
+                          emitChange(true);
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs text-foreground hover:bg-secondary/60"
+                      >
+                        <span>Clear Col #{colIdx + 1} Contents</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          if (colCount <= 1) {
+                            currentTable.remove();
+                            setActiveTableCell(null);
+                          } else {
+                            allRows.forEach((r) => r.children[colIdx]?.remove());
+                            setActiveTableCell(
+                              currentTable.querySelector("td, th") as HTMLTableCellElement | null
+                            );
+                          }
+                          setTableSubMenu(null);
+                          emitChange(true);
+                        }}
+                        className="flex w-full items-center justify-between rounded-lg px-2.5 py-1.5 text-left text-xs font-semibold text-rose-400 hover:bg-rose-500/15"
+                      >
+                        <span>Delete Active Col (#{colIdx + 1})</span>
+                      </button>
+                      <div className="my-1 border-t border-border/40" />
+                      <div className="px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Or Pick Any Column to Delete:
+                      </div>
+                      <div className="max-h-40 overflow-y-auto space-y-0.5">
+                        {firstRowCells.map((c, idx) => {
+                          const hdrText = (c.textContent || "").trim().slice(0, 18) || `Col ${idx + 1}`;
+                          return (
+                            <button
+                              key={`del-c-${idx}`}
+                              type="button"
+                              onClick={() => {
+                                if (colCount <= 1) {
+                                  currentTable.remove();
+                                  setActiveTableCell(null);
+                                } else {
+                                  allRows.forEach((r) => r.children[idx]?.remove());
+                                  setActiveTableCell(
+                                    currentTable.querySelector("td, th") as HTMLTableCellElement | null
+                                  );
+                                }
+                                setTableSubMenu(null);
+                                emitChange(true);
+                              }}
+                              className="flex w-full items-center justify-between rounded-lg px-2.5 py-1 text-left text-xs text-foreground hover:bg-rose-500/15 hover:text-rose-300"
+                            >
+                              <span>Col #{idx + 1}</span>
+                              <span className="text-[10px] text-muted-foreground truncate max-w-[100px]">
+                                {hdrText}
+                              </span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Delete Entire Table */}
+                <button
+                  type="button"
+                  onClick={() => {
+                    currentTable.remove();
+                    setActiveTableCell(null);
+                    setTableSubMenu(null);
+                    emitChange(true);
+                  }}
+                  className="rounded bg-rose-500/20 p-1 text-rose-400 hover:bg-rose-500/30"
+                  title="Delete entire table"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            </div>
+          );
+        })()}
+
         {/* SELECTED IMAGE RESIZE & CAPTION BAR */}
         {selectedImg && !readOnly && (
           <div className="flex flex-wrap items-center justify-between gap-2 border-b border-indigo-500/30 bg-secondary text-foreground border border-border font-medium/10 px-3 py-1.5 text-xs">
@@ -3229,6 +4124,58 @@ export function RichEditor({
                       <span>{item.label}</span>
                     </button>
                   ))}
+
+                  <div className="my-1 border-t border-border/40" />
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Block Text Color (10)
+                  </div>
+                  <div className="grid grid-cols-5 gap-1 px-2 pb-1">
+                    {NOTION_TEXT_COLORS.map((c) => (
+                      <button
+                        key={`bm-txt-${c.id}`}
+                        type="button"
+                        onClick={() => {
+                          if (hoveredBlock?.el) {
+                            setElementNotionColor(hoveredBlock.el, c.id);
+                            setLastUsedColor({ id: c.id, label: c.label, mode: "inline-text" });
+                            emitChange(true);
+                          }
+                          setBlockMenuOpen(false);
+                        }}
+                        className="flex h-6 items-center justify-center rounded border text-[11px] font-bold hover:scale-105 transition"
+                        style={{ color: c.hex, borderColor: c.border, background: "#0d0f14" }}
+                        title={c.label}
+                      >
+                        A
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    Block Background (10)
+                  </div>
+                  <div className="grid grid-cols-5 gap-1 px-2 pb-1">
+                    {NOTION_BG_COLORS.map((c) => (
+                      <button
+                        key={`bm-bg-${c.id}`}
+                        type="button"
+                        onClick={() => {
+                          if (hoveredBlock?.el) {
+                            setElementNotionColor(hoveredBlock.el, c.id);
+                            setLastUsedColor({ id: c.id, label: c.label, mode: "inline-bg" });
+                            emitChange(true);
+                          }
+                          setBlockMenuOpen(false);
+                        }}
+                        className="h-6 rounded border hover:scale-105 transition"
+                        style={{
+                          backgroundColor: c.rgba === "transparent" ? "#0d0f14" : c.rgba,
+                          borderColor: c.border,
+                        }}
+                        title={c.label}
+                      />
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

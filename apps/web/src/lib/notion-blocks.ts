@@ -19,39 +19,64 @@ export type NotionColor =
   | "pink_background"
   | "red_background";
 
+export const VALID_NOTION_COLORS = new Set<string>([
+  "default",
+  "gray",
+  "brown",
+  "orange",
+  "yellow",
+  "green",
+  "blue",
+  "purple",
+  "pink",
+  "red",
+  "gray_background",
+  "brown_background",
+  "orange_background",
+  "yellow_background",
+  "green_background",
+  "blue_background",
+  "purple_background",
+  "pink_background",
+  "red_background",
+]);
+
 export const NOTION_TEXT_COLORS: {
   id: NotionColor;
   label: string;
   hex: string;
+  lightHex: string;
+  border: string;
 }[] = [
-  { id: "default", label: "Default", hex: "#f1f5f9" },
-  { id: "gray", label: "Gray", hex: "#94a3b8" },
-  { id: "brown", label: "Brown", hex: "#d6a27e" },
-  { id: "orange", label: "Orange", hex: "#fb923c" },
-  { id: "yellow", label: "Yellow", hex: "#facc15" },
-  { id: "green", label: "Green", hex: "#34d399" },
-  { id: "blue", label: "Blue", hex: "#60a5fa" },
-  { id: "purple", label: "Purple", hex: "#c084fc" },
-  { id: "pink", label: "Pink", hex: "#f472b6" },
-  { id: "red", label: "Red", hex: "#f87171" },
+  { id: "default", label: "Default text", hex: "#f1f5f9", lightHex: "#0f172a", border: "rgba(148, 163, 184, 0.35)" },
+  { id: "gray", label: "Gray text", hex: "#94a3b8", lightHex: "#64748b", border: "rgba(148, 163, 184, 0.45)" },
+  { id: "brown", label: "Brown text", hex: "#d6a27e", lightHex: "#92400e", border: "rgba(214, 162, 126, 0.45)" },
+  { id: "orange", label: "Orange text", hex: "#fb923c", lightHex: "#ea580c", border: "rgba(251, 146, 60, 0.45)" },
+  { id: "yellow", label: "Yellow text", hex: "#facc15", lightHex: "#ca8a04", border: "rgba(250, 204, 21, 0.45)" },
+  { id: "green", label: "Green text", hex: "#34d399", lightHex: "#15803d", border: "rgba(52, 211, 153, 0.45)" },
+  { id: "blue", label: "Blue text", hex: "#60a5fa", lightHex: "#2563eb", border: "rgba(96, 165, 250, 0.45)" },
+  { id: "purple", label: "Purple text", hex: "#c084fc", lightHex: "#7e22ce", border: "rgba(192, 132, 252, 0.45)" },
+  { id: "pink", label: "Pink text", hex: "#f472b6", lightHex: "#db2777", border: "rgba(244, 114, 182, 0.45)" },
+  { id: "red", label: "Red text", hex: "#f87171", lightHex: "#dc2626", border: "rgba(248, 113, 113, 0.45)" },
 ];
 
 export const NOTION_BG_COLORS: {
   id: NotionColor;
   label: string;
   rgba: string;
+  lightRgba: string;
   border: string;
 }[] = [
-  { id: "default", label: "Default", rgba: "transparent", border: "rgba(255,255,255,0.12)" },
-  { id: "gray_background", label: "Gray background", rgba: "rgba(148, 163, 184, 0.16)", border: "rgba(148, 163, 184, 0.3)" },
-  { id: "brown_background", label: "Brown background", rgba: "rgba(180, 120, 80, 0.20)", border: "rgba(180, 120, 80, 0.35)" },
-  { id: "orange_background", label: "Orange background", rgba: "rgba(249, 115, 22, 0.18)", border: "rgba(249, 115, 22, 0.35)" },
-  { id: "yellow_background", label: "Yellow background", rgba: "rgba(234, 179, 8, 0.18)", border: "rgba(234, 179, 8, 0.35)" },
-  { id: "green_background", label: "Green background", rgba: "rgba(16, 185, 129, 0.18)", border: "rgba(16, 185, 129, 0.35)" },
-  { id: "blue_background", label: "Blue background", rgba: "rgba(59, 130, 246, 0.18)", border: "rgba(59, 130, 246, 0.35)" },
-  { id: "purple_background", label: "Purple background", rgba: "rgba(168, 85, 247, 0.18)", border: "rgba(168, 85, 247, 0.35)" },
-  { id: "pink_background", label: "Pink background", rgba: "rgba(236, 72, 153, 0.18)", border: "rgba(236, 72, 153, 0.35)" },
-  { id: "red_background", label: "Red background", rgba: "rgba(239, 68, 68, 0.18)", border: "rgba(239, 68, 68, 0.35)" },
+  { id: "default", label: "Default background", rgba: "transparent", lightRgba: "transparent", border: "rgba(148, 163, 184, 0.3)" },
+  { id: "gray_background", label: "Gray background", rgba: "rgba(148, 163, 184, 0.20)", lightRgba: "#f1f5f9", border: "rgba(148, 163, 184, 0.38)" },
+  { id: "brown_background", label: "Brown background", rgba: "rgba(180, 120, 80, 0.24)", lightRgba: "#fef3c7", border: "rgba(180, 120, 80, 0.42)" },
+  { id: "orange_background", label: "Orange background", rgba: "rgba(249, 115, 22, 0.22)", lightRgba: "#ffedd5", border: "rgba(249, 115, 22, 0.42)" },
+  { id: "yellow_background", label: "Yellow background", rgba: "rgba(234, 179, 8, 0.22)", lightRgba: "#fef9c3", border: "rgba(234, 179, 8, 0.42)" },
+  { id: "green_background", label: "Green background", rgba: "rgba(16, 185, 129, 0.22)", lightRgba: "#dcfce7", border: "rgba(16, 185, 129, 0.42)" },
+  { id: "blue_background", label: "Blue background", rgba: "rgba(59, 130, 246, 0.22)", lightRgba: "#dbeafe", border: "rgba(59, 130, 246, 0.42)" },
+  { id: "purple_background", label: "Purple background", rgba: "rgba(168, 85, 247, 0.22)", lightRgba: "#f3e8ff", border: "rgba(168, 85, 247, 0.42)" },
+  { id: "pink_background", label: "Pink background", rgba: "rgba(236, 72, 153, 0.22)", lightRgba: "#fce7f3", border: "rgba(236, 72, 153, 0.42)" },
+  { id: "red_background", label: "Red background", rgba: "rgba(239, 68, 68, 0.22)", lightRgba: "#fee2e2", border: "rgba(239, 68, 68, 0.42)" },
 ];
 
 export const NOTION_CODE_LANGUAGES = [
