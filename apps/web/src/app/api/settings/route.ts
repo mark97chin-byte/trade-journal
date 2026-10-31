@@ -1,3 +1,4 @@
+import { loadLocalAiSettings, saveLocalAiSettings, probeKoboldStatus } from "@/server/ai";
 import { db, accounts } from "@/db";
 import { rebuildAccount } from "@/server/rebuild";
 import { handler, ok, requireValue } from "@/server/api";
@@ -128,5 +129,8 @@ export const PATCH = handler(async (request: Request) => {
     if (body.aiProvider !== undefined) setSetting("aiProvider", body.aiProvider);
     if (body.aiModel !== undefined) setSetting(aiModelSetting(provider), body.aiModel.trim());
   });
-  return ok({ saved: true });
+  const localAi = loadLocalAiSettings();
+    return ok({
+      localAi,
+ saved: true });
 });

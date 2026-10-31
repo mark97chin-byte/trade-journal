@@ -793,6 +793,60 @@ const DEFAULT_TEMPLATES: SavedTemplate[] = [
 let _cachedTemplatesMemory: SavedTemplate[] | null = null;
 let _cachedDefaultsMemory: Record<string, string> | null = null;
 
+function getInitialDefaultsSync(): Record<string, string> | null {
+  if (_cachedDefaultsMemory) return _cachedDefaultsMemory;
+  if (typeof window !== "undefined") {
+    try {
+      const raw = localStorage.getItem("tz_default_template_assignments");
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === "object") {
+          _cachedDefaultsMemory = parsed;
+          return parsed;
+        }
+      }
+    } catch {}
+  }
+  return null;
+}
+
+function healDefaultAssignments(
+  tpls: SavedTemplate[],
+  currentDefaults: Record<string, string>
+): Record<string, string> {
+  if (!tpls.length) return currentDefaults;
+  const validIds = new Set(tpls.map((t) => t.id));
+  const healed = { ...currentDefaults };
+
+  const findByName = (...keywords: string[]) => {
+    for (const kw of keywords) {
+      const match = tpls.find((t) => t.name.toLowerCase().includes(kw.toLowerCase()));
+      if (match) return match.id;
+    }
+    return undefined;
+  };
+
+  const fallbackMap: Record<string, string | undefined> = {
+    day_prep: findByName("daily analysis", "daily prep", "session notes", "preparation"),
+    day_review: findByName("daily review", "post-trade review"),
+    week_prep: findByName("weekly analysis", "weekly forecast", "weekly prep"),
+    week_review: findByName("weekly review"),
+    month_prep: findByName("monthly analysis", "monthly plan", "macro plan", "weekly analysis"),
+    month_review: findByName("monthly review", "weekly review"),
+    quarter_prep: findByName("quarterly", "monthly analysis", "weekly analysis"),
+    quarter_review: findByName("quarterly review", "monthly review", "weekly review"),
+    year_prep: findByName("yearly", "annual", "weekly analysis"),
+    year_review: findByName("yearly review", "annual review", "weekly review"),
+  };
+
+  for (const [slot, assignedId] of Object.entries(healed)) {
+    if (assignedId && assignedId !== "none" && !validIds.has(assignedId)) {
+      healed[slot] = fallbackMap[slot] || "none";
+    }
+  }
+  return healed;
+}
+
 function getInitialTemplatesSync(): SavedTemplate[] {
   if (_cachedTemplatesMemory && _cachedTemplatesMemory.length > 0) {
     return _cachedTemplatesMemory;
@@ -970,17 +1024,22 @@ export function RichEditor({
   const [selectedBlocksCount, setSelectedBlocksCount] = useState<number>(0);
   const [lassoRect, setLassoRect] = useState<{ left: number; top: number; width: number; height: number } | null>(null);
   const emitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [defaultAssignments, setDefaultAssignments] = useState<Record<string, string>>({
-    day_prep: "tpl-prep",
-    day_review: "tpl-review",
-    week_prep: "tpl-prep",
-    week_review: "tpl-review",
-    month_prep: "tpl-prep",
-    month_review: "tpl-review",
-    quarter_prep: "tpl-prep",
-    quarter_review: "tpl-review",
-    year_prep: "tpl-prep",
-    year_review: "tpl-review",
+  const [defaultAssignments, setDefaultAssignments] = useState<Record<string, string>>(() => {
+    const saved = getInitialDefaultsSync();
+    const initialTpls = getInitialTemplatesSync();
+    const base: Record<string, string> = saved || {
+      day_prep: "tpl-prep",
+      day_review: "tpl-review",
+      week_prep: "tpl-prep",
+      week_review: "tpl-review",
+      month_prep: "tpl-prep",
+      month_review: "tpl-review",
+      quarter_prep: "tpl-prep",
+      quarter_review: "tpl-review",
+      year_prep: "tpl-prep",
+      year_review: "tpl-review",
+    };
+    return healDefaultAssignments(initialTpls, base);
   });
   const [newTemplateModal, setNewTemplateModal] = useState(false);
   const [newTemplateName, setNewTemplateName] = useState("");
@@ -1010,35 +1069,40 @@ export function RichEditor({
 
   useEffect(() => {
     let mounted = true;
-    if (_cachedTemplatesMemory && _cachedTemplatesMemory.length > 0) {
-      setTemplates(_cachedTemplatesMemory);
-      if (_cachedDefaultsMemory) {
-        setDefaultAssignments((prev) => ({ ...prev, ..._cachedDefaultsMemory! }));
-      }
-      return;
-    }
     fetch("/api/journal/config")
       .then((r) => r.json())
       .then((data) => {
         if (!mounted || !data?.config) return;
-        if (Array.isArray(data.config.templates) && data.config.templates.length > 0) {
-          _cachedTemplatesMemory = data.config.templates;
-          setTemplates(data.config.templates);
-          localStorage.setItem("tz_custom_note_templates", JSON.stringify(data.config.templates));
+        const loadedTpls: SavedTemplate[] =
+          Array.isArray(data.config.templates) && data.config.templates.length > 0
+            ? data.config.templates
+            : _cachedTemplatesMemory || [];
+
+        if (loadedTpls.length > 0) {
+          _cachedTemplatesMemory = loadedTpls;
+          setTemplates(loadedTpls);
+          try {
+            localStorage.setItem("tz_custom_note_templates", JSON.stringify(loadedTpls));
+          } catch {}
         }
-        if (data.config.defaultTemplates) {
-          _cachedDefaultsMemory = data.config.defaultTemplates;
-          setDefaultAssignments((prev) => ({ ...prev, ...data.config.defaultTemplates }));
-        }
-      })
-      .catch(() => {
+
+        const serverDefaults =
+          data.config.defaultTemplates && Object.keys(data.config.defaultTemplates).length > 0
+            ? data.config.defaultTemplates
+            : getInitialDefaultsSync() || {};
+
+        const mergedDefaults = healDefaultAssignments(loadedTpls, {
+          ...defaultAssignments,
+          ...serverDefaults,
+        });
+
+        _cachedDefaultsMemory = mergedDefaults;
+        setDefaultAssignments(mergedDefaults);
         try {
-          const stored = JSON.parse(localStorage.getItem("tz_custom_note_templates") || "null");
-          if (Array.isArray(stored) && stored.length > 0) {
-            setTemplates(stored);
-          }
+          localStorage.setItem("tz_default_template_assignments", JSON.stringify(mergedDefaults));
         } catch {}
-      });
+      })
+      .catch(() => {});
     return () => {
       mounted = false;
     };
@@ -2423,6 +2487,7 @@ export function RichEditor({
     setDefaultAssignments(nextDefaults);
     try {
       localStorage.setItem("tz_custom_note_templates", JSON.stringify(nextTemplates));
+      localStorage.setItem("tz_default_template_assignments", JSON.stringify(nextDefaults));
     } catch {}
     void fetch("/api/journal/config", {
       method: "POST",
