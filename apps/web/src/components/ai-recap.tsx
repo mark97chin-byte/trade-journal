@@ -4,6 +4,7 @@ import { Sparkles } from "lucide-react";
 import type { AnalysisFilters } from "@luxalgo/journal-core";
 import { Button } from "./ui/button";
 import { AiNotice } from "./ai-notice";
+import { AiLogButton } from "./ai-log-button";
 import { postJson } from "@/lib/use-api";
 import { useAiRequest, type AiScope } from "@/lib/use-ai-request";
 
@@ -30,15 +31,18 @@ export function AiRecap({
     );
   return (
     <div className="space-y-2">
-      <Button
-        variant="outline"
-        size="sm"
-        onClick={() => void generate()}
-        disabled={busy || disabled}
-      >
-        <Sparkles />
-        {busy ? "Writing…" : "AI recap"}
-      </Button>
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => void generate()}
+          disabled={busy || disabled}
+        >
+          <Sparkles />
+          {busy ? "Writing…" : "AI recap"}
+        </Button>
+        <AiLogButton label="Logs" />
+      </div>
       {error && <AiNotice error={error} onRetry={() => void generate()} onDismiss={dismiss} />}
     </div>
   );

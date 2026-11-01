@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback } from "react";
 import {
   AI_DEFAULT_MODELS,
   AI_PROVIDER_NAMES,
@@ -24,6 +24,9 @@ import {
   FolderOpen,
   Brain,
   FileText,
+  Play,
+  Square,
+  Terminal,
 } from "lucide-react";
 
 interface PersonaConfig {
@@ -41,6 +44,14 @@ interface LocalAiSettingsPayload {
   activeModelFile: string;
   general: PersonaConfig;
   coach: PersonaConfig;
+}
+
+interface DaemonHardwareState {
+  gpuLayers: number;
+  contextSize: number;
+  quantKv: string;
+  flashAttention: boolean;
+  useMtp: boolean;
 }
 
 const CONTEXT_WINDOW_OPTIONS = [
@@ -97,16 +108,37 @@ export function AiSettings() {
     },
   });
 
+  // Desktop Hardware Launch Parameters (Controlled remotely on Port 5002)
+  const [hwState, setHwState] = useState<DaemonHardwareState>({
+    gpuLayers: 30,
+    contextSize: 32768,
+    quantKv: "q8_0",
+    flashAttention: true,
+    useMtp: false,
+  });
+
   const [discoveredModels, setDiscoveredModels] = useState<Array<{ name: string; sizeMb: number }>>([]);
   const [scanningDir, setScanningDir] = useState(false);
   const [scanMessage, setScanMessage] = useState("");
 
-  const [probing, setProbing] = useState(false);
-  const [probeResult, setProbeResult] = useState<{
-    tested: boolean;
+  const [serverStatus, setServerStatus] = useState<{
+    daemonOnline: boolean;
     online: boolean;
+    loading: boolean;
+    processRunning: boolean;
     model: string;
-  }>({ tested: false, online: false, model: "" });
+    logTail: string;
+  }>({
+    daemonOnline: false,
+    online: false,
+    loading: false,
+    processRunning: false,
+    model: "",
+    logTail: "",
+  });
+
+  const [controllingServer, setControllingServer] = useState(false);
+  const [showLogs, setShowLogs] = useState(false);
 
   const [provider, setProvider] = useState<AiProvider>("anthropic");
   const [model, setModel] = useState(AI_DEFAULT_MODELS.anthropic);
@@ -128,39 +160,112 @@ export function AiSettings() {
     }
   }, [data]);
 
-  const scanModelsFolder = async (dirToScan = localSettings.modelsDir) => {
-    setScanningDir(true);
-    setScanMessage("");
+  const syncWithDesktopDaemon = useCallback(
+    async (dirToScan?: string, customBaseUrl?: string) => {
+      setScanningDir(true);
+      try {
+        const res = await fetch("/api/ai/coach", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            action: "scan_models",
+            dir: dirToScan || localSettings.modelsDir,
+            baseUrl: customBaseUrl || localSettings.baseUrl,
+          }),
+        });
+        const json = await res.json();
+        if (json.ok) {
+          if (Array.isArray(json.models)) {
+            setDiscoveredModels(json.models);
+            setScanMessage(
+              json.models.length > 0
+                ? `Discovered ${json.models.length} .gguf model${json.models.length === 1 ? "" : "s"} on desktop`
+                : "No .gguf files found in this folder."
+            );
+            if (
+              json.models.length > 0 &&
+              !json.models.some((m: any) => m.name === localSettings.activeModelFile)
+            ) {
+              setLocalSettings((prev) => ({ ...prev, activeModelFile: json.models[0].name }));
+            }
+          }
+          if (json.daemonState) {
+            setHwState((prev) => ({
+              ...prev,
+              gpuLayers: json.daemonState.gpuLayers ?? prev.gpuLayers,
+              contextSize: json.daemonState.contextSize ?? prev.contextSize,
+              quantKv: json.daemonState.quantKv ?? prev.quantKv,
+              flashAttention: json.daemonState.flashAttention ?? prev.flashAttention,
+              useMtp: json.daemonState.useMtp ?? prev.useMtp,
+            }));
+          }
+          setServerStatus({
+            daemonOnline: Boolean(json.daemonOnline),
+            online: Boolean(json.online),
+            loading: Boolean(json.loading),
+            processRunning: Boolean(json.processRunning),
+            model: json.loadedModel || localSettings.activeModelFile,
+            logTail: json.logTail || "",
+          });
+        }
+      } catch {
+        setScanMessage("Could not reach desktop daemon.");
+      } finally {
+        setScanningDir(false);
+      }
+    },
+    [localSettings.modelsDir, localSettings.baseUrl, localSettings.activeModelFile]
+  );
+
+  useEffect(() => {
+    void syncWithDesktopDaemon();
+  }, []);
+
+  // Poll status automatically every 3 seconds while model is loading into VRAM
+  useEffect(() => {
+    if (!serverStatus.loading && !controllingServer) return;
+    const t = setInterval(() => {
+      void syncWithDesktopDaemon();
+    }, 3000);
+    return () => clearInterval(t);
+  }, [serverStatus.loading, controllingServer, syncWithDesktopDaemon]);
+
+  const handleRemoteControl = async (command: "start" | "stop") => {
+    setControllingServer(true);
+    setFeedback({});
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "scan_models", dir: dirToScan }),
+        body: JSON.stringify({
+          action: "control_kobold",
+          command,
+          baseUrl: localSettings.baseUrl,
+          launchState: {
+            modelsDir: localSettings.modelsDir,
+            modelFile: localSettings.activeModelFile,
+            ...hwState,
+          },
+        }),
       });
       const json = await res.json();
-      if (json.ok && Array.isArray(json.models)) {
-        setDiscoveredModels(json.models);
-        setScanMessage(
-          json.models.length > 0
-            ? `Discovered ${json.models.length} .gguf model${json.models.length === 1 ? "" : "s"}`
-            : "No .gguf files found in this folder."
-        );
-        if (json.models.length > 0 && !json.models.some((m: any) => m.name === localSettings.activeModelFile)) {
-          setLocalSettings((prev) => ({ ...prev, activeModelFile: json.models[0].name }));
-        }
+      if (json.ok) {
+        setFeedback({
+          success:
+            command === "start"
+              ? `Starting ${localSettings.activeModelFile} on Desktop (${hwState.gpuLayers} GPU layers, ${hwState.contextSize} ctx)...`
+              : "Stopped KoboldCpp on Desktop (VRAM freed).",
+        });
+        setTimeout(() => void syncWithDesktopDaemon(), 1500);
       } else {
-        setScanMessage("Could not scan directory.");
+        setFeedback({ error: json.error || "Remote control command failed." });
       }
-    } catch {
-      setScanMessage("Folder scan failed.");
+    } catch (e: any) {
+      setFeedback({ error: e?.message || "Failed to contact desktop daemon." });
     } finally {
-      setScanningDir(false);
+      setControllingServer(false);
     }
   };
-
-  useEffect(() => {
-    void scanModelsFolder();
-  }, []);
 
   const handleSelectModel = async (fileName: string) => {
     setLocalSettings((prev) => ({ ...prev, activeModelFile: fileName }));
@@ -171,32 +276,6 @@ export function AiSettings() {
         body: JSON.stringify({ action: "set_active_model", modelFile: fileName }),
       });
     } catch {}
-  };
-
-  const testDesktopConnection = async (targetUrl = localSettings.baseUrl) => {
-    setProbing(true);
-    setProbeResult({ tested: false, online: false, model: "" });
-    try {
-      const res = await fetch("/api/ai/coach", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "save_kobold_config", baseUrl: targetUrl }),
-      });
-      const json = await res.json();
-      if (json.ok && json.kobold) {
-        setProbeResult({
-          tested: true,
-          online: Boolean(json.kobold.online),
-          model: json.kobold.modelName || "Online",
-        });
-      } else {
-        setProbeResult({ tested: true, online: false, model: "Unreachable" });
-      }
-    } catch {
-      setProbeResult({ tested: true, online: false, model: "Connection failed" });
-    } finally {
-      setProbing(false);
-    }
   };
 
   const handleSaveAll = async () => {
@@ -235,14 +314,19 @@ export function AiSettings() {
     }));
   };
 
-  // Safe option arrays that always include the active value even if custom
   const currentCtxOptions = CONTEXT_WINDOW_OPTIONS.some((o) => o.value === curPersona.contextSize)
     ? CONTEXT_WINDOW_OPTIONS
-    : [{ value: curPersona.contextSize, label: `${curPersona.contextSize.toLocaleString()} tokens (Custom)` }, ...CONTEXT_WINDOW_OPTIONS];
+    : [
+        { value: curPersona.contextSize, label: `${curPersona.contextSize.toLocaleString()} tokens (Custom)` },
+        ...CONTEXT_WINDOW_OPTIONS,
+      ];
 
   const currentOutOptions = MAX_OUTPUT_OPTIONS.some((o) => o.value === curPersona.maxOutputTokens)
     ? MAX_OUTPUT_OPTIONS
-    : [{ value: curPersona.maxOutputTokens, label: `${curPersona.maxOutputTokens.toLocaleString()} tokens (Current)` }, ...MAX_OUTPUT_OPTIONS];
+    : [
+        { value: curPersona.maxOutputTokens, label: `${curPersona.maxOutputTokens.toLocaleString()} tokens (Current)` },
+        ...MAX_OUTPUT_OPTIONS,
+      ];
 
   return (
     <Card id="ai-settings" className="scroll-mt-24 border-border/70 bg-[#12141d]">
@@ -257,7 +341,7 @@ export function AiSettings() {
                 AI Engine &amp; Behavioral Coach Settings
               </CardTitle>
               <p className="text-xs text-muted-foreground">
-                Manage your local GPU endpoints, GGUF models directory, context windows, and persona prompts.
+                Start/stop your desktop GPU server remotely, select GGUF models, and configure independent persona settings.
               </p>
             </div>
           </div>
@@ -305,45 +389,101 @@ export function AiSettings() {
 
         {localSettings.mode === "local_kobold" && (
           <div className="space-y-4 rounded-xl border border-indigo-500/25 bg-[#0d0f14] p-4">
+            {/* TOP CONTROL ROW: STATUS BADGE + START / STOP / TEST BUTTONS */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
-              <span className="font-bold text-foreground flex items-center gap-2">
-                <FolderOpen className="h-4 w-4 text-indigo-400" />
-                <span>GGUF Model Directory &amp; Desktop Server</span>
-              </span>
               <div className="flex items-center gap-2">
-                {probeResult.tested && (
-                  <span
-                    className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
-                      probeResult.online
-                        ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
-                        : "border-rose-500/40 bg-rose-500/15 text-rose-300"
-                    }`}
-                  >
-                    {probeResult.online ? (
-                      <>
-                        <CheckCircle2 className="h-3 w-3" />
-                        <span>Online · {probeResult.model}</span>
-                      </>
-                    ) : (
-                      <>
-                        <AlertCircle className="h-3 w-3" />
-                        <span>Offline</span>
-                      </>
-                    )}
-                  </span>
-                )}
+                <FolderOpen className="h-4 w-4 text-indigo-400" />
+                <span className="font-bold text-foreground">
+                  Desktop GPU Server &amp; Remote Launcher
+                </span>
+                <span
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
+                    serverStatus.online
+                      ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                      : serverStatus.loading
+                      ? "border-amber-500/40 bg-amber-500/15 text-amber-300 animate-pulse"
+                      : "border-rose-500/40 bg-rose-500/15 text-rose-300"
+                  }`}
+                >
+                  {serverStatus.online ? (
+                    <>
+                      <CheckCircle2 className="h-3 w-3" />
+                      <span>Online · {serverStatus.model}</span>
+                    </>
+                  ) : serverStatus.loading ? (
+                    <>
+                      <RefreshCw className="h-3 w-3 animate-spin" />
+                      <span>Loading Tensors into VRAM...</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertCircle className="h-3 w-3" />
+                      <span>Server Stopped</span>
+                    </>
+                  )}
+                </span>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-1.5">
                 <Button
+                  type="button"
+                  size="sm"
+                  disabled={controllingServer}
+                  onClick={() => void handleRemoteControl("start")}
+                  className="h-7 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
+                >
+                  <Play className="mr-1 h-3 w-3 fill-current" />
+                  {serverStatus.online || serverStatus.processRunning
+                    ? "Restart with Settings"
+                    : "Start Server"}
+                </Button>
+
+                {(serverStatus.online || serverStatus.processRunning) && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={controllingServer}
+                    onClick={() => void handleRemoteControl("stop")}
+                    className="h-7 border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 text-xs"
+                  >
+                    <Square className="mr-1 h-3 w-3 fill-current" />
+                    Stop Server
+                  </Button>
+                )}
+
+                <Button
+                  type="button"
                   size="sm"
                   variant="outline"
-                  disabled={probing}
-                  onClick={() => testDesktopConnection()}
+                  disabled={scanningDir}
+                  onClick={() => void syncWithDesktopDaemon()}
                   className="h-7 text-xs"
                 >
-                  <RefreshCw className={`mr-1.5 h-3 w-3 ${probing ? "animate-spin" : ""}`} />
-                  {probing ? "Testing..." : "Test Connection"}
+                  <RefreshCw className={`mr-1 h-3 w-3 ${scanningDir ? "animate-spin" : ""}`} />
+                  Refresh Status
+                </Button>
+
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setShowLogs((v) => !v)}
+                  className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                  title="View live KoboldCpp console output from Desktop"
+                >
+                  <Terminal className="mr-1 h-3.5 w-3.5" />
+                  Logs
                 </Button>
               </div>
             </div>
+
+            {/* COLLAPSIBLE LIVE DESKTOP LOG VIEWER */}
+            {showLogs && (
+              <div className="rounded-lg border border-border/60 bg-black/80 p-3 font-mono text-[10px] text-emerald-300 max-h-48 overflow-y-auto whitespace-pre-wrap">
+                {serverStatus.logTail || "No KoboldCpp log output yet. Click 'Start Server' above."}
+              </div>
+            )}
 
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
@@ -374,11 +514,10 @@ export function AiSettings() {
                     size="sm"
                     variant="outline"
                     disabled={scanningDir}
-                    onClick={() => scanModelsFolder()}
+                    onClick={() => void syncWithDesktopDaemon(localSettings.modelsDir)}
                     className="h-9 px-3 shrink-0"
-                    title="Scan folder for .gguf files"
                   >
-                    <FolderOpen className={`h-3.5 w-3.5 ${scanningDir ? "animate-pulse" : ""}`} />
+                    <FolderOpen className="h-3.5 w-3.5" />
                     <span className="ml-1.5">{scanningDir ? "Scanning..." : "Scan Folder"}</span>
                   </Button>
                 </div>
@@ -388,14 +527,15 @@ export function AiSettings() {
               </div>
             </div>
 
-            <div className="pt-2 border-t border-border/30 space-y-1">
-              <Label htmlFor="active-model-select">Active GGUF Model</Label>
-              {discoveredModels.length > 0 ? (
-                <div className="flex items-center gap-2">
+            {/* ACTIVE GGUF DROPDOWN + HARDWARE STARTUP PARAMETERS */}
+            <div className="grid gap-3 sm:grid-cols-4 pt-2 border-t border-border/30">
+              <div className="space-y-1 sm:col-span-2">
+                <Label htmlFor="active-model-select">Active GGUF Model File</Label>
+                {discoveredModels.length > 0 ? (
                   <select
                     id="active-model-select"
                     value={localSettings.activeModelFile}
-                    onChange={(e) => handleSelectModel(e.target.value)}
+                    onChange={(e) => void handleSelectModel(e.target.value)}
                     className="h-9 w-full rounded-lg border border-border/70 bg-[#141722] px-3 text-xs text-foreground outline-none focus:border-indigo-500 font-mono"
                   >
                     {discoveredModels.map((m) => (
@@ -404,33 +544,69 @@ export function AiSettings() {
                       </option>
                     ))}
                   </select>
-                </div>
-              ) : (
-                <div className="flex items-center gap-2">
+                ) : (
                   <Input
                     id="active-model-select"
                     value={localSettings.activeModelFile}
-                    onChange={(e) => handleSelectModel(e.target.value)}
+                    onChange={(e) => void handleSelectModel(e.target.value)}
                     placeholder="Qwen3.8-27B-Q4_K_M.gguf"
                   />
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="ghost"
-                    onClick={() => scanModelsFolder()}
-                    className="h-9 text-[11px] text-muted-foreground hover:text-foreground shrink-0"
-                  >
-                    Click &ldquo;Scan Folder&rdquo; to populate dropdown
-                  </Button>
+                )}
+                <p className="text-[10px] text-muted-foreground">
+                  Choose any GGUF in your desktop folder and click <strong>Start / Restart</strong>.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <div className="flex justify-between">
+                  <Label>GPU Layers (VRAM)</Label>
+                  <span className="font-mono text-indigo-300 font-bold">{hwState.gpuLayers} / 64</span>
                 </div>
-              )}
-              <p className="text-[10px] text-muted-foreground">
-                Selecting a model from the dropdown automatically updates your desktop launcher.
-              </p>
+                <input
+                  type="range"
+                  min="0"
+                  max="65"
+                  step="1"
+                  value={hwState.gpuLayers}
+                  onChange={(e) =>
+                    setHwState((prev) => ({ ...prev, gpuLayers: Number(e.target.value) }))
+                  }
+                  className="w-full accent-indigo-500 mt-1.5"
+                />
+                <p className="text-[10px] text-muted-foreground">
+                  28–32 fits 12GB VRAM cleanly with 32K ctx.
+                </p>
+              </div>
+
+              <div className="space-y-1">
+                <Label>KV Cache &amp; Flash Attn</Label>
+                <div className="flex items-center gap-1.5">
+                  <OptionSelect
+                    value={hwState.quantKv}
+                    onValueChange={(v) => setHwState((prev) => ({ ...prev, quantKv: v }))}
+                  >
+                    <option value="q8_0">Q8_0 KV (Recommended)</option>
+                    <option value="q4_0">Q4_0 KV (Max VRAM Save)</option>
+                    <option value="f16">FP16 KV (Uncompressed)</option>
+                  </OptionSelect>
+                </div>
+                <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground pt-0.5 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={hwState.flashAttention}
+                    onChange={(e) =>
+                      setHwState((prev) => ({ ...prev, flashAttention: e.target.checked }))
+                    }
+                    className="accent-indigo-500"
+                  />
+                  <span>Enable Flash Attention</span>
+                </label>
+              </div>
             </div>
           </div>
         )}
 
+        {/* PERSONA TUNING TABS */}
         <div className="rounded-xl border border-border/60 bg-[#0d0f14] overflow-hidden">
           <div className="flex items-center justify-between border-b border-border/40 bg-[#161925] px-4 py-2.5">
             <div className="flex items-center gap-1.5">
@@ -459,12 +635,6 @@ export function AiSettings() {
                 <span>General Journal (Recaps &amp; Critiques)</span>
               </button>
             </div>
-
-            <span className="text-[11px] text-muted-foreground hidden sm:inline">
-              {activePersonaTab === "coach"
-                ? "Used for Weekly/Monthly audits & Progress accountability"
-                : "Used for daily trade critique, session recap & ask journal"}
-            </span>
           </div>
 
           <div className="p-4 space-y-4">
@@ -473,7 +643,13 @@ export function AiSettings() {
                 <Label>Context Window</Label>
                 <OptionSelect
                   value={String(curPersona.contextSize)}
-                  onValueChange={(val) => updateCurrentPersona({ contextSize: Number(val) })}
+                  onValueChange={(val) => {
+                    const num = Number(val);
+                    updateCurrentPersona({ contextSize: num });
+                    if (num > hwState.contextSize) {
+                      setHwState((prev) => ({ ...prev, contextSize: num }));
+                    }
+                  }}
                 >
                   {currentCtxOptions.map((opt) => (
                     <option key={opt.value} value={String(opt.value)}>
@@ -481,11 +657,6 @@ export function AiSettings() {
                     </option>
                   ))}
                 </OptionSelect>
-                <p className="text-[10px] text-muted-foreground">
-                  {curPersona.contextSize >= 65536
-                    ? "Covers months of multi-week journals."
-                    : "32K fits 18 multi-week journals."}
-                </p>
               </div>
 
               <div className="space-y-1">
@@ -500,11 +671,6 @@ export function AiSettings() {
                     </option>
                   ))}
                 </OptionSelect>
-                <p className="text-[10px] text-muted-foreground">
-                  {curPersona.maxOutputTokens >= 6144
-                    ? "Full reasoning chain + long report."
-                    : "Standard response allowance."}
-                </p>
               </div>
 
               <div className="space-y-1">
@@ -521,9 +687,6 @@ export function AiSettings() {
                   onChange={(e) => updateCurrentPersona({ temperature: parseFloat(e.target.value) })}
                   className="w-full accent-indigo-500"
                 />
-                <p className="text-[10px] text-muted-foreground">
-                  {activePersonaTab === "coach" ? "0.6 for pattern synthesis." : "0.4 for strict factual recaps."}
-                </p>
               </div>
 
               <div className="space-y-1">
@@ -540,7 +703,6 @@ export function AiSettings() {
                   onChange={(e) => updateCurrentPersona({ topP: parseFloat(e.target.value) })}
                   className="w-full accent-indigo-500"
                 />
-                <p className="text-[10px] text-muted-foreground">Nucleus sampling cutoff.</p>
               </div>
             </div>
 
@@ -564,7 +726,7 @@ export function AiSettings() {
                   className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-indigo-400"
                 >
                   <RotateCcw className="h-3 w-3" />
-                  <span>Reset {activePersonaTab === "coach" ? "Coach" : "General"} Prompt</span>
+                  <span>Reset Prompt</span>
                 </button>
               </div>
               <textarea
@@ -578,7 +740,7 @@ export function AiSettings() {
         </div>
 
         <div className="flex justify-end pt-2">
-          <Button disabled={busy} onClick={() => handleSaveAll()} className="px-6 font-semibold">
+          <Button disabled={busy} onClick={() => void handleSaveAll()} className="px-6 font-semibold">
             {busy ? "Saving Settings..." : "Save AI Settings"}
           </Button>
         </div>

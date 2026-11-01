@@ -11,14 +11,13 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ReviewExport } from "@/components/review-export";
 import { Markdown } from "@/components/rich-editor";
+import { AiLogButton } from "@/components/ai-log-button";
 import { useApi, postJson } from "@/lib/use-api";
 import { scheduledRules, progressScore, type Routine, type RoutineCheck } from "@/lib/progress";
 import {
   Sparkles,
   Target,
   Brain,
-  CheckCircle2,
-  AlertTriangle,
   Plus,
   Trash2,
   Send,
@@ -26,6 +25,9 @@ import {
   ChevronDown,
   ChevronRight,
   RefreshCw,
+  Square,
+  MessageSquarePlus,
+  History,
 } from "lucide-react";
 
 const STAGES = ["Before trading", "During trading", "After trading"];
@@ -62,6 +64,31 @@ interface AiCoachReport {
     targetMetric: string;
   }>;
   modelUsed: string;
+  createdAt: string;
+}
+
+interface ActiveJob {
+  id: string;
+  jobType: string;
+  targetId: string;
+  label: string;
+  status: string;
+  startedAt: string;
+}
+
+interface ChatSession {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+interface ChatMessage {
+  id: string;
+  sessionId: string;
+  role: "user" | "coach";
+  text: string;
+  reasoning?: string;
   createdAt: string;
 }
 
@@ -107,21 +134,23 @@ function Progress() {
     [failure, setFailure] = useState(""),
     [busy, setBusy] = useState(false);
 
-  // Longitudinal AI Coach & Multi-Horizon Goal State
   const [coachData, setCoachData] = useState<{
-    kobold: { enabled: boolean; baseUrl: string; online: boolean; modelName: string };
+    kobold: { mode: string; baseUrl: string; online: boolean; modelName: string };
     telemetry: any;
+    activeJobs: ActiveJob[];
+    chatSessions: ChatSession[];
+    activeSessionId: string;
+    chatMessages: ChatMessage[];
     goals: TraderGoal[];
     reports: AiCoachReport[];
   } | null>(null);
-  const [coachLoading, setCoachLoading] = useState(false);
-  const [generatingHorizon, setGeneratingHorizon] = useState<GoalHorizon | null>(null);
+
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [selectedSessionId, setSelectedSessionId] = useState<string>("");
   const [showReasoning, setShowReasoning] = useState(false);
   const [koboldUrlInput, setKoboldUrlInput] = useState("http://100.75.201.34:5001");
   const [configOpen, setConfigOpen] = useState(false);
 
-  // Goal Modal State
   const [goalModalOpen, setGoalModalOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState<Partial<TraderGoal>>({
     horizon: "weekly",
@@ -133,33 +162,47 @@ function Progress() {
     progressPct: 50,
   });
 
-  // Interactive Coach Chat State
   const [chatInput, setChatInput] = useState("");
-  const [chatBusy, setChatBusy] = useState(false);
-  const [chatHistory, setChatHistory] = useState<
-    Array<{ role: "user" | "coach"; text: string; reasoning?: string }>
-  >([]);
 
-  const fetchCoachData = useCallback(async () => {
-    setCoachLoading(true);
-    try {
-      const res = await fetch("/api/ai/coach");
-      const json = await res.json();
-      if (json.ok) {
-        setCoachData(json);
-        if (json.kobold?.baseUrl) setKoboldUrlInput(json.kobold.baseUrl);
-        if (json.reports?.length > 0 && !selectedReportId) {
-          setSelectedReportId(json.reports[0].id);
+  const fetchCoachData = useCallback(
+    async (overrideSessionId?: string) => {
+      try {
+        const targetSess = overrideSessionId !== undefined ? overrideSessionId : selectedSessionId;
+        const qs = targetSess ? `?sessionId=${encodeURIComponent(targetSess)}` : "";
+        const res = await fetch(`/api/ai/coach${qs}`);
+        const json = await res.json();
+        if (json.ok) {
+          setCoachData(json);
+          if (json.kobold?.baseUrl) setKoboldUrlInput(json.kobold.baseUrl);
+          if (json.activeSessionId && !selectedSessionId) {
+            setSelectedSessionId(json.activeSessionId);
+          }
+          if (json.reports?.length > 0 && !selectedReportId) {
+            setSelectedReportId(json.reports[0].id);
+          }
         }
-      }
-    } catch {} finally {
-      setCoachLoading(false);
-    }
-  }, [selectedReportId]);
+      } catch {}
+    },
+    [selectedSessionId, selectedReportId]
+  );
 
   useEffect(() => {
     void fetchCoachData();
   }, [fetchCoachData]);
+
+  const activeJobs = coachData?.activeJobs || [];
+  const isAnyJobRunning = activeJobs.length > 0;
+  const runningAuditJob = activeJobs.find((j) => j.jobType.startsWith("audit_"));
+  const runningChatJob = activeJobs.find((j) => j.jobType === "chat");
+
+  // Automatically poll every 2.5 seconds whenever any background AI job (audit or chat) is running!
+  useEffect(() => {
+    if (!isAnyJobRunning) return;
+    const timer = setInterval(() => {
+      void fetchCoachData();
+    }, 2500);
+    return () => clearInterval(timer);
+  }, [isAnyJobRunning, fetchCoachData]);
 
   const selected = date || data?.today || "",
     rules = data ? scheduledRules(data.rules, selected) : [],
@@ -190,7 +233,6 @@ function Progress() {
   }
 
   const handleGenerateAudit = async (horizon: GoalHorizon) => {
-    setGeneratingHorizon(horizon);
     setFailure("");
     try {
       const res = await fetch("/api/ai/coach", {
@@ -200,16 +242,24 @@ function Progress() {
       });
       const json = await res.json();
       if (!json.ok) {
-        setFailure(json.error || "Failed to generate longitudinal AI report.");
+        setFailure(json.error || "Failed to start longitudinal AI report.");
       } else {
         await fetchCoachData();
-        if (json.reportId) setSelectedReportId(json.reportId);
       }
     } catch (err: any) {
       setFailure(err?.message || "Failed to connect to KoboldCpp.");
-    } finally {
-      setGeneratingHorizon(null);
     }
+  };
+
+  const handleCancelJob = async (jobId?: string) => {
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "cancel_job", jobId }),
+      });
+      await fetchCoachData();
+    } catch {}
   };
 
   const handleUpsertGoal = async (goalPayload: Partial<TraderGoal>) => {
@@ -238,37 +288,58 @@ function Progress() {
     } catch {}
   };
 
-  const handleSendCoachChat = async () => {
-    const msg = chatInput.trim();
-    if (!msg || chatBusy) return;
-    setChatInput("");
-    setChatHistory((prev) => [...prev, { role: "user", text: msg }]);
-    setChatBusy(true);
+  const handleNewChatSession = async () => {
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "chat_coach", message: msg }),
+        body: JSON.stringify({ action: "new_chat_session" }),
       });
       const json = await res.json();
-      if (json.ok) {
-        setChatHistory((prev) => [
-          ...prev,
-          { role: "coach", text: json.reply, reasoning: json.reasoning },
-        ]);
-      } else {
-        setChatHistory((prev) => [
-          ...prev,
-          { role: "coach", text: `Error: ${json.error || "Could not reach KoboldCpp."}` },
-        ]);
+      if (json.ok && json.sessionId) {
+        setSelectedSessionId(json.sessionId);
+        await fetchCoachData(json.sessionId);
+      }
+    } catch {}
+  };
+
+  const handleDeleteChatSession = async (sessId: string) => {
+    if (!sessId) return;
+    if (!window.confirm("Delete this coaching conversation thread?")) return;
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_chat_session", sessionId: sessId }),
+      });
+      setSelectedSessionId("");
+      await fetchCoachData("");
+    } catch {}
+  };
+
+  const handleSendCoachChat = async () => {
+    const msg = chatInput.trim();
+    if (!msg || runningChatJob) return;
+    setChatInput("");
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "chat_coach",
+          sessionId: selectedSessionId,
+          message: msg,
+        }),
+      });
+      const json = await res.json();
+      if (json.ok && json.sessionId) {
+        setSelectedSessionId(json.sessionId);
+        await fetchCoachData(json.sessionId);
+      } else if (!json.ok) {
+        setFailure(json.error || "Could not send message.");
       }
     } catch (e: any) {
-      setChatHistory((prev) => [
-        ...prev,
-        { role: "coach", text: `Connection error: ${e?.message}` },
-      ]);
-    } finally {
-      setChatBusy(false);
+      setFailure(e?.message || "Connection error.");
     }
   };
 
@@ -278,6 +349,8 @@ function Progress() {
     null;
 
   const tel = coachData?.telemetry;
+  const chatMessages = coachData?.chatMessages || [];
+  const chatSessions = coachData?.chatSessions || [];
 
   return (
     <div>
@@ -285,6 +358,7 @@ function Progress() {
         title="Progress, Goals & AI Accountability Coach"
         actions={
           <div className="flex flex-wrap items-center gap-2">
+            <AiLogButton label="AI Logs" onAborted={() => void fetchCoachData()} />
             <Button
               size="sm"
               variant="outline"
@@ -314,12 +388,15 @@ function Progress() {
 
       <div className="space-y-6 p-4">
         {(error || failure) && (
-          <p role="alert" className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300">
+          <p
+            role="alert"
+            className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs text-rose-300"
+          >
             {error || failure}
           </p>
         )}
 
-        {/* 1. KOBOLDCPP DESKTOP AI STATUS & LONGITUDINAL AUDIT BAR */}
+        {/* 1. KOBOLDCPP DESKTOP AI STATUS & BACKGROUND AUDIT BAR */}
         <Card className="border-indigo-500/30 bg-[#12141d]">
           <CardContent className="py-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -350,27 +427,44 @@ function Progress() {
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Synthesizes your Daily/Weekly/Monthly reviews, reflection quotes, and execution telemetry to track behavioral improvement over time.
+                    Audits run in the background—you can freely switch pages while your desktop GPU generates reports or chat replies.
                   </p>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                {(["weekly", "monthly", "quarterly"] as GoalHorizon[]).map((h) => (
-                  <Button
-                    key={h}
-                    size="sm"
-                    variant={h === "weekly" ? "default" : "outline"}
-                    disabled={generatingHorizon !== null}
-                    onClick={() => void handleGenerateAudit(h)}
-                    className="text-xs capitalize"
-                  >
-                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                    {generatingHorizon === h
-                      ? `Running ${h} Deep Audit...`
-                      : `Run ${h} Audit`}
-                  </Button>
-                ))}
+                {runningAuditJob ? (
+                  <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs">
+                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400" />
+                    <span className="font-semibold text-amber-200">
+                      Running {runningAuditJob.label} in background...
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelJob(runningAuditJob.id)}
+                      className="ml-1 inline-flex items-center gap-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 px-2 py-0.5 text-[11px] font-semibold text-rose-300 transition"
+                    >
+                      <Square className="h-2.5 w-2.5 fill-current" />
+                      <span>Cancel</span>
+                    </button>
+                  </div>
+                ) : (
+                  (["weekly", "monthly", "quarterly"] as GoalHorizon[]).map((h) => (
+                    <Button
+                      key={h}
+                      size="sm"
+                      variant={h === "weekly" ? "default" : "outline"}
+                      onClick={() => void handleGenerateAudit(h)}
+                      className="text-xs capitalize"
+                    >
+                      <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                      {`Run ${h} Audit`}
+                    </Button>
+                  ))
+                )}
+
+                <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
+
                 <Button
                   size="sm"
                   variant="ghost"
@@ -414,12 +508,12 @@ function Progress() {
                   </Button>
                 </div>
                 <span className="text-[11px] text-muted-foreground">
-                  Overnight Cron: Runs automatically at 3:15 AM when desktop is on.
+                  Full GPU Layer &amp; Model controls available in Settings &rarr; AI.
                 </span>
               </div>
             )}
 
-            {/* BEHAVIORAL TELEMETRY STRIP (MODEL-AGNOSTIC TENDENCIES) */}
+            {/* BEHAVIORAL TELEMETRY STRIP */}
             {tel && (
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-border/40 text-xs">
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
@@ -473,7 +567,7 @@ function Progress() {
           </CardContent>
         </Card>
 
-        {/* 2. MULTI-HORIZON GOALS & ACCOUNTABILITY BOARD (WEEKLY / MONTHLY / QUARTERLY) */}
+        {/* 2. MULTI-HORIZON GOALS & ACCOUNTABILITY BOARD */}
         <div className="grid gap-4 xl:grid-cols-3">
           {(
             [
@@ -494,9 +588,7 @@ function Progress() {
               },
             ] as const
           ).map((col) => {
-            const colGoals = (coachData?.goals || []).filter(
-              (g) => g.horizon === col.key
-            );
+            const colGoals = (coachData?.goals || []).filter((g) => g.horizon === col.key);
             return (
               <Card key={col.key} className="bg-[#12141d] border-border/70">
                 <CardHeader className="pb-2">
@@ -506,9 +598,7 @@ function Progress() {
                         <Target className="h-4 w-4 text-indigo-400" />
                         <span>{col.title}</span>
                       </CardTitle>
-                      <p className="text-[11px] text-muted-foreground mt-0.5">
-                        {col.sub}
-                      </p>
+                      <p className="text-[11px] text-muted-foreground mt-0.5">{col.sub}</p>
                     </div>
                     <button
                       type="button"
@@ -538,7 +628,7 @@ function Progress() {
                 <CardContent className="space-y-2.5">
                   {colGoals.length === 0 ? (
                     <div className="rounded-lg border border-dashed border-border/50 p-4 text-center text-xs text-muted-foreground">
-                      No {col.key} goals active yet. Run an AI Audit to generate data-backed recommendations or click + Add.
+                      No {col.key} goals active yet. Run an AI Audit or click + Add.
                     </div>
                   ) : (
                     colGoals.map((g) => {
@@ -553,9 +643,7 @@ function Progress() {
                               <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
                                 {g.periodLabel}
                               </span>
-                              <h4 className="font-bold text-foreground leading-snug">
-                                {g.title}
-                              </h4>
+                              <h4 className="font-bold text-foreground leading-snug">{g.title}</h4>
                             </div>
                             <span
                               className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold ${badge.cls}`}
@@ -590,9 +678,7 @@ function Progress() {
                                 <button
                                   key={st}
                                   type="button"
-                                  onClick={() =>
-                                    void handleUpsertGoal({ ...g, status: st })
-                                  }
+                                  onClick={() => void handleUpsertGoal({ ...g, status: st })}
                                   className={`rounded px-1.5 py-0.5 text-[10px] capitalize transition ${
                                     g.status === st
                                       ? "bg-secondary text-foreground font-bold border border-border"
@@ -634,9 +720,9 @@ function Progress() {
           })}
         </div>
 
-        {/* 3. LONGITUDINAL AI REPORT VIEWER + INTERACTIVE ACCOUNTABILITY PARTNER CHAT */}
+        {/* 3. LONGITUDINAL AI REPORT VIEWER + PERSISTENT ACCOUNTABILITY CHAT */}
         <div className="grid gap-4 lg:grid-cols-12">
-          {/* Left 7 Cols: Longitudinal Report & Suggested Goals */}
+          {/* Left 7 Cols: Longitudinal Report */}
           <Card className="lg:col-span-7 bg-[#12141d] border-border/70">
             <CardHeader className="pb-3 border-b border-border/40">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -666,12 +752,11 @@ function Progress() {
                     No Longitudinal AI Reports Generated Yet
                   </p>
                   <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    Click &ldquo;Run Weekly Audit&rdquo;, &ldquo;Run Monthly Audit&rdquo;, or &ldquo;Run Quarterly Audit&rdquo; above to have your desktop AI analyze your journals, reflection quotes, and tendencies.
+                    Click &ldquo;Run Weekly Audit&rdquo;, &ldquo;Run Monthly Audit&rdquo;, or &ldquo;Run Quarterly Audit&rdquo; above.
                   </p>
                 </div>
               ) : (
                 <>
-                  {/* Collapsible DeepSeek / Qwen <think> Chain-of-Thought Trace */}
                   {activeReport.reasoningTrace && (
                     <div className="rounded-xl border border-indigo-500/30 bg-[#0d0f14] overflow-hidden">
                       <button
@@ -701,79 +786,120 @@ function Progress() {
                     </div>
                   )}
 
-                  {/* Rendered Report Body */}
                   <div className="rounded-xl border border-border/50 bg-[#0d0f14] p-4 max-h-[540px] overflow-y-auto">
                     <Markdown value={activeReport.summaryMd} />
                   </div>
 
-                  {/* 1-Click AI Suggested Goals from this Report */}
-                  {activeReport.suggestedGoals &&
-                    activeReport.suggestedGoals.length > 0 && (
-                      <div className="space-y-2 pt-2 border-t border-border/40">
-                        <div className="text-xs font-bold text-foreground">
-                          AI-Proposed Goals from This Audit (Click to Adopt into Your Goal Board):
-                        </div>
-                        <div className="grid gap-2 sm:grid-cols-3">
-                          {activeReport.suggestedGoals.map((sg, idx) => (
-                            <div
-                              key={idx}
-                              className="rounded-xl border border-indigo-500/30 bg-indigo-950/15 p-2.5 flex flex-col justify-between gap-2 text-xs"
-                            >
-                              <div className="space-y-1">
-                                <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
-                                  {sg.horizon} · {sg.periodLabel}
-                                </span>
-                                <div className="font-bold text-foreground">
-                                  {sg.title}
-                                </div>
-                                <div className="text-[11px] text-muted-foreground">
-                                  {sg.targetMetric}
-                                </div>
-                              </div>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="w-full h-7 text-[11px]"
-                                onClick={() =>
-                                  void handleUpsertGoal({
-                                    horizon: sg.horizon || "weekly",
-                                    periodLabel: sg.periodLabel || "Upcoming",
-                                    title: sg.title,
-                                    whyItMatters: sg.whyItMatters || "",
-                                    targetMetric: sg.targetMetric || "",
-                                    status: "on_track",
-                                    progressPct: 0,
-                                  })
-                                }
-                              >
-                                + Adopt {sg.horizon} Goal
-                              </Button>
-                            </div>
-                          ))}
-                        </div>
+                  {activeReport.suggestedGoals && activeReport.suggestedGoals.length > 0 && (
+                    <div className="space-y-2 pt-2 border-t border-border/40">
+                      <div className="text-xs font-bold text-foreground">
+                        AI-Proposed Goals from This Audit (Click to Adopt):
                       </div>
-                    )}
+                      <div className="grid gap-2 sm:grid-cols-3">
+                        {activeReport.suggestedGoals.map((sg, idx) => (
+                          <div
+                            key={idx}
+                            className="rounded-xl border border-indigo-500/30 bg-indigo-950/15 p-2.5 flex flex-col justify-between gap-2 text-xs"
+                          >
+                            <div className="space-y-1">
+                              <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
+                                {sg.horizon} · {sg.periodLabel}
+                              </span>
+                              <div className="font-bold text-foreground">{sg.title}</div>
+                              <div className="text-[11px] text-muted-foreground">
+                                {sg.targetMetric}
+                              </div>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="w-full h-7 text-[11px]"
+                              onClick={() =>
+                                void handleUpsertGoal({
+                                  horizon: sg.horizon || "weekly",
+                                  periodLabel: sg.periodLabel || "Upcoming",
+                                  title: sg.title,
+                                  whyItMatters: sg.whyItMatters || "",
+                                  targetMetric: sg.targetMetric || "",
+                                  status: "on_track",
+                                  progressPct: 0,
+                                })
+                              }
+                            >
+                              + Adopt {sg.horizon} Goal
+                            </Button>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </>
               )}
             </CardContent>
           </Card>
 
-          {/* Right 5 Cols: Interactive Accountability Partner Chat */}
+          {/* Right 5 Cols: Persistent Multi-Session Accountability Coach Chat */}
           <Card className="lg:col-span-5 bg-[#12141d] border-border/70 flex flex-col">
-            <CardHeader className="pb-3 border-b border-border/40">
-              <CardTitle className="text-sm font-bold flex items-center gap-2">
-                <Brain className="h-4 w-4 text-emerald-400" />
-                <span>Collaborate with Your Accountability Coach</span>
-              </CardTitle>
-              <p className="text-[11px] text-muted-foreground">
-                Co-design goals, ask what recurring triggers show up in your reviews, or test a new daily routine.
-              </p>
+            <CardHeader className="pb-3 border-b border-border/40 space-y-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-sm font-bold flex items-center gap-2">
+                  <Brain className="h-4 w-4 text-emerald-400" />
+                  <span>Accountability Coach Chat</span>
+                </CardTitle>
+                <div className="flex items-center gap-1.5">
+                  <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
+                  <button
+                    type="button"
+                    onClick={() => void handleNewChatSession()}
+                    className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 px-2 py-1 text-[11px] font-semibold text-indigo-300 transition"
+                    title="Start a new coaching conversation"
+                  >
+                    <MessageSquarePlus className="h-3 w-3" />
+                    <span>New Chat</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Conversation History Dropdown */}
+              {chatSessions.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <History className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                  <select
+                    value={selectedSessionId}
+                    onChange={(e) => {
+                      const nextId = e.target.value;
+                      setSelectedSessionId(nextId);
+                      void fetchCoachData(nextId);
+                    }}
+                    className="h-7 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-2 text-[11px] text-foreground outline-none"
+                  >
+                    {chatSessions.map((s) => (
+                      <option key={s.id} value={s.id}>
+                        {s.title} ({s.updatedAt.slice(5, 16).replace("T", " ")})
+                      </option>
+                    ))}
+                  </select>
+                  {selectedSessionId && (
+                    <button
+                      type="button"
+                      onClick={() => void handleDeleteChatSession(selectedSessionId)}
+                      className="rounded p-1 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10"
+                      title="Delete this conversation"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              )}
             </CardHeader>
+
             <CardContent className="flex-1 flex flex-col justify-between pt-4 gap-3">
               <div className="flex-1 min-h-[280px] max-h-[440px] overflow-y-auto space-y-3 rounded-xl border border-border/50 bg-[#0d0f14] p-3 text-xs">
-                {chatHistory.length === 0 ? (
+                {chatMessages.length === 0 ? (
                   <div className="space-y-2 text-muted-foreground">
-                    <p>Try asking your coach:</p>
+                    <p>
+                      Conversations are automatically saved—even if you switch tabs while the AI is replying. Try asking:
+                    </p>
                     {[
                       "What recurring emotional trigger shows up across my recent journal reviews?",
                       "Help me set realistic Weekly and Monthly goals based on my biggest leak.",
@@ -790,9 +916,9 @@ function Progress() {
                     ))}
                   </div>
                 ) : (
-                  chatHistory.map((m, idx) => (
+                  chatMessages.map((m) => (
                     <div
-                      key={idx}
+                      key={m.id}
                       className={`rounded-xl p-2.5 ${
                         m.role === "user"
                           ? "bg-indigo-600/20 border border-indigo-500/30 text-foreground ml-6"
@@ -806,9 +932,21 @@ function Progress() {
                     </div>
                   ))
                 )}
-                {chatBusy && (
-                  <div className="text-xs text-indigo-300 animate-pulse px-2">
-                    Coach is thinking across your journals &amp; goals...
+
+                {runningChatJob && (
+                  <div className="flex items-center justify-between gap-2 rounded-xl border border-indigo-500/30 bg-indigo-950/20 px-3 py-2 text-xs text-indigo-200">
+                    <div className="flex items-center gap-2">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+                      <span>Coach is thinking in the background...</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => void handleCancelJob(runningChatJob.id)}
+                      className="inline-flex items-center gap-1 rounded bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 px-2 py-0.5 text-[10px] font-semibold text-rose-300"
+                    >
+                      <Square className="h-2.5 w-2.5 fill-current" />
+                      <span>Cancel</span>
+                    </button>
                   </div>
                 )}
               </div>
@@ -827,13 +965,25 @@ function Progress() {
                   placeholder="Ask your coach or co-design a goal..."
                   className="h-9 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-indigo-500"
                 />
-                <Button
-                  size="sm"
-                  disabled={chatBusy || !chatInput.trim()}
-                  onClick={() => void handleSendCoachChat()}
-                >
-                  <Send className="h-3.5 w-3.5" />
-                </Button>
+                {runningChatJob ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => void handleCancelJob(runningChatJob.id)}
+                    className="border-rose-500/40 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                    title="Cancel current generation"
+                  >
+                    <Square className="h-3.5 w-3.5 fill-current" />
+                  </Button>
+                ) : (
+                  <Button
+                    size="sm"
+                    disabled={!chatInput.trim()}
+                    onClick={() => void handleSendCoachChat()}
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                  </Button>
+                )}
               </div>
             </CardContent>
           </Card>

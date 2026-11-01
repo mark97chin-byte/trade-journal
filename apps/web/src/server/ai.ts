@@ -186,6 +186,22 @@ export function splitThinkAndAnswer(rawText: string): {
   };
 }
 
+export async function abortKoboldGeneration(customUrl?: string): Promise<boolean> {
+  const cfg = loadLocalAiSettings();
+  const baseUrl = (customUrl || cfg.baseUrl).replace(/\/+$/, "").replace(/\/v1$/, "");
+  try {
+    await fetch(`${baseUrl}/api/extra/abort`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(2500),
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export async function runKoboldAi(
   prompt: string,
   options: {
@@ -196,6 +212,7 @@ export async function runKoboldAi(
     topP?: number;
     keepReasoning?: boolean;
     timeoutMs?: number;
+    abortSignal?: AbortSignal;
   } = {}
 ): Promise<{ text: string; reasoning: string; model: string }> {
   const cfg = loadLocalAiSettings();
@@ -225,7 +242,9 @@ export async function runKoboldAi(
       enable_thinking: true,
       stream: false,
     }),
-    signal: AbortSignal.timeout(timeoutMs),
+    signal: options.abortSignal
+      ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(timeoutMs)])
+      : AbortSignal.timeout(timeoutMs),
   });
 
   if (!res.ok) {

@@ -609,7 +609,54 @@ export function JournalEntryEditor({
   const [pullingNotion, setPullingNotion] = useState(false);
   const [editorKey, setEditorKey] = useState(0);
 
+  // Track exact content snapshot that was last synced with Notion per tab
+  const [lastNotionSyncedPrep, setLastNotionSyncedPrep] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem(`tz_notion_synced_${initialEntry.slug}_prep`);
+        if (saved !== null) return saved;
+      } catch {}
+    }
+    return initialEntry.notionPageId || initialEntry.notionUrl ? initialEntry.content || "" : "__UNSYNCED__";
+  });
+
+  const [lastNotionSyncedReview, setLastNotionSyncedReview] = useState<string>(() => {
+    if (typeof window !== "undefined") {
+      try {
+        const saved = localStorage.getItem(`tz_notion_synced_${initialEntry.slug}_review`);
+        if (saved !== null) return saved;
+      } catch {}
+    }
+    return initialEntry.reviewNotionPageId || initialEntry.reviewNotionUrl
+      ? initialEntry.reviewContent || ""
+      : "__UNSYNCED__";
+  });
+
+  const isCurrentTabNotionSynced = useMemo(() => {
+    if (activeTab === "review") {
+      if (!reviewNotionUrl) return "never";
+      return (reviewContent || "") === lastNotionSyncedReview ? "synced" : "dirty";
+    } else {
+      if (!notionUrl) return "never";
+      return (content || "") === lastNotionSyncedPrep ? "synced" : "dirty";
+    }
+  }, [
+    activeTab,
+    notionUrl,
+    reviewNotionUrl,
+    content,
+    reviewContent,
+    lastNotionSyncedPrep,
+    lastNotionSyncedReview,
+  ]);
+
   const handlePullFromNotion = useCallback(async () => {
+    const tabName = activeTab === "review" ? "Review" : "Session Notes (Prep)";
+    const confirmed = window.confirm(
+      `Pull latest "${tabName}" from Notion?\n\nThis will overwrite the current ${tabName} in the editor with the blocks from your Notion page.`
+    );
+    if (!confirmed) return;
+
     setPullingNotion(true);
     setSaveStatus(null);
     try {
@@ -628,10 +675,20 @@ export function JournalEntryEditor({
       if (data.notionPulled && data.entry) {
         setTitle(data.entry.title);
         if (activeTab === "review") {
-          setReviewContent(data.entry.reviewContent || "");
+          const pulledRev = data.entry.reviewContent || "";
+          setReviewContent(pulledRev);
+          setLastNotionSyncedReview(pulledRev);
+          try {
+            localStorage.setItem(`tz_notion_synced_${initialEntry.slug}_review`, pulledRev);
+          } catch {}
           if (data.entry.reviewNotionUrl) setReviewNotionUrl(data.entry.reviewNotionUrl);
         } else {
-          setContent(data.entry.content || "");
+          const pulledPrep = data.entry.content || "";
+          setContent(pulledPrep);
+          setLastNotionSyncedPrep(pulledPrep);
+          try {
+            localStorage.setItem(`tz_notion_synced_${initialEntry.slug}_prep`, pulledPrep);
+          } catch {}
           if (data.entry.notionUrl) setNotionUrl(data.entry.notionUrl);
         }
         setEditorKey((k) => k + 1);
@@ -683,6 +740,23 @@ export function JournalEntryEditor({
         }
         if (syncNotion) {
           if (data.notionSynced) {
+            if (activeTab === "review") {
+              setLastNotionSyncedReview(reviewContent || "");
+              try {
+                localStorage.setItem(
+                  `tz_notion_synced_${initialEntry.slug}_review`,
+                  reviewContent || ""
+                );
+              } catch {}
+            } else {
+              setLastNotionSyncedPrep(content || "");
+              try {
+                localStorage.setItem(
+                  `tz_notion_synced_${initialEntry.slug}_prep`,
+                  content || ""
+                );
+              } catch {}
+            }
             setSaveStatus(
               `Saved & Synced ${activeTab === "review" ? "Review Page" : "Prep Page"} to Notion!`
             );
@@ -964,12 +1038,47 @@ export function JournalEntryEditor({
             <ExternalLink className="w-3.5 h-3.5" />
           </a>
 
+          {/* Notion Sync Status Pill */}
+          <span
+            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-semibold ${
+              isCurrentTabNotionSynced === "synced"
+                ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                : isCurrentTabNotionSynced === "dirty"
+                ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
+                : "border-border/60 bg-secondary/40 text-muted-foreground"
+            }`}
+            title={
+              isCurrentTabNotionSynced === "synced"
+                ? "Latest edits on this tab have been pushed to Notion"
+                : isCurrentTabNotionSynced === "dirty"
+                ? "You have local edits that have not been pushed to Notion yet"
+                : "This tab has not been pushed to Notion yet"
+            }
+          >
+            <span
+              className={`h-1.5 w-1.5 rounded-full ${
+                isCurrentTabNotionSynced === "synced"
+                  ? "bg-emerald-400"
+                  : isCurrentTabNotionSynced === "dirty"
+                  ? "bg-amber-400"
+                  : "bg-muted-foreground"
+              }`}
+            />
+            <span>
+              {isCurrentTabNotionSynced === "synced"
+                ? "Notion Synced"
+                : isCurrentTabNotionSynced === "dirty"
+                ? "Unsynced to Notion"
+                : "Not in Notion"}
+            </span>
+          </span>
+
           <button
             type="button"
             onClick={handlePullFromNotion}
             disabled={pullingNotion || syncingNotion || saving}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition disabled:opacity-50"
-            title={`Pull ${activeTab === "review" ? "Review" : "Prep"} blocks from Notion`}
+            title={`Pull ${activeTab === "review" ? "Review" : "Prep"} blocks from Notion (asks for confirmation)`}
           >
             <ArrowDownToLine className="h-3.5 w-3.5" />
             <span>{pullingNotion ? "Pulling..." : "Pull from Notion"}</span>
@@ -977,9 +1086,13 @@ export function JournalEntryEditor({
           <button
             onClick={() => void handleSave(true)}
             disabled={syncingNotion || saving}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-border bg-secondary/70 hover:bg-secondary px-3 py-1.5 text-xs font-semibold text-foreground shadow-2xs transition disabled:opacity-50"
+            className={`inline-flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold shadow-2xs transition disabled:opacity-50 ${
+              isCurrentTabNotionSynced === "dirty"
+                ? "border-indigo-500 bg-indigo-600 hover:bg-indigo-500 text-white"
+                : "border-border bg-secondary/70 hover:bg-secondary text-foreground"
+            }`}
           >
-            <CloudUpload className="w-3.5 h-3.5 text-muted-foreground" />
+            <CloudUpload className="w-3.5 h-3.5" />
             <span>{syncingNotion ? "Syncing Notion..." : "Sync to Notion"}</span>
           </button>
 
