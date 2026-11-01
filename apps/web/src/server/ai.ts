@@ -20,6 +20,8 @@ export interface LocalAiSettings {
   baseUrl: string;
   modelsDir: string;
   activeModelFile: string;
+  baselineRiskPct?: number;
+  accountBalanceOverride?: number;
   general: PersonaConfig;
   coach: PersonaConfig;
 }
@@ -31,6 +33,8 @@ export const DEFAULT_LOCAL_AI_SETTINGS: LocalAiSettings = {
   baseUrl: process.env.KOBOLDCPP_URL || "http://100.75.201.34:5001",
   modelsDir: "~/koboldcpp/models",
   activeModelFile: "Qwen3.8-27B-Q4_K_M.gguf",
+  baselineRiskPct: 1.0,
+  accountBalanceOverride: 0,
   general: {
     contextSize: 16384,
     maxOutputTokens: 2048,
@@ -45,7 +49,7 @@ the trader knows. Keep it tight.`,
   },
   coach: {
     contextSize: 32768,
-    maxOutputTokens: 6144,
+    maxOutputTokens: 8192,
     temperature: 0.6,
     topP: 0.95,
     systemPrompt: `You are a longitudinal trading psychology and behavioral performance analyst.
@@ -85,7 +89,6 @@ export function loadLocalAiSettings(): LocalAiSettings {
   }
 }
 
-// Backward-compatible alias exports
 export const loadKoboldConfig = loadLocalAiSettings;
 
 export function saveLocalAiSettings(cfg: Partial<LocalAiSettings>): LocalAiSettings {
@@ -158,48 +161,6 @@ export async function probeKoboldStatus(customUrl?: string): Promise<{
   return { online: false, baseUrl, modelName: "Offline" };
 }
 
-export function splitThinkAndAnswer(rawText: string): {
-  reasoning: string;
-  answer: string;
-} {
-  if (!rawText) return { reasoning: "", answer: "" };
-  const thinkMatches: string[] = [];
-  let working = rawText;
-
-  // 1. Handle standard <think>...</think> blocks
-  working = working.replace(/<think>([\s\S]*?)<\/think>/gi, (_m, inner) => {
-    if (inner && inner.trim()) thinkMatches.push(inner.trim());
-    return "";
-  });
-
-  // 2. Handle orphaned closing </think> (when KoboldCpp AutoGuess adapter puts <think> in prompt)
-  if (working.toLowerCase().includes("</think>")) {
-    const parts = working.split(/<\/think>/i);
-    const tailAnswer = parts.pop() || "";
-    const leadingThought = parts.join("\n").replace(/<think>/gi, "").trim();
-    if (leadingThought) thinkMatches.push(leadingThought);
-    working = tailAnswer;
-  }
-
-  // 3. Handle unclosed <think> (still streaming thought)
-  if (working.toLowerCase().includes("<think>")) {
-    const [before, after] = working.split(/<think>/i);
-    if (after && after.trim()) thinkMatches.push(after.trim());
-    working = before || "";
-  }
-
-  // Strip any leftover "(Reasoning budget exceeded) Time to respond now." artifacts
-  working = working
-    .replace(/^\s*\(Reasoning budget exceeded\)\s*/i, "")
-    .replace(/^\s*Time to respond now\.?\s*/i, "")
-    .trim();
-
-  return {
-    reasoning: thinkMatches.join("\n\n").trim(),
-    answer: working,
-  };
-}
-
 export async function abortKoboldGeneration(customUrl?: string): Promise<boolean> {
   const cfg = loadLocalAiSettings();
   const baseUrl = (customUrl || cfg.baseUrl).replace(/\/+$/, "").replace(/\/v1$/, "");
@@ -216,6 +177,143 @@ export async function abortKoboldGeneration(customUrl?: string): Promise<boolean
   }
 }
 
+export function splitThinkAndAnswer(rawText: string): {
+  reasoning: string;
+  answer: string;
+} {
+  if (!rawText) return { reasoning: "", answer: "" };
+  const thinkMatches: string[] = [];
+  let working = rawText;
+
+  working = working.replace(/<think>([\s\S]*?)<\/think>/gi, (_m, inner) => {
+    if (inner && inner.trim()) thinkMatches.push(inner.trim());
+    return "";
+  });
+
+  if (working.toLowerCase().includes("</think>")) {
+    const parts = working.split(/<\/think>/i);
+    const tailAnswer = parts.pop() || "";
+    const leadingThought = parts.join("\n").replace(/<think>/gi, "").trim();
+    if (leadingThought) thinkMatches.push(leadingThought);
+    working = tailAnswer;
+  }
+
+  if (working.toLowerCase().includes("<think>")) {
+    const [before, after] = working.split(/<think>/i);
+    if (after && after.trim()) thinkMatches.push(after.trim());
+    working = before || "";
+  }
+
+  working = working
+    .replace(/^\s*\(Reasoning budget exceeded\)\s*/i, "")
+    .replace(/^\s*Time to respond now\.?\s*/i, "")
+    .trim();
+
+  return {
+    reasoning: thinkMatches.join("\n\n").trim(),
+    answer: working,
+  };
+}
+
+async function singleKoboldStreamCall(
+  baseUrl: string,
+  messages: Array<{ role: string; content: string }>,
+  params: {
+    maxTokens: number;
+    temperature: number;
+    topP: number;
+    reasoningEffort: string;
+    enableThinking: boolean;
+    timeoutMs: number;
+    abortSignal?: AbortSignal;
+    onDelta?: (rawAcc: string, reasoningAcc: string) => void;
+  }
+): Promise<{ rawContent: string; explicitReasoning: string; finishReason: string }> {
+  const res = await fetch(`${baseUrl}/v1/chat/completions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      model: "koboldcpp",
+      messages,
+      max_tokens: params.maxTokens,
+      temperature: params.temperature,
+      top_p: params.topP,
+      top_k: 20,
+      min_p: 0.0,
+      reasoning_effort: params.reasoningEffort,
+      enable_thinking: params.enableThinking,
+      stream: true,
+    }),
+    signal: params.abortSignal
+      ? AbortSignal.any([params.abortSignal, AbortSignal.timeout(params.timeoutMs)])
+      : AbortSignal.timeout(params.timeoutMs),
+  });
+
+  if (!res.ok) {
+    const errText = await res.text().catch(() => "");
+    throw new Error(`KoboldCpp error (${res.status}): ${errText.slice(0, 240)}`);
+  }
+
+  const reader = res.body?.getReader();
+  if (!reader) {
+    const json = (await res.json()) as any;
+    const choice = json?.choices?.[0];
+    return {
+      rawContent: choice?.message?.content || "",
+      explicitReasoning: choice?.message?.reasoning_content || choice?.message?.reasoning || "",
+      finishReason: choice?.finish_reason || "stop",
+    };
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let accumulatedRaw = "";
+  let accumulatedReasoning = "";
+  let finishReason = "stop";
+  let lastEmitMs = 0;
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split("\n");
+    buffer = lines.pop() || "";
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const dataStr = trimmed.slice(5).trim();
+      if (!dataStr || dataStr === "[DONE]") continue;
+      try {
+        const parsedChunk = JSON.parse(dataStr);
+        const choice = parsedChunk?.choices?.[0];
+        if (choice?.finish_reason) {
+          finishReason = choice.finish_reason;
+        }
+        const delta = choice?.delta;
+        if (delta) {
+          if (delta.content) accumulatedRaw += delta.content;
+          if (delta.reasoning_content || delta.reasoning) {
+            accumulatedReasoning += delta.reasoning_content || delta.reasoning;
+          }
+        }
+      } catch {}
+    }
+
+    const now = Date.now();
+    if (now - lastEmitMs > 1200 && params.onDelta) {
+      lastEmitMs = now;
+      params.onDelta(accumulatedRaw, accumulatedReasoning);
+    }
+  }
+
+  return {
+    rawContent: accumulatedRaw,
+    explicitReasoning: accumulatedReasoning,
+    finishReason,
+  };
+}
+
 export async function runKoboldAi(
   prompt: string,
   options: {
@@ -226,6 +324,7 @@ export async function runKoboldAi(
     topP?: number;
     keepReasoning?: boolean;
     thinkingMode?: "fast" | "balanced" | "deep";
+    autoContinue?: boolean;
     timeoutMs?: number;
     abortSignal?: AbortSignal;
     onPartial?: (partial: { text: string; reasoning: string }) => void;
@@ -238,121 +337,102 @@ export async function runKoboldAi(
 
   let systemPrompt = options.system || persona.systemPrompt;
   if (thinkingMode === "fast") {
-    systemPrompt += "\n\nIMPORTANT: Respond directly with your final analysis. Keep internal <think> reasoning brief (under 150 words) or skip it entirely.";
+    systemPrompt +=
+      "\n\nIMPORTANT: Respond directly with your final Markdown analysis. Do NOT output long internal <think> monologues.";
+  } else if (thinkingMode === "balanced") {
+    systemPrompt +=
+      "\n\nIMPORTANT: Keep your internal <think> reasoning concise (under 350 words) so you have plenty of token budget to complete all 5 report sections and the closing JSON block without cutting off.";
   }
 
-  const maxTokens = options.maxOutputTokens ?? persona.maxOutputTokens ?? 4096;
+  const maxTokens = Math.max(options.maxOutputTokens ?? persona.maxOutputTokens ?? 6144, 4096);
   const temperature = options.temperature ?? persona.temperature ?? 0.6;
   const topP = options.topP ?? persona.topP ?? 0.95;
-  // 30-minute timeout ceiling so deep CPU/GPU hybrid audits NEVER get cut off at 480s!
   const timeoutMs = options.timeoutMs ?? (options.persona === "coach" ? 1_800_000 : 180_000);
-
   const reasoningEffort =
     thinkingMode === "fast" ? "low" : thinkingMode === "deep" ? "high" : "medium";
 
-  const useStream = Boolean(options.onPartial);
-
-  const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      model: "koboldcpp",
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt },
-      ],
-      max_tokens: maxTokens,
+  const firstPass = await singleKoboldStreamCall(
+    baseUrl,
+    [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: prompt },
+    ],
+    {
+      maxTokens,
       temperature,
-      top_p: topP,
-      top_k: 20,
-      min_p: 0.0,
-      reasoning_effort: reasoningEffort,
-      enable_thinking: thinkingMode !== "fast",
-      stream: useStream,
-    }),
-    signal: options.abortSignal
-      ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(timeoutMs)])
-      : AbortSignal.timeout(timeoutMs),
-  });
-
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`KoboldCpp error (${res.status}): ${errText.slice(0, 240)}`);
-  }
-
-  if (useStream && res.body) {
-    const reader = res.body.getReader();
-    const decoder = new TextDecoder();
-    let buffer = "";
-    let accumulatedRaw = "";
-    let accumulatedReasoning = "";
-    let lastEmitMs = 0;
-
-    while (true) {
-      const { value, done } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() || "";
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith("data:")) continue;
-        const dataStr = trimmed.slice(5).trim();
-        if (!dataStr || dataStr === "[DONE]") continue;
-        try {
-          const parsedChunk = JSON.parse(dataStr);
-          const delta = parsedChunk?.choices?.[0]?.delta;
-          if (delta) {
-            if (delta.content) accumulatedRaw += delta.content;
-            if (delta.reasoning_content || delta.reasoning) {
-              accumulatedReasoning += delta.reasoning_content || delta.reasoning;
-            }
-          }
-        } catch {}
-      }
-
-      const now = Date.now();
-      if (now - lastEmitMs > 1200 && options.onPartial) {
-        lastEmitMs = now;
-        const split = splitThinkAndAnswer(accumulatedRaw);
+      topP,
+      reasoningEffort,
+      enableThinking: thinkingMode !== "fast",
+      timeoutMs,
+      abortSignal: options.abortSignal,
+      onDelta: (rawAcc, reasonAcc) => {
+        if (!options.onPartial) return;
+        const split = splitThinkAndAnswer(rawAcc);
         options.onPartial({
           text: split.answer,
-          reasoning: [accumulatedReasoning, split.reasoning].filter(Boolean).join("\n\n"),
+          reasoning: [reasonAcc, split.reasoning].filter(Boolean).join("\n\n"),
         });
-      }
+      },
     }
+  );
 
-    const finalSplit = splitThinkAndAnswer(accumulatedRaw);
-    const finalReasoning = [accumulatedReasoning, finalSplit.reasoning].filter(Boolean).join("\n\n");
-    const finalAnswer = finalSplit.answer || accumulatedRaw;
+  const firstSplit = splitThinkAndAnswer(firstPass.rawContent);
+  let combinedAnswer = firstSplit.answer;
+  let combinedReasoning = [firstPass.explicitReasoning, firstSplit.reasoning]
+    .filter(Boolean)
+    .join("\n\n");
 
-    return {
-      text:
-        options.keepReasoning && finalReasoning
-          ? `<think>\n${finalReasoning}\n</think>\n\n${finalAnswer}`
-          : finalAnswer,
-      reasoning: finalReasoning,
-      model: cfg.activeModelFile || "koboldcpp",
-    };
+  // Auto-Continuation: If the model hit max_tokens or got cut off mid-sentence before finishing
+  const looksCutOff =
+    firstPass.finishReason === "length" ||
+    (options.autoContinue &&
+      combinedAnswer.length > 100 &&
+      !/[.!?>`\]}]\s*$/.test(combinedAnswer.trim()));
+
+  if (looksCutOff && options.autoContinue !== false && !options.abortSignal?.aborted) {
+    const contPass = await singleKoboldStreamCall(
+      baseUrl,
+      [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: prompt },
+        { role: "assistant", content: combinedAnswer },
+        {
+          role: "user",
+          content:
+            "Continue seamlessly from the exact word where you stopped above. Do NOT repeat what was already written—finish the remaining sections and append the closing ```json block.",
+        },
+      ],
+      {
+        maxTokens: 4096,
+        temperature,
+        topP,
+        reasoningEffort: "low",
+        enableThinking: false,
+        timeoutMs,
+        abortSignal: options.abortSignal,
+        onDelta: (rawCont) => {
+          if (!options.onPartial) return;
+          const contSplit = splitThinkAndAnswer(rawCont);
+          options.onPartial({
+            text: `${combinedAnswer}${contSplit.answer}`,
+            reasoning: combinedReasoning,
+          });
+        },
+      }
+    );
+    const contSplit = splitThinkAndAnswer(contPass.rawContent);
+    if (contSplit.answer) {
+      combinedAnswer = `${combinedAnswer.trimEnd()} ${contSplit.answer.trimStart()}`;
+    }
   }
-
-  const json = (await res.json()) as any;
-  const choice = json?.choices?.[0]?.message;
-  const rawContent: string = choice?.content || "";
-  const explicitReasoning: string = choice?.reasoning_content || choice?.reasoning || "";
-
-  const parsed = splitThinkAndAnswer(rawContent);
-  const finalReasoning = [explicitReasoning, parsed.reasoning].filter(Boolean).join("\n\n");
-  const finalAnswer = parsed.answer || rawContent;
 
   return {
     text:
-      options.keepReasoning && finalReasoning
-        ? `<think>\n${finalReasoning}\n</think>\n\n${finalAnswer}`
-        : finalAnswer,
-    reasoning: finalReasoning,
-    model: json?.model || cfg.activeModelFile || "koboldcpp",
+      options.keepReasoning && combinedReasoning
+        ? `<think>\n${combinedReasoning}\n</think>\n\n${combinedAnswer}`
+        : combinedAnswer,
+    reasoning: combinedReasoning,
+    model: cfg.activeModelFile || "koboldcpp",
   };
 }
 
@@ -375,15 +455,16 @@ export const runAi = async (prompt: string, maxOutputTokens = 1200): Promise<str
     try {
       const result = await runKoboldAi(prompt, {
         persona: "general",
+        thinkingMode: "fast",
         maxOutputTokens: Math.max(maxOutputTokens + 1500, 2500),
       });
       if (result.text.trim()) return result.text.trim();
-    } catch (koboldErr) {
+    } catch {
       const fallbackProvider = getAiProvider();
       const fallbackKey = getAiKey(fallbackProvider);
       if (!fallbackKey) {
         throw new Error(
-          `KoboldCpp server (${local.baseUrl}) is unreachable. Run ~/koboldcpp/start-kobold.sh on your Fedora desktop.`
+          `KoboldCpp server (${local.baseUrl}) is unreachable. Start the server in Settings -> AI.`
         );
       }
     }

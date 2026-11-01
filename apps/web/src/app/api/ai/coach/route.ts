@@ -1,5 +1,4 @@
 import { NextRequest, NextResponse } from "next/server";
-import { exec } from "child_process";
 import Database from "better-sqlite3";
 import { parse } from "node-html-parser";
 import path from "path";
@@ -19,11 +18,11 @@ const activeJobControllers = new Map<string, AbortController>();
 
 function getControlDaemonUrl(baseUrl: string): string {
   try {
-    const clean = (baseUrl || "http://100.75.201.34:5001").replace(/\/+$/, "").replace(/\/v1$/, "");
+    const clean = (baseUrl || "[http://100.75.201.34:5001](http://100.75.201.34:5001)").replace(/\/+$/, "").replace(/\/v1$/, "");
     const u = new URL(clean.startsWith("http") ? clean : `http://${clean}`);
     return `${u.protocol}//${u.hostname}:5002`;
   } catch {
-    return "http://100.75.201.34:5002";
+    return "[http://100.75.201.34:5002](http://100.75.201.34:5002)";
   }
 }
 
@@ -116,7 +115,6 @@ function ensureCoachTables(db: Database.Database) {
     );
   `);
 
-  // Safe migration for action_items_json and report_id on existing DBs
   try {
     db.exec(`ALTER TABLE ai_coach_reports ADD COLUMN action_items_json TEXT DEFAULT '[]'`);
   } catch {}
@@ -196,44 +194,64 @@ function computeMedian(values: number[]): number {
   return sorted.length % 2 !== 0 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-// Compute 1R Dollar Risk for a trade (independent of raw lot size!)
-function estimateTrade1RDollarRisk(t: any): number | null {
+// Compute Implied Capital Risked ($) on a trade regardless of whether user risked 0.5% or 1.0% as "1R"
+function estimateTradeCapitalRiskedUsd(t: any): number | null {
   const netPnl = Number(t.net_pnl || 0);
   const rMult = Number(t.realized_r);
-  // 1. If realized_r is known and non-trivial, 1R $ Risk = |netPnl / realizedR|
   if (Number.isFinite(rMult) && Math.abs(rMult) >= 0.15 && Math.abs(netPnl) > 0) {
     return Math.round(Math.abs(netPnl / rMult) * 100) / 100;
   }
-  // 2. If it's a losing trade without explicit R tag, the loss magnitude approximates 1R risk
   if (netPnl < 0) {
     return Math.round(Math.abs(netPnl) * 100) / 100;
   }
   return null;
 }
 
-function summarizeBucketMetrics(bucketTrades: any[], baseline1RUsd: number) {
+function summarizeBucketMetrics(bucketTrades: any[], targetRiskPct: number) {
   const count = bucketTrades.length;
   if (count === 0) {
-    return { trades: 0, netPnl: 0, winRatePct: 0, avgRisk1RUsd: 0, riskDriftCount: 0, revengeCount: 0 };
+    return {
+      trades: 0,
+      netPnl: 0,
+      netAcctPct: 0,
+      winRatePct: 0,
+      avgAccountRiskPct: 0,
+      halfRiskTradesCount: 0,
+      standardRiskTradesCount: 0,
+      oversizedRiskTradesCount: 0,
+      revengeCount: 0,
+    };
   }
   let wins = 0;
   let netPnl = 0;
-  let riskDriftCount = 0;
+  let netAcctPct = 0;
+  let halfRiskTradesCount = 0;
+  let standardRiskTradesCount = 0;
+  let oversizedRiskTradesCount = 0;
   let revengeCount = 0;
-  const risks: number[] = [];
+  const riskPcts: number[] = [];
 
   for (let i = 0; i < bucketTrades.length; i++) {
     const t = bucketTrades[i];
     const pnl = Number(t.net_pnl || 0);
     netPnl += pnl;
+    if (t.accountPnlPct !== null && t.accountPnlPct !== undefined) {
+      netAcctPct += Number(t.accountPnlPct);
+    }
     if (pnl > 0) wins += 1;
-    const rUsd = estimateTrade1RDollarRisk(t);
-    if (rUsd !== null) {
-      risks.push(rUsd);
-      if (baseline1RUsd > 0 && rUsd > baseline1RUsd * 1.35) {
-        riskDriftCount += 1;
+
+    const rPct = t.accountRiskPct;
+    if (typeof rPct === "number" && rPct > 0) {
+      riskPcts.push(rPct);
+      if (rPct < targetRiskPct * 0.72) {
+        halfRiskTradesCount += 1; // e.g., 0.5% probe risk when target is 1.0%
+      } else if (rPct > targetRiskPct * 1.30) {
+        oversizedRiskTradesCount += 1; // >1.3% risk expansion
+      } else {
+        standardRiskTradesCount += 1; // ~1.0% standard risk
       }
     }
+
     if (i > 0) {
       const prev = bucketTrades[i - 1];
       const prevPnl = Number(prev.net_pnl || 0);
@@ -244,16 +262,73 @@ function summarizeBucketMetrics(bucketTrades: any[], baseline1RUsd: number) {
     }
   }
 
-  const avgRisk1RUsd =
-    risks.length > 0 ? Math.round(risks.reduce((a, b) => a + b, 0) / risks.length) : 0;
+  const avgAccountRiskPct =
+    riskPcts.length > 0
+      ? Math.round((riskPcts.reduce((a, b) => a + b, 0) / riskPcts.length) * 100) / 100
+      : 0;
 
   return {
     trades: count,
     netPnl: Math.round(netPnl * 100) / 100,
+    netAcctPct: Math.round(netAcctPct * 100) / 100,
     winRatePct: Math.round((wins / count) * 1000) / 10,
-    avgRisk1RUsd,
-    riskDriftCount,
+    avgAccountRiskPct,
+    halfRiskTradesCount,
+    standardRiskTradesCount,
+    oversizedRiskTradesCount,
     revengeCount,
+  };
+}
+
+function computeAuditDueStatus(db: Database.Database) {
+  const now = new Date();
+  const getLatest = (hz: string) =>
+    db
+      .prepare(`SELECT id, title, created_at FROM ai_coach_reports WHERE horizon = ? ORDER BY created_at DESC LIMIT 1`)
+      .get(hz) as { id: string; title: string; created_at: string } | undefined;
+
+  const wLast = getLatest("weekly");
+  const mLast = getLatest("monthly");
+  const qLast = getLatest("quarterly");
+
+  const daysSince = (iso?: string) =>
+    iso ? Math.floor((now.getTime() - new Date(iso).getTime()) / 86_400_000) : 999;
+
+  const wDays = daysSince(wLast?.created_at);
+  const mDays = daysSince(mLast?.created_at);
+  const qDays = daysSince(qLast?.created_at);
+
+  return {
+    weekly: {
+      due: wDays >= 7,
+      daysSinceLast: wLast ? wDays : null,
+      lastRunAt: wLast?.created_at || null,
+      reason: !wLast
+        ? "No Weekly Audit run yet"
+        : wDays >= 7
+        ? `Last Weekly Audit was ${wDays} days ago`
+        : `Up to date (${wDays}d ago)`,
+    },
+    monthly: {
+      due: mDays >= 28,
+      daysSinceLast: mLast ? mDays : null,
+      lastRunAt: mLast?.created_at || null,
+      reason: !mLast
+        ? "No Monthly Audit run yet"
+        : mDays >= 28
+        ? `Last Monthly Audit was ${mDays} days ago`
+        : `Up to date (${mDays}d ago)`,
+    },
+    quarterly: {
+      due: qDays >= 85,
+      daysSinceLast: qLast ? qDays : null,
+      lastRunAt: qLast?.created_at || null,
+      reason: !qLast
+        ? "No Quarterly Audit run yet"
+        : qDays >= 85
+        ? `Last Quarterly Audit was ${qDays} days ago`
+        : `Up to date (${qDays}d ago)`,
+    },
   };
 }
 
@@ -263,17 +338,12 @@ function buildBehavioralTelemetryAndJournals(
   customScope?: CustomAuditScope
 ) {
   const now = new Date();
+  const settings = loadLocalAiSettings();
+  const targetRiskPct = Number(settings.baselineRiskPct || 1.0); // Standard 1R = 1.0% of Account
+
   const lookbackDays =
     horizon === "weekly" ? 28 : horizon === "monthly" ? 120 : horizon === "quarterly" ? 270 : 365;
   const cutoffIso = new Date(now.getTime() - lookbackDays * 86_400_000).toISOString().slice(0, 10);
-
-  // Estimate Account Balance Reference from accounts table if available
-  let accountBaselineBalance = 50000;
-  try {
-    const accRows = db.prepare(`SELECT initial_balance FROM accounts`).all() as any[];
-    const sumInit = accRows.reduce((acc, r) => acc + Number(r.initial_balance || 0), 0);
-    if (sumInit > 0) accountBaselineBalance = sumInit;
-  } catch {}
 
   let allTrades: any[] = [];
   try {
@@ -303,12 +373,48 @@ function buildBehavioralTelemetryAndJournals(
 
   allTrades.sort((a, b) => String(a.opened_at).localeCompare(String(b.opened_at)));
 
-  // Calculate Trader's Baseline 1R Risk ($ and % of Account) across all recent trades
-  const all1RRisks = allTrades
-    .map((t) => estimateTrade1RDollarRisk(t))
+  // Determine Initial Account Balance:
+  // 1. User override in settings -> 2. Sum of accounts.initial_balance -> 3. Inferred from Median Full Risk $ = targetRiskPct (1%)
+  const allCapitalRisks = allTrades
+    .map((t) => estimateTradeCapitalRiskedUsd(t))
     .filter((v): v is number => v !== null && v > 0);
-  const baseline1RUsd = Math.round(computeMedian(all1RRisks) * 100) / 100 || 500;
-  const baseline1RPct = Math.round((baseline1RUsd / accountBaselineBalance) * 10000) / 100;
+  const medianRiskUsd = Math.round(computeMedian(allCapitalRisks) * 100) / 100 || 500;
+
+  let initialAccountBalance = Number(settings.accountBalanceOverride || 0);
+  if (initialAccountBalance <= 0) {
+    try {
+      const accRows = db.prepare(`SELECT initial_balance FROM accounts`).all() as any[];
+      const sumInit = accRows.reduce((acc, r) => acc + Number(r.initial_balance || 0), 0);
+      if (sumInit > 0) initialAccountBalance = sumInit;
+    } catch {}
+  }
+  if (initialAccountBalance <= 0) {
+    // Infer account size so that median 1R trade risk equals targetRiskPct (1.0% of account)
+    initialAccountBalance = Math.round((medianRiskUsd / (targetRiskPct / 100)) * 100) / 100;
+  }
+
+  // Compute dynamic running equity & Account % Risk for every trade chronologically
+  let runningEquity = initialAccountBalance;
+  for (const t of allTrades) {
+    const eqBeforeTrade = Math.max(runningEquity, initialAccountBalance * 0.25);
+    const capRiskUsd = estimateTradeCapitalRiskedUsd(t);
+    t.equityAtTrade = Math.round(eqBeforeTrade);
+    t.estimated1RUsd = capRiskUsd;
+    t.accountRiskPct =
+      capRiskUsd !== null
+        ? Math.round(((capRiskUsd / eqBeforeTrade) * 100) * 100) / 100
+        : null;
+    t.accountPnlPct = Math.round(((Number(t.net_pnl || 0) / eqBeforeTrade) * 100) * 100) / 100;
+    t.riskTier =
+      t.accountRiskPct === null
+        ? "unknown"
+        : t.accountRiskPct < targetRiskPct * 0.72
+        ? `reduced_risk (~${t.accountRiskPct}%)`
+        : t.accountRiskPct > targetRiskPct * 1.30
+        ? `oversized_risk (~${t.accountRiskPct}%)`
+        : `standard_risk (~${t.accountRiskPct}%)`;
+    runningEquity += Number(t.net_pnl || 0);
+  }
 
   const trades =
     customScope?.selectedTradeKeys && customScope.selectedTradeKeys.length > 0
@@ -320,7 +426,7 @@ function buildBehavioralTelemetryAndJournals(
   let revengeWins = 0;
   let postLossRiskExpansionCount = 0;
   let postWinRiskExpansionCount = 0;
-  let riskReductionAfterLossCount = 0;
+  let intentionalDownsizeCount = 0;
   const mistakeCounts: Record<string, number> = {};
   const tagCounts: Record<string, number> = {};
   const sessionStats: Record<string, { trades: number; pnl: number; wins: number }> = {};
@@ -329,11 +435,11 @@ function buildBehavioralTelemetryAndJournals(
   for (let i = 0; i < trades.length; i++) {
     const t = trades[i];
     const pnl = Number(t.net_pnl || 0);
-    const trade1RUsd = estimateTrade1RDollarRisk(t);
-    t.estimated1RUsd = trade1RUsd;
-    t.estimatedRiskPct = trade1RUsd
-      ? Math.round((trade1RUsd / accountBaselineBalance) * 10000) / 100
-      : null;
+    const rPct = t.accountRiskPct;
+
+    if (typeof rPct === "number" && rPct < targetRiskPct * 0.72) {
+      intentionalDownsizeCount += 1;
+    }
 
     const dayKey = String(t.opened_at || "").slice(0, 10);
     const dStat = dailyMap.get(dayKey) || { trades: 0, pnl: 0, peakPnl: 0, giveback: 0 };
@@ -381,34 +487,20 @@ function buildBehavioralTelemetryAndJournals(
         if (pnl > 0) revengeWins += 1;
       }
 
-      // Risk-Normalized Sizing Drift: compare this trade's 1R $ Risk against Baseline 1R $ Risk (NOT lot size!)
-      if (trade1RUsd !== null && baseline1RUsd > 0) {
-        if (prevPnl < 0 && trade1RUsd > baseline1RUsd * 1.35) {
+      if (typeof rPct === "number") {
+        if (prevPnl < 0 && rPct > targetRiskPct * 1.30) {
           postLossRiskExpansionCount += 1;
         }
-        if (prevPnl > 0 && trade1RUsd > baseline1RUsd * 1.35) {
+        if (prevPnl > 0 && rPct > targetRiskPct * 1.30) {
           postWinRiskExpansionCount += 1;
-        }
-        if (prevPnl < 0 && trade1RUsd < baseline1RUsd * 0.65) {
-          riskReductionAfterLossCount += 1;
         }
       }
     }
   }
 
-  // Build Period-over-Period Comparison Buckets (Target Period vs Prior 3 Periods)
   const stepDays =
     horizon === "weekly" ? 7 : horizon === "monthly" ? 30 : horizon === "quarterly" ? 90 : 365;
-  const periodComparisonBuckets: Array<{
-    periodLabel: string;
-    dateRange: string;
-    trades: number;
-    netPnl: number;
-    winRatePct: number;
-    avgRisk1RUsd: number;
-    riskDriftCount: number;
-    revengeCount: number;
-  }> = [];
+  const periodComparisonBuckets: Array<any> = [];
 
   for (let p = 0; p < 4; p++) {
     const endMs = now.getTime() - p * stepDays * 86_400_000;
@@ -426,7 +518,7 @@ function buildBehavioralTelemetryAndJournals(
     periodComparisonBuckets.push({
       periodLabel: label,
       dateRange: `${startIso} to ${endIso}`,
-      ...summarizeBucketMetrics(bucketTrades, baseline1RUsd),
+      ...summarizeBucketMetrics(bucketTrades, targetRiskPct),
     });
   }
 
@@ -533,16 +625,18 @@ function buildBehavioralTelemetryAndJournals(
     totalTrades: trades.length,
     winRatePct: trades.length > 0 ? Math.round((winsCount / trades.length) * 1000) / 10 : 0,
     totalNetPnl: Math.round(totalNetPnl * 100) / 100,
-    baseline1RUsd,
-    baseline1RPct,
+    initialAccountBalance,
+    currentEquity: Math.round(runningEquity * 100) / 100,
+    targetRiskPct,
+    baseline1RUsd: medianRiskUsd,
+    baseline1RPct: targetRiskPct,
     revengeTradesCount: revengeCount,
     revengeWinRatePct: revengeCount > 0 ? Math.round((revengeWins / revengeCount) * 100) : 0,
     revengeNetPnl: Math.round(revengePnl * 100) / 100,
-    // Keep both names so UI compatibility is preserved while measuring 1R Risk % expansion
     postLossSizeExpansionCount: postLossRiskExpansionCount,
     postLossRiskExpansionCount,
     postWinRiskExpansionCount,
-    riskReductionAfterLossCount,
+    intentionalDownsizeCount,
     periodComparisonBuckets,
     profitGivebackDays,
     topMistakes: Object.entries(mistakeCounts)
@@ -577,7 +671,9 @@ function buildBehavioralTelemetryAndJournals(
       openedAt: t.opened_at,
       netPnl: t.net_pnl,
       realizedR: t.realized_r,
-      estimated1RUsd: estimateTrade1RDollarRisk(t),
+      estimated1RUsd: t.estimated1RUsd,
+      accountRiskPct: t.accountRiskPct,
+      accountPnlPct: t.accountPnlPct,
       mistakes: t.mistakes,
       tags: t.tags,
       hasNotes: Boolean((t.notes || "").trim()),
@@ -587,7 +683,6 @@ function buildBehavioralTelemetryAndJournals(
   };
 }
 
-// Fallback extractor if the LLM omits the ```json block at the end of a report
 function extractFallbackActionItems(markdown: string, horizon: GoalHorizon): ReportActionItem[] {
   const items: ReportActionItem[] = [];
   const lines = markdown.split("\n");
@@ -678,14 +773,20 @@ async function executeAuditJobInBackground(
 You do NOT evaluate the trader's technical chart model.
 ${horizonRoleGuide}
 
-CRITICAL SIZING RULE: The trader sizes positions by risking a % of account equity (1R) based on stop distance—so raw lot/contract quantities naturally vary per setup. NEVER judge sizing drift by raw lot size! Only evaluate sizing discipline using the provided 1R Dollar Risk (\`estimated1RUsd\`) and \`postLossRiskExpansionCount\` relative to their baseline 1R ($${telemetry.baseline1RUsd} / ${telemetry.baseline1RPct}%).
+CRITICAL ACCOUNT % RISK RULE:
+The trader's standard full risk is ${telemetry.targetRiskPct}% of account equity (~$${telemetry.baseline1RUsd} on a $${telemetry.initialAccountBalance} account).
+However, in their trade log, "Realized R" is relative to whatever risk was placed on that specific trade—meaning if the trader intentionally scales down to 0.5% account risk, a stop-out still reads as "-1R" in trade R, even though it only risked 0.5% of the account!
+Therefore, ALWAYS evaluate sizing discipline using the provided \`accountRiskPct\` (% of account risked on the trade) and \`accountPnlPct\` (% of account won/lost), NOT raw lot sizes or raw Trade R alone!
+- \`reduced_risk (<0.72%)\` = intentional half/probe risk (e.g. 0.5% of account)
+- \`standard_risk (0.72%–1.30%)\` = standard 1% account risk
+- \`oversized_risk (>1.30%)\` = sizing expansion / tilt above 1% standard risk
 
-CLICKABLE LINKS RULE: Whenever you reference a specific trade or journal entry, format it as a clickable Markdown link using the exact URL provided in the data below, e.g. \`[NAS100 Short 10/19 (-$499.20)](/trades?symbol=NAS100&from=2026-10-19&to=2026-10-19)\` or \`[Journal 2026-W42](/journal?slug=2026-W42)\`.
+CLICKABLE LINKS RULE: Whenever you reference a specific trade or journal entry, format it as a clickable Markdown link using the exact URL provided in the data below, e.g. \`[NAS100 Short 10/19 (-$499.20 | 1.0% Risk)](/trades?symbol=NAS100&from=2026-10-19&to=2026-10-19)\` or \`[Journal 2026-W42](/journal?slug=2026-W42)\`.
 ${customFocusSection}
-=== 1. PERIOD-OVER-PERIOD COMPARISON TABLE (${horizon.toUpperCase()} DELTAS) ===
+=== 1. PERIOD-OVER-PERIOD COMPARISON TABLE (${horizon.toUpperCase()} DELTAS — ACCOUNT % RISK NORMALIZED) ===
 ${JSON.stringify(telemetry.periodComparisonBuckets, null, 2)}
 
-=== 2. OVERALL BEHAVIORAL TELEMETRY (1R RISK NORMALIZED) ===
+=== 2. OVERALL BEHAVIORAL TELEMETRY (ACCOUNT % RISK NORMALIZED) ===
 ${JSON.stringify(telemetry, null, 2)}
 
 === 3. ACTIVE GOALS TO AUDIT FOR ACCOUNTABILITY ===
@@ -695,15 +796,15 @@ ${activeGoals.length > 0 ? activeGoals.map((g) => `ID: ${g.id} | [${g.horizon.to
 ${parsedJournals.length > 0 ? parsedJournals.map((j: any) => `### JOURNAL [${j.slug}](${j.journalUrl}) (${j.periodType.toUpperCase()}): ${j.title}\n- Process Score: ${j.processRating ?? "N/A"}% | Sub-scores: ${JSON.stringify(j.scores)}\n- Key Takeaway: ${j.lessonsLearned || "None recorded"}\n- Self-Reflection Quotes: ${JSON.stringify(j.qaReflections)}${j.prepSummary ? `\n- Prep Notes: ${j.prepSummary}` : ""}${j.reviewSummary ? `\n- Review Notes: ${j.reviewSummary}` : ""}`).join("\n\n") : "No journal entries in selection."}
 
 === 5. SELECTED / RECENT TRADES (LINK WITH [Symbol Direction Date](tradeUrl)) ===
-${recentTradesSample.length > 0 ? recentTradesSample.map((t: any) => `- [${t.symbol} ${t.direction} ${t.opened_at?.slice(0, 10)} ($${t.net_pnl} | ${t.realized_r ?? "?"}R | 1R Risk ~$${t.estimated1RUsd ?? "?"})](${t.tradeUrl}) | Mistakes=${JSON.stringify(t.mistakes)} | Tags=${JSON.stringify(t.tags)} | Notes=${(t.notes || "").replace(/<[^>]+>/g, " ").slice(0, 180)}`).join("\n") : "No closed trades in this selection."}
+${recentTradesSample.length > 0 ? recentTradesSample.map((t: any) => `- [${t.symbol} ${t.direction} ${t.opened_at?.slice(0, 10)} ($${t.net_pnl} | Acct PnL: ${t.accountPnlPct}% | Acct Risk: ${t.accountRiskPct ?? "?"}% [${t.riskTier}] | Trade R: ${t.realized_r ?? "?"}R)](${t.tradeUrl}) | Mistakes=${JSON.stringify(t.mistakes)} | Tags=${JSON.stringify(t.tags)} | Notes=${(t.notes || "").replace(/<[^>]+>/g, " ").slice(0, 180)}`).join("\n") : "No closed trades in this selection."}
 
 === 6. PREVIOUS ${horizon.toUpperCase()} AI REPORTS (FOR LONGITUDINAL CONTINUITY) ===
 ${priorReports.length > 0 ? priorReports.map((r) => `[${r.created_at.slice(0, 10)} | ${r.title}]:\n${r.summary_md.slice(0, 900)}`).join("\n---\n") : "First report in this horizon series."}
 
 === INSTRUCTIONS ===
-Write a thorough, candid, deeply insightful report in Markdown with these exact 5 sections:
-1. **Period-over-Period Trajectory (${horizon.toUpperCase()} Comparison)**: Compare the Target ${horizon} against the previous periods using the comparison buckets and journals. What improved vs. what regressed?
-2. **Psychological & Emotional Pattern Recognition**: Connect the trader's self-reflection quotes and review notes with their 1R risk consistency, hesitation, or execution telemetry. Include clickable Markdown links to specific trades and journals!
+Write a complete, candid, deeply insightful report in Markdown with these exact 5 sections (ensure you complete all 5 sections and the JSON block without cutting off):
+1. **Period-over-Period Trajectory (${horizon.toUpperCase()} Comparison)**: Compare the Target ${horizon} against the previous periods using the comparison buckets and journals.
+2. **Psychological & Account % Risk Pattern Recognition**: Connect the trader's self-reflection quotes and review notes with their Account % Risk consistency (0.5% probe vs 1.0% standard vs >1.3% oversized), hesitation, or execution telemetry. Include clickable Markdown links!
 3. **Goal Accountability Audit**: Grade active goals with specific evidence.
 4. **Concrete Action Plan & Next Steps (What to Work On Now)**: 3 to 5 specific, trackable action steps for the upcoming sessions.
 5. **Recommended Multi-Level Goals (Weekly -> Monthly -> Quarterly)**
@@ -757,11 +858,12 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
     const thinkingMode = customScope?.thinkingMode || "balanced";
     const maxOut =
       customScope?.maxOutputTokens ||
-      (thinkingMode === "fast" ? 4096 : thinkingMode === "balanced" ? 6144 : 10240);
+      (thinkingMode === "fast" ? 6144 : thinkingMode === "balanced" ? 8192 : 12288);
 
     const aiRes = await runKoboldAi(deepPrompt, {
       persona: "coach",
       thinkingMode,
+      autoContinue: true,
       maxOutputTokens: maxOut,
       temperature: 0.6,
       timeoutMs: 1_800_000,
@@ -803,13 +905,15 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
           if (Array.isArray(parsedJson.suggestedGoals)) suggestedGoals = parsedJson.suggestedGoals;
           if (Array.isArray(parsedJson.goalAudits)) goalAudits = parsedJson.goalAudits;
           if (Array.isArray(parsedJson.actionItems)) {
-            actionItems = parsedJson.actionItems.map((ai: any, idx: number) => ({
-              id: `act_${Date.now()}_${idx}`,
-              text: String(ai.text || ai.title || ""),
-              horizon: (ai.horizon as GoalHorizon) || horizon,
-              targetMetric: String(ai.targetMetric || "Consistent execution"),
-              done: false,
-            })).filter((a: ReportActionItem) => Boolean(a.text));
+            actionItems = parsedJson.actionItems
+              .map((ai: any, idx: number) => ({
+                id: `act_${Date.now()}_${idx}`,
+                text: String(ai.text || ai.title || ""),
+                horizon: (ai.horizon as GoalHorizon) || horizon,
+                targetMetric: String(ai.targetMetric || "Consistent execution"),
+                done: false,
+              }))
+              .filter((a: ReportActionItem) => Boolean(a.text));
           }
           rawMarkdown = rawMarkdown.replace(jsonMatch[0], "").trim();
         } catch {}
@@ -819,12 +923,11 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
         rawMarkdown = `*(Note: Model completed reasoning trace; see full thought process below)*\n\n${aiRes.reasoning}`;
       }
 
-      // Append Reference Links Appendix for every Trade & Journal in scope so user ALWAYS has 1-click links
       const tradeLinksMd = recentTradesSample
         .slice(0, 10)
         .map(
           (t: any) =>
-            `- [${t.symbol} ${t.direction.toUpperCase()} (${t.opened_at?.slice(0, 10)}) · Net $${t.net_pnl.toFixed(2)}${t.estimated1RUsd ? ` · 1R ~$${t.estimated1RUsd}` : ""}](${t.tradeUrl})`
+            `- [${t.symbol} ${t.direction.toUpperCase()} (${t.opened_at?.slice(0, 10)}) · Net $${t.net_pnl.toFixed(2)} (${t.accountPnlPct >= 0 ? "+" : ""}${t.accountPnlPct}% Acct) · Risked ${t.accountRiskPct ?? "?"}% Acct](${t.tradeUrl})`
         )
         .join("\n");
       const journalLinksMd = parsedJournals
@@ -927,6 +1030,134 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
   }
 }
 
+// Background Continuation Job for any Report that cut off mid-sentence
+async function executeContinueReportJobInBackground(
+  jobId: string,
+  reportId: string,
+  controller: AbortController
+) {
+  const dbPath = resolveDbPath();
+  const db = new Database(dbPath);
+  try {
+    ensureCoachTables(db);
+    const rep = db.prepare(`SELECT * FROM ai_coach_reports WHERE id = ?`).get(reportId) as any;
+    if (!rep) {
+      db.close();
+      return;
+    }
+
+    // Strip any trailing Reference Links appendix before continuing the cut-off text
+    const mainBody = String(rep.summary_md || "").split("\n\n---\n### 🔗 Direct Links")[0] || "";
+    const appendix = String(rep.summary_md || "").includes("\n\n---\n### 🔗 Direct Links")
+      ? "\n\n---\n### 🔗 Direct Links" + String(rep.summary_md || "").split("\n\n---\n### 🔗 Direct Links")[1]
+      : "";
+
+    const contPrompt = `Below is an in-progress Longitudinal Trading Psychology & Behavioral Performance Report that was cut off mid-sentence at the end.
+
+=== EXISTING REPORT SO FAR ===
+${mainBody.slice(-6000)}
+
+=== INSTRUCTIONS ===
+Continue writing seamlessly from the EXACT word where the text above cut off ("${mainBody.slice(-80)}").
+Do NOT repeat what was already written. Complete any unfinished sentence/section, then write:
+- **4. Concrete Action Plan & Next Steps (What to Work On Now)** (3 to 5 specific action steps)
+- **5. Recommended Multi-Level Goals (Weekly -> Monthly -> Quarterly)**
+And append a closing \`\`\`json block with "actionItems" and "suggestedGoals".`;
+
+    db.close();
+
+    const aiRes = await runKoboldAi(contPrompt, {
+      persona: "coach",
+      thinkingMode: "fast",
+      autoContinue: false,
+      maxOutputTokens: 4096,
+      temperature: 0.6,
+      abortSignal: controller.signal,
+      onPartial: (partial) => {
+        try {
+          const dbStream = new Database(dbPath);
+          dbStream
+            .prepare(`UPDATE ai_background_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
+            .run(
+              JSON.stringify({
+                streaming: true,
+                title: `Completing: ${rep.title}`,
+                partialText: `${mainBody.trimEnd()} ${partial.text.trimStart()}`,
+              }),
+              new Date().toISOString(),
+              jobId
+            );
+          dbStream.close();
+        } catch {}
+      },
+    });
+
+    const db2 = new Database(dbPath);
+    try {
+      let contMd = aiRes.text;
+      let existingActions: ReportActionItem[] = [];
+      let existingGoals: any[] = [];
+      try {
+        existingActions = JSON.parse(rep.action_items_json || "[]");
+      } catch {}
+      try {
+        existingGoals = JSON.parse(rep.suggested_goals_json || "[]");
+      } catch {}
+
+      const jsonMatch = contMd.match(/```json\s*([\s\S]*?)```/i);
+      if (jsonMatch?.[1]) {
+        try {
+          const parsedJson = JSON.parse(jsonMatch[1].trim());
+          if (Array.isArray(parsedJson.actionItems)) {
+            const newActs = parsedJson.actionItems
+              .map((ai: any, idx: number) => ({
+                id: `act_${Date.now()}_${idx}`,
+                text: String(ai.text || ai.title || ""),
+                horizon: (ai.horizon as GoalHorizon) || rep.horizon || "weekly",
+                targetMetric: String(ai.targetMetric || "Consistent execution"),
+                done: false,
+              }))
+              .filter((a: ReportActionItem) => Boolean(a.text));
+            existingActions = [...existingActions, ...newActs];
+          }
+          if (Array.isArray(parsedJson.suggestedGoals) && parsedJson.suggestedGoals.length > 0) {
+            existingGoals = parsedJson.suggestedGoals;
+          }
+          contMd = contMd.replace(jsonMatch[0], "").trim();
+        } catch {}
+      }
+
+      const mergedMd = `${mainBody.trimEnd()} ${contMd.trimStart()}${appendix}`;
+      if (existingActions.length === 0) {
+        existingActions = extractFallbackActionItems(mergedMd, (rep.horizon as GoalHorizon) || "weekly");
+      }
+
+      db2
+        .prepare(
+          `UPDATE ai_coach_reports SET summary_md = ?, action_items_json = ?, suggested_goals_json = ? WHERE id = ?`
+        )
+        .run(mergedMd, JSON.stringify(existingActions), JSON.stringify(existingGoals), reportId);
+
+      db2
+        .prepare(`UPDATE ai_background_jobs SET status = 'completed', result_json = ?, updated_at = ? WHERE id = ?`)
+        .run(JSON.stringify({ reportId }), new Date().toISOString(), jobId);
+    } finally {
+      db2.close();
+    }
+  } catch (err: any) {
+    const dbErr = new Database(dbPath);
+    try {
+      dbErr
+        .prepare(`UPDATE ai_background_jobs SET status = 'failed', error_text = ?, updated_at = ? WHERE id = ?`)
+        .run(err?.message || "Continuation failed", new Date().toISOString(), jobId);
+    } finally {
+      dbErr.close();
+    }
+  } finally {
+    activeJobControllers.delete(jobId);
+  }
+}
+
 async function executeChatJobInBackground(
   jobId: string,
   sessionId: string,
@@ -962,22 +1193,22 @@ async function executeChatJobInBackground(
 
     const chatPrompt = `You are the trader's dedicated Behavioral & Performance Accountability Coach.
 You DO NOT judge their technical trading strategy or market model.
-Note: The trader sizes by risking 1R (% of account equity based on stop distance). Evaluate risk discipline using their 1R Dollar Risk ($${telemetry.baseline1RUsd}), not raw lot sizes.
+Note: The trader's standard full risk is ${telemetry.targetRiskPct}% of account equity (~$${telemetry.baseline1RUsd}). When they risk 0.5% of account, Trade R still reads as 1R, so evaluate risk sizing using \`accountRiskPct\` (% of account risked), not raw lot sizes or Trade R alone.
 Whenever referencing a specific trade or journal entry, format it as a clickable Markdown link using the exact URL provided below.
 
 === ACTIVE TRADER GOALS ===
 ${activeGoals.length > 0 ? activeGoals.map((g) => `- [${g.horizon.toUpperCase()} | ${g.status.toUpperCase()}] ${g.title} (Metric: ${g.target_metric || "N/A"})`).join("\n") : "No active goals set yet."}
 
-=== BEHAVIORAL TELEMETRY (1R NORMALIZED) ===
+=== BEHAVIORAL TELEMETRY (ACCOUNT % RISK NORMALIZED) ===
 ${JSON.stringify(telemetry, null, 2)}
 
 === RECENT TRADES WITH CLICKABLE LINKS ===
-${recentTradesSample.slice(0, 12).map((t: any) => `- [${t.symbol} ${t.direction} ${t.opened_at?.slice(0, 10)} ($${t.net_pnl})](${t.tradeUrl})`).join("\n")}
+${recentTradesSample.slice(0, 12).map((t: any) => `- [${t.symbol} ${t.direction} ${t.opened_at?.slice(0, 10)} ($${t.net_pnl} | Acct PnL: ${t.accountPnlPct}% | Risked: ${t.accountRiskPct ?? "?"}% Acct)](${t.tradeUrl})`).join("\n")}
 
 === JOURNAL REFLECTIONS IN CONTEXT (${parsedJournals.length} ENTRIES) ===
 ${parsedJournals.slice(0, 8).map((j: any) => `[${j.slug} | ${j.title}](${j.journalUrl})\nLessons: ${j.lessonsLearned}\nQ&A Quotes: ${JSON.stringify(j.qaReflections)}\nReview: ${j.reviewSummary}`).join("\n---\n")}
 
-${targetReport ? `=== REFERENCED AI AUDIT REPORT (${targetReport.title}) ===\n${targetReport.summary_md.slice(0, 2400)}` : ""}
+${targetReport ? `=== REFERENCED AI AUDIT REPORT (${targetReport.title}) ===\n${targetReport.summary_md.slice(0, 3200)}` : ""}
 
 === CONVERSATION HISTORY IN THIS SESSION ===
 ${historyTranscript}
@@ -1001,6 +1232,7 @@ Respond directly, candidly, and empathetically as a peer accountability partner 
               JSON.stringify({
                 streaming: true,
                 sessionId,
+                reportId: linkedReportId || "",
                 partialText: partial.text,
                 partialReasoning: partial.reasoning,
               }),
@@ -1033,7 +1265,7 @@ Respond directly, candidly, and empathetically as a peer accountability partner 
             result_json = ?,
             updated_at = ?
         WHERE id = ?
-      `).run(JSON.stringify({ sessionId, messageId: msgId }), nowIso, jobId);
+      `).run(JSON.stringify({ sessionId, reportId: linkedReportId || "", messageId: msgId }), nowIso, jobId);
     } finally {
       db2.close();
     }
@@ -1068,6 +1300,7 @@ export async function GET(req: NextRequest) {
     ensureCoachTables(db);
     const localSettings = loadLocalAiSettings();
     const status = await probeKoboldStatus(localSettings.baseUrl);
+    const auditDue = computeAuditDueStatus(db);
 
     const staleCutoff = new Date(Date.now() - 35 * 60_000).toISOString();
     db.prepare(`
@@ -1097,11 +1330,15 @@ export async function GET(req: NextRequest) {
       };
     });
 
-    const chatSessions = db
-      .prepare(`SELECT id, title, report_id as reportId, created_at as createdAt, updated_at as updatedAt FROM ai_chat_sessions ORDER BY updated_at DESC LIMIT 50`)
+    // Separate general standalone Coach Chats (report_id = '') from Report-embedded Q&A threads
+    const allChatSessions = db
+      .prepare(`SELECT id, title, report_id as reportId, created_at as createdAt, updated_at as updatedAt FROM ai_chat_sessions ORDER BY updated_at DESC LIMIT 80`)
       .all() as any[];
 
-    const reqSessionId = req.nextUrl.searchParams.get("sessionId") || chatSessions[0]?.id || "";
+    const standaloneChatSessions = allChatSessions.filter((s) => !s.reportId);
+
+    const reqSessionId =
+      req.nextUrl.searchParams.get("sessionId") || standaloneChatSessions[0]?.id || "";
     const chatMessages = reqSessionId
       ? (db
           .prepare(
@@ -1112,6 +1349,24 @@ export async function GET(req: NextRequest) {
           )
           .all(reqSessionId) as any[])
       : [];
+
+    // Also fetch embedded Q&A messages for the requested reportId (or all report threads)
+    const reportCommentsMap: Record<string, any[]> = {};
+    const reportLinkedSessions = allChatSessions.filter((s) => Boolean(s.reportId));
+    for (const rs of reportLinkedSessions) {
+      const msgs = db
+        .prepare(
+          `SELECT id, session_id as sessionId, role, content as text, reasoning, model_used as modelUsed, created_at as createdAt
+           FROM ai_chat_messages
+           WHERE session_id = ?
+           ORDER BY created_at ASC`
+        )
+        .all(rs.id) as any[];
+      reportCommentsMap[rs.reportId] = [
+        ...(reportCommentsMap[rs.reportId] || []),
+        ...msgs,
+      ];
+    }
 
     const goals = db
       .prepare(`SELECT * FROM trader_goals ORDER BY updated_at DESC`)
@@ -1127,13 +1382,15 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({
       ok: true,
       kobold: { ...localSettings, ...status },
+      auditDue,
       telemetry,
       selectableJournals,
       selectableTrades,
       activeJobs,
-      chatSessions,
+      chatSessions: standaloneChatSessions,
       activeSessionId: reqSessionId,
       chatMessages,
+      reportCommentsMap,
       goals: goals.map((g) => ({
         id: g.id,
         horizon: g.horizon,
@@ -1307,15 +1564,22 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "save_kobold_config") {
-      const saved = saveLocalAiSettings({
+      const patch: any = {
         mode: "local_kobold",
         baseUrl: String(body.baseUrl || "[http://100.75.201.34:5001](http://100.75.201.34:5001)").trim(),
-      });
+      };
+      if (body.baselineRiskPct !== undefined) {
+        patch.baselineRiskPct = Number(body.baselineRiskPct);
+      }
+      if (body.accountBalanceOverride !== undefined) {
+        patch.accountBalanceOverride = Number(body.accountBalanceOverride);
+      }
+      const saved = saveLocalAiSettings(patch);
       const status = await probeKoboldStatus(saved.baseUrl);
       return NextResponse.json({ ok: true, kobold: { ...saved, ...status } });
     }
 
-    // TOGGLE REPORT ACTION ITEM PROGRESS CHECKBOX
+    // REPORT ACTION ITEMS: TOGGLE / ADD / EDIT / DELETE
     if (action === "toggle_report_action") {
       const reportId = String(body.reportId || "");
       const actionId = String(body.actionId || "");
@@ -1332,6 +1596,53 @@ export async function POST(req: NextRequest) {
           items = extractFallbackActionItems(row.summary_md || "", row.horizon || "weekly");
         }
         items = items.map((it) => (it.id === actionId ? { ...it, done } : it));
+        db.prepare(`UPDATE ai_coach_reports SET action_items_json = ? WHERE id = ?`).run(
+          JSON.stringify(items),
+          reportId
+        );
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === "edit_report_action") {
+      const reportId = String(body.reportId || "");
+      const actionId = String(body.actionId || "");
+      const newText = String(body.text || "").trim();
+      const row = db
+        .prepare(`SELECT summary_md, horizon, action_items_json FROM ai_coach_reports WHERE id = ?`)
+        .get(reportId) as any;
+      if (row && newText) {
+        let items: ReportActionItem[] = [];
+        try {
+          items = JSON.parse(row.action_items_json || "[]");
+        } catch {}
+        if (items.length === 0) {
+          items = extractFallbackActionItems(row.summary_md || "", row.horizon || "weekly");
+        }
+        items = items.map((it) => (it.id === actionId ? { ...it, text: newText } : it));
+        db.prepare(`UPDATE ai_coach_reports SET action_items_json = ? WHERE id = ?`).run(
+          JSON.stringify(items),
+          reportId
+        );
+      }
+      return NextResponse.json({ ok: true });
+    }
+
+    if (action === "delete_report_action") {
+      const reportId = String(body.reportId || "");
+      const actionId = String(body.actionId || "");
+      const row = db
+        .prepare(`SELECT summary_md, horizon, action_items_json FROM ai_coach_reports WHERE id = ?`)
+        .get(reportId) as any;
+      if (row) {
+        let items: ReportActionItem[] = [];
+        try {
+          items = JSON.parse(row.action_items_json || "[]");
+        } catch {}
+        if (items.length === 0) {
+          items = extractFallbackActionItems(row.summary_md || "", row.horizon || "weekly");
+        }
+        items = items.filter((it) => it.id !== actionId);
         db.prepare(`UPDATE ai_coach_reports SET action_items_json = ? WHERE id = ?`).run(
           JSON.stringify(items),
           reportId
@@ -1370,6 +1681,26 @@ export async function POST(req: NextRequest) {
         }
       }
       return NextResponse.json({ ok: true });
+    }
+
+    // CONTINUE / COMPLETE A TRUNCATED REPORT
+    if (action === "continue_report") {
+      const reportId = String(body.reportId || "");
+      if (!reportId) {
+        return NextResponse.json({ ok: false, error: "reportId required" }, { status: 400 });
+      }
+      const nowIso = new Date().toISOString();
+      const jobId = `job_audit_continue_${Date.now()}`;
+      db.prepare(`
+        INSERT INTO ai_background_jobs (id, job_type, target_id, label, status, started_at, updated_at)
+        VALUES (?, 'audit_continue', ?, 'Completing Report Sections...', 'running', ?, ?)
+      `).run(jobId, reportId, nowIso, nowIso);
+
+      const controller = new AbortController();
+      activeJobControllers.set(jobId, controller);
+      void executeContinueReportJobInBackground(jobId, reportId, controller);
+
+      return NextResponse.json({ ok: true, background: true, jobId, reportId });
     }
 
     if (action === "upsert_goal") {
@@ -1424,7 +1755,14 @@ export async function POST(req: NextRequest) {
     }
 
     if (action === "delete_report") {
-      db.prepare(`DELETE FROM ai_coach_reports WHERE id = ?`).run(String(body.reportId || ""));
+      const repId = String(body.reportId || "");
+      db.prepare(`DELETE FROM ai_coach_reports WHERE id = ?`).run(repId);
+      // Also clean up any embedded Q&A sessions bound to this report
+      const linkedSessions = db.prepare(`SELECT id FROM ai_chat_sessions WHERE report_id = ?`).all(repId) as any[];
+      for (const s of linkedSessions) {
+        db.prepare(`DELETE FROM ai_chat_messages WHERE session_id = ?`).run(s.id);
+      }
+      db.prepare(`DELETE FROM ai_chat_sessions WHERE report_id = ?`).run(repId);
       return NextResponse.json({ ok: true });
     }
 
@@ -1482,6 +1820,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ ok: true });
     }
 
+    // CHAT COACH: Supports both Standalone Coach Chats and Report-Embedded Q&A Threads!
     if (action === "chat_coach") {
       const userMessage = String(body.message || "").trim();
       if (!userMessage) {
@@ -1489,17 +1828,30 @@ export async function POST(req: NextRequest) {
       }
 
       const customScope: CustomAuditScope | undefined = body.customScope;
-      const linkedReportId = String(body.reportId || "");
+      const linkedReportId = String(body.reportId || "").trim();
       const nowIso = new Date().toISOString();
       let sessionId = String(body.sessionId || "").trim();
 
-      if (!sessionId) {
+      if (linkedReportId) {
+        // Reuse the single dedicated embedded session for this report so it never creates messy separate chats!
+        const existingReportSess = db
+          .prepare(`SELECT id FROM ai_chat_sessions WHERE report_id = ? ORDER BY created_at ASC LIMIT 1`)
+          .get(linkedReportId) as { id: string } | undefined;
+        if (existingReportSess) {
+          sessionId = existingReportSess.id;
+          db.prepare(`UPDATE ai_chat_sessions SET updated_at = ? WHERE id = ?`).run(nowIso, sessionId);
+        } else {
+          sessionId = `sess_rep_${linkedReportId}`;
+          db.prepare(
+            `INSERT INTO ai_chat_sessions (id, title, report_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`
+          ).run(sessionId, `Report Discussion (${linkedReportId})`, linkedReportId, nowIso, nowIso);
+        }
+      } else if (!sessionId) {
         sessionId = `sess_${Date.now()}`;
         const autoTitle = userMessage.slice(0, 42) + (userMessage.length > 42 ? "…" : "");
-        db.prepare(`INSERT INTO ai_chat_sessions (id, title, report_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(
+        db.prepare(`INSERT INTO ai_chat_sessions (id, title, report_id, created_at, updated_at) VALUES (?, ?, '', ?, ?)`).run(
           sessionId,
           autoTitle,
-          linkedReportId,
           nowIso,
           nowIso
         );
@@ -1507,10 +1859,9 @@ export async function POST(req: NextRequest) {
         const exists = db.prepare(`SELECT id FROM ai_chat_sessions WHERE id = ?`).get(sessionId);
         if (!exists) {
           const autoTitle = userMessage.slice(0, 42) + (userMessage.length > 42 ? "…" : "");
-          db.prepare(`INSERT INTO ai_chat_sessions (id, title, report_id, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`).run(
+          db.prepare(`INSERT INTO ai_chat_sessions (id, title, report_id, created_at, updated_at) VALUES (?, ?, '', ?, ?)`).run(
             sessionId,
             autoTitle,
-            linkedReportId,
             nowIso,
             nowIso
           );
@@ -1529,7 +1880,13 @@ export async function POST(req: NextRequest) {
       db.prepare(`
         INSERT INTO ai_background_jobs (id, job_type, target_id, label, status, started_at, updated_at)
         VALUES (?, 'chat', ?, ?, 'running', ?, ?)
-      `).run(jobId, sessionId, `Coach reply: "${userMessage.slice(0, 28)}..."`, nowIso, nowIso);
+      `).run(
+        jobId,
+        linkedReportId || sessionId,
+        `Coach reply: "${userMessage.slice(0, 28)}..."`,
+        nowIso,
+        nowIso
+      );
 
       const controller = new AbortController();
       activeJobControllers.set(jobId, controller);
@@ -1548,6 +1905,7 @@ export async function POST(req: NextRequest) {
         background: true,
         jobId,
         sessionId,
+        reportId: linkedReportId,
       });
     }
 

@@ -35,6 +35,10 @@ import {
   Printer,
   CheckSquare,
   MessageSquare,
+  Pencil,
+  Check,
+  X,
+  Bell,
 } from "lucide-react";
 
 const STAGES = ["Before trading", "During trading", "After trading"];
@@ -121,6 +125,8 @@ interface SelectableTrade {
   netPnl: number;
   realizedR: number | null;
   estimated1RUsd?: number | null;
+  accountRiskPct?: number | null;
+  accountPnlPct?: number | null;
   mistakes: string[];
   tags: string[];
   hasNotes: boolean;
@@ -142,6 +148,13 @@ interface ChatMessage {
   text: string;
   reasoning?: string;
   createdAt: string;
+}
+
+interface AuditDueItem {
+  due: boolean;
+  daysSinceLast: number | null;
+  lastRunAt: string | null;
+  reason: string;
 }
 
 const STATUS_BADGE: Record<GoalStatus, { label: string; cls: string }> = {
@@ -166,6 +179,7 @@ const STATUS_BADGE: Record<GoalStatus, { label: string; cls: string }> = {
 function exportDocumentToPdfWindow(title: string, subtitle: string, bodyPreFormattedHtmlOrMd: string) {
   const win = window.open("", "_blank", "width=900,height=1000");
   if (!win) return;
+  const nl = String.fromCharCode(10);
   const escaped = bodyPreFormattedHtmlOrMd
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -175,7 +189,8 @@ function exportDocumentToPdfWindow(title: string, subtitle: string, bodyPreForma
     .replace(/^# (.*)$/gm, "<h1>$1</h1>")
     .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
     .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
-    .split(String.fromCharCode(10)).join("<br/>");
+    .split(nl)
+    .join("<br/>");
 
   win.document.write(`<!DOCTYPE html>
 <html>
@@ -226,7 +241,19 @@ function Progress() {
     [busy, setBusy] = useState(false);
 
   const [coachData, setCoachData] = useState<{
-    kobold: { mode: string; baseUrl: string; online: boolean; modelName: string };
+    kobold: {
+      mode: string;
+      baseUrl: string;
+      online: boolean;
+      modelName: string;
+      baselineRiskPct?: number;
+      accountBalanceOverride?: number;
+    };
+    auditDue?: {
+      weekly: AuditDueItem;
+      monthly: AuditDueItem;
+      quarterly: AuditDueItem;
+    };
     telemetry: any;
     selectableJournals: SelectableJournal[];
     selectableTrades: SelectableTrade[];
@@ -234,11 +261,11 @@ function Progress() {
     chatSessions: ChatSession[];
     activeSessionId: string;
     chatMessages: ChatMessage[];
+    reportCommentsMap: Record<string, ChatMessage[]>;
     goals: TraderGoal[];
     reports: AiCoachReport[];
   } | null>(null);
 
-  // 3-Pane Notebook State
   const [activeFolder, setActiveFolder] = useState<NotebookFolder>("all");
   const [notebookSearch, setNotebookSearch] = useState("");
   const [activeDocType, setActiveDocType] = useState<"report" | "chat">("report");
@@ -247,8 +274,16 @@ function Progress() {
 
   const [showReasoning, setShowReasoning] = useState(false);
   const [koboldUrlInput, setKoboldUrlInput] = useState("[http://100.75.201.34:5001](http://100.75.201.34:5001)");
+  const [baselineRiskPctInput, setBaselineRiskPctInput] = useState("1.0");
+  const [accountBalInput, setAccountBalInput] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
+  const [dismissedDueBanner, setDismissedDueBanner] = useState(false);
+
+  // Action item creation & inline editing state
   const [newActionText, setNewActionText] = useState("");
+  const [editingActionId, setEditingActionId] = useState<string | null>(null);
+  const [editingActionText, setEditingActionText] = useState("");
+
   const [reportQuestionInput, setReportQuestionInput] = useState("");
 
   // Custom Scoped Audit Builder Modal State
@@ -284,6 +319,12 @@ function Progress() {
         if (json.ok) {
           setCoachData(json);
           if (json.kobold?.baseUrl) setKoboldUrlInput(json.kobold.baseUrl);
+          if (json.kobold?.baselineRiskPct) {
+            setBaselineRiskPctInput(String(json.kobold.baselineRiskPct));
+          }
+          if (json.kobold?.accountBalanceOverride && json.kobold.accountBalanceOverride > 0) {
+            setAccountBalInput(String(json.kobold.accountBalanceOverride));
+          }
           if (json.activeSessionId && !selectedSessionId) {
             setSelectedSessionId(json.activeSessionId);
           }
@@ -376,6 +417,25 @@ function Progress() {
     }
   };
 
+  const handleContinueReport = async (reportId: string) => {
+    setFailure("");
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "continue_report", reportId }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setFailure(json.error || "Could not continue report.");
+      } else {
+        await fetchCoachData();
+      }
+    } catch (e: any) {
+      setFailure(e?.message || "Connection error.");
+    }
+  };
+
   const handleCancelJob = async (jobId?: string) => {
     try {
       await fetch("/api/ai/coach", {
@@ -406,6 +466,40 @@ function Progress() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "toggle_report_action", reportId, actionId, done }),
+      });
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const handleSaveEditedAction = async (reportId: string, actionId: string) => {
+    const clean = editingActionText.trim();
+    if (!clean) return;
+    setEditingActionId(null);
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "edit_report_action",
+          reportId,
+          actionId,
+          text: clean,
+        }),
+      });
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const handleDeleteReportAction = async (reportId: string, actionId: string) => {
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "delete_report_action",
+          reportId,
+          actionId,
+        }),
       });
       await fetchCoachData();
     } catch {}
@@ -451,15 +545,13 @@ function Progress() {
     } catch {}
   };
 
-  const handleNewChatSession = async (linkedReport?: AiCoachReport) => {
+  const handleNewChatSession = async () => {
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "new_chat_session",
-          reportId: linkedReport?.id || "",
-          title: linkedReport ? `Q&A · ${linkedReport.title.slice(0, 32)}` : undefined,
         }),
       });
       const json = await res.json();
@@ -485,11 +577,15 @@ function Progress() {
     } catch {}
   };
 
+  // If linkedReportId is passed, the question & reply stay embedded inside the Report view!
   const handleSendCoachChat = async (overrideMessage?: string, linkedReportId?: string) => {
     const msg = (overrideMessage ?? chatInput).trim();
     if (!msg || runningChatJob) return;
-    setChatInput("");
-    setReportQuestionInput("");
+    if (linkedReportId) {
+      setReportQuestionInput("");
+    } else {
+      setChatInput("");
+    }
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
@@ -511,11 +607,16 @@ function Progress() {
         }),
       });
       const json = await res.json();
-      if (json.ok && json.sessionId) {
-        setSelectedSessionId(json.sessionId);
-        setActiveDocType("chat");
-        await fetchCoachData(json.sessionId);
-      } else if (!json.ok) {
+      if (json.ok) {
+        if (!linkedReportId && json.sessionId) {
+          setSelectedSessionId(json.sessionId);
+          setActiveDocType("chat");
+          await fetchCoachData(json.sessionId);
+        } else {
+          // Stay right inside the Report view!
+          await fetchCoachData();
+        }
+      } else {
         setFailure(json.error || "Could not send message.");
       }
     } catch (e: any) {
@@ -526,12 +627,18 @@ function Progress() {
   const reports = coachData?.reports || [];
   const chatSessions = coachData?.chatSessions || [];
   const chatMessages = coachData?.chatMessages || [];
+  const reportCommentsMap = coachData?.reportCommentsMap || {};
   const tel = coachData?.telemetry;
+  const auditDue = coachData?.auditDue;
   const selectableJournals = coachData?.selectableJournals || [];
   const selectableTrades = coachData?.selectableTrades || [];
 
   const activeReport =
     reports.find((r) => r.id === selectedReportId) || reports[0] || null;
+
+  const activeReportComments = activeReport
+    ? reportCommentsMap[activeReport.id] || []
+    : [];
 
   const activeChatSession =
     chatSessions.find((s) => s.id === selectedSessionId) || chatSessions[0] || null;
@@ -541,7 +648,6 @@ function Progress() {
     return selectableJournals.filter((j) => j.periodType === scopePeriodFilter);
   }, [selectableJournals, scopePeriodFilter]);
 
-  // Unified Notebook Items for Middle List
   const notebookItems = useMemo(() => {
     const q = notebookSearch.trim().toLowerCase();
     const repItems = reports
@@ -556,15 +662,13 @@ function Progress() {
       .map((r) => {
         const doneCount = (r.actionItems || []).filter((a) => a.done).length;
         const totalActions = (r.actionItems || []).length;
+        const qCount = (reportCommentsMap[r.id] || []).length;
         return {
           kind: "report" as const,
           id: r.id,
           title: r.title,
           badge: r.horizon.toUpperCase(),
-          sub:
-            totalActions > 0
-              ? `${doneCount}/${totalActions} actions done · ${r.createdAt.slice(0, 10)}`
-              : r.createdAt.slice(0, 10),
+          sub: `${totalActions > 0 ? `${doneCount}/${totalActions} actions` : r.createdAt.slice(0, 10)}${qCount > 0 ? ` · ${qCount} Q&A` : ""}`,
           updatedAt: r.createdAt,
         };
       });
@@ -587,7 +691,7 @@ function Progress() {
     return [...repItems, ...chatItems].sort((a, b) =>
       String(b.updatedAt).localeCompare(String(a.updatedAt))
     );
-  }, [reports, chatSessions, activeFolder, notebookSearch]);
+  }, [reports, chatSessions, reportCommentsMap, activeFolder, notebookSearch]);
 
   const folderCounts = useMemo(() => {
     return {
@@ -600,6 +704,25 @@ function Progress() {
       chats: chatSessions.length,
     };
   }, [reports, chatSessions]);
+
+  const dueHorizons = useMemo(() => {
+    if (!auditDue) return [];
+    const list: Array<{ horizon: GoalHorizon; label: string; reason: string }> = [];
+    if (auditDue.weekly?.due) {
+      list.push({ horizon: "weekly", label: "Weekly Audit Due", reason: auditDue.weekly.reason });
+    }
+    if (auditDue.monthly?.due) {
+      list.push({ horizon: "monthly", label: "Monthly Audit Due", reason: auditDue.monthly.reason });
+    }
+    if (auditDue.quarterly?.due) {
+      list.push({
+        horizon: "quarterly",
+        label: "Quarterly Audit Due",
+        reason: auditDue.quarterly.reason,
+      });
+    }
+    return list;
+  }, [auditDue]);
 
   return (
     <div>
@@ -654,7 +777,47 @@ function Progress() {
           </p>
         )}
 
-        {/* 1. KOBOLDCPP DESKTOP AI STATUS & 1R-NORMALIZED TELEMETRY BAR */}
+        {/* AUDIT DUE NOTIFICATION BANNER */}
+        {!dismissedDueBanner && dueHorizons.length > 0 && !runningAuditJob && (
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs">
+            <div className="flex flex-wrap items-center gap-2">
+              <Bell className="h-4 w-4 text-amber-400 shrink-0" />
+              <span className="font-bold text-amber-200">Audit Reminder:</span>
+              {dueHorizons.map((d) => (
+                <span
+                  key={d.horizon}
+                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-black/30 px-2.5 py-0.5 text-[11px] text-amber-100"
+                >
+                  <strong>{d.label}:</strong> {d.reason}
+                </span>
+              ))}
+            </div>
+            <div className="flex items-center gap-2">
+              {dueHorizons.map((d) => (
+                <Button
+                  key={d.horizon}
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleGenerateAudit(d.horizon)}
+                  className="h-7 text-[11px] border-amber-500/50 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 capitalize"
+                >
+                  <Sparkles className="mr-1 h-3 w-3" />
+                  Run {d.horizon} Now
+                </Button>
+              ))}
+              <button
+                type="button"
+                onClick={() => setDismissedDueBanner(true)}
+                className="text-muted-foreground hover:text-foreground p-1"
+                title="Dismiss reminder for this session"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* 1. KOBOLDCPP DESKTOP AI STATUS & ACCOUNT % RISK TELEMETRY BAR */}
         <Card className="border-indigo-500/30 bg-[#12141d]">
           <CardContent className="py-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -685,7 +848,7 @@ function Progress() {
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Compares Target Period vs. Prior 3 Periods and evaluates 1R risk % consistency rather than raw lot sizes.
+                    Tracks sizing by <strong>% of Account Equity Risked</strong> (so 0.5% probe risk vs. {tel?.targetRiskPct || 1}% standard risk are accurately distinguished).
                   </p>
                 </div>
               </div>
@@ -749,7 +912,7 @@ function Progress() {
                   size="sm"
                   variant="ghost"
                   onClick={() => setConfigOpen((v) => !v)}
-                  title="Configure Desktop KoboldCpp Tailscale Endpoint"
+                  title="Configure Standard Risk % & Desktop KoboldCpp Endpoint"
                 >
                   <Cpu className="h-4 w-4 text-muted-foreground" />
                 </Button>
@@ -757,43 +920,70 @@ function Progress() {
             </div>
 
             {configOpen && (
-              <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-[#0d0f14] p-3 text-xs">
-                <div className="flex flex-wrap items-center gap-2 flex-1">
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-3 rounded-xl border border-border/60 bg-[#0d0f14] p-3 text-xs">
+                <div className="space-y-1">
                   <span className="font-semibold text-foreground">
-                    Desktop KoboldCpp Tailscale URL:
+                    Desktop KoboldCpp Tailscale URL
                   </span>
                   <input
                     type="text"
                     value={koboldUrlInput}
                     onChange={(e) => setKoboldUrlInput(e.target.value)}
                     placeholder="[http://100.75.201.34:5001](http://100.75.201.34:5001)"
-                    className="h-8 w-64 rounded-lg border border-border/70 bg-[#141722] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                    className="h-8 w-full rounded-lg border border-border/70 bg-[#141722] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
                   />
-                  <Button
-                    size="sm"
-                    onClick={async () => {
-                      await fetch("/api/ai/coach", {
-                        method: "POST",
-                        headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({
-                          action: "save_kobold_config",
-                          baseUrl: koboldUrlInput,
-                          enabled: true,
-                        }),
-                      });
-                      await fetchCoachData();
-                    }}
-                  >
-                    Save &amp; Test Connection
-                  </Button>
                 </div>
-                <span className="text-[11px] text-muted-foreground">
-                  Full GPU Layer &amp; Model controls available in Settings &rarr; AI.
-                </span>
+                <div className="space-y-1">
+                  <span className="font-semibold text-foreground">
+                    Standard Full Risk % of Account (e.g. 1.0%)
+                  </span>
+                  <input
+                    type="number"
+                    step="0.1"
+                    value={baselineRiskPctInput}
+                    onChange={(e) => setBaselineRiskPctInput(e.target.value)}
+                    placeholder="1.0"
+                    className="h-8 w-full rounded-lg border border-border/70 bg-[#141722] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <span className="font-semibold text-foreground">
+                    Starting Account Equity $ (0 = Auto-Detect)
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="number"
+                      step="1000"
+                      value={accountBalInput}
+                      onChange={(e) => setAccountBalInput(e.target.value)}
+                      placeholder={`Auto ($${tel?.initialAccountBalance || 50000})`}
+                      className="h-8 flex-1 rounded-lg border border-border/70 bg-[#141722] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                    />
+                    <Button
+                      size="sm"
+                      onClick={async () => {
+                        await fetch("/api/ai/coach", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({
+                            action: "save_kobold_config",
+                            baseUrl: koboldUrlInput,
+                            baselineRiskPct: parseFloat(baselineRiskPctInput || "1.0"),
+                            accountBalanceOverride: parseFloat(accountBalInput || "0"),
+                          }),
+                        });
+                        await fetchCoachData();
+                        setConfigOpen(false);
+                      }}
+                    >
+                      Save
+                    </Button>
+                  </div>
+                </div>
               </div>
             )}
 
-            {/* 1R RISK-NORMALIZED BEHAVIORAL TELEMETRY STRIP */}
+            {/* ACCOUNT % RISK NORMALIZED TELEMETRY STRIP */}
             {tel && (
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-border/40 text-xs">
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
@@ -810,7 +1000,7 @@ function Progress() {
                 </div>
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
                   <div className="text-[10px] text-muted-foreground">
-                    Post-Loss Risk % Expansion (&gt;1.35R)
+                    Post-Loss Risk &gt;{( (tel.targetRiskPct || 1) * 1.3 ).toFixed(2)}% Acct
                   </div>
                   <div
                     className={`font-bold text-sm mt-0.5 ${
@@ -818,12 +1008,19 @@ function Progress() {
                         ? "text-amber-400"
                         : "text-emerald-400"
                     }`}
-                    title={`Baseline 1R Unit: ~$${tel.baseline1RUsd || 500} (${tel.baseline1RPct || 1}% of account)`}
                   >
                     {tel.postLossRiskExpansionCount || 0} occurrences{" "}
                     <span className="text-[10px] font-normal text-muted-foreground">
-                      (1R ≈ ${tel.baseline1RUsd || 500})
+                      (Std={tel.targetRiskPct || 1}%)
                     </span>
+                  </div>
+                </div>
+                <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
+                  <div className="text-[10px] text-muted-foreground">
+                    Reduced / Half-Risk Probes (&lt;0.7% Acct)
+                  </div>
+                  <div className="font-bold text-sm text-indigo-300 mt-0.5">
+                    {tel.intentionalDownsizeCount || 0} trades
                   </div>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
@@ -832,14 +1029,6 @@ function Progress() {
                   </div>
                   <div className="font-bold text-sm text-foreground mt-0.5">
                     {tel.profitGivebackDays?.length || 0} sessions
-                  </div>
-                </div>
-                <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
-                  <div className="text-[10px] text-muted-foreground">
-                    Missed Setups (Hesitation)
-                  </div>
-                  <div className="font-bold text-sm text-foreground mt-0.5">
-                    {tel.missedTradesCount} (${tel.missedOpportunityPnl})
                   </div>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
@@ -1010,10 +1199,10 @@ function Progress() {
           })}
         </div>
 
-        {/* 3. 3-PANE AI NOTEBOOK STRUCTURE (FOLDERS -> ITEM LIST -> DOCUMENT / CHAT VIEWER + PDF EXPORT) */}
+        {/* 3. 3-PANE AI NOTEBOOK STRUCTURE */}
         <Card className="bg-[#0d0f14] border-border/70 overflow-hidden">
           <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[680px]">
-            {/* PANE 1 (LEFT 2 COLS): NOTEBOOK FOLDERS */}
+            {/* PANE 1 (LEFT 2 COLS): NOTEBOOK FOLDERS WITH DUE DOTS */}
             <div className="lg:col-span-2 border-b lg:border-b-0 lg:border-r border-border/50 bg-[#11131c] p-3 flex flex-col justify-between">
               <div className="space-y-1">
                 <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
@@ -1021,13 +1210,28 @@ function Progress() {
                 </div>
                 {(
                   [
-                    { id: "all", label: "All Notes & Audits", count: folderCounts.all },
-                    { id: "weekly", label: "Weekly Audits", count: folderCounts.weekly },
-                    { id: "monthly", label: "Monthly Audits", count: folderCounts.monthly },
-                    { id: "quarterly", label: "Quarterly Audits", count: folderCounts.quarterly },
-                    { id: "yearly", label: "Yearly Audits", count: folderCounts.yearly },
-                    { id: "custom", label: "Scoped Audits", count: folderCounts.custom },
-                    { id: "chats", label: "Coach Chats", count: folderCounts.chats },
+                    { id: "all", label: "All Notes & Audits", count: folderCounts.all, due: false },
+                    {
+                      id: "weekly",
+                      label: "Weekly Audits",
+                      count: folderCounts.weekly,
+                      due: Boolean(auditDue?.weekly?.due),
+                    },
+                    {
+                      id: "monthly",
+                      label: "Monthly Audits",
+                      count: folderCounts.monthly,
+                      due: Boolean(auditDue?.monthly?.due),
+                    },
+                    {
+                      id: "quarterly",
+                      label: "Quarterly Audits",
+                      count: folderCounts.quarterly,
+                      due: Boolean(auditDue?.quarterly?.due),
+                    },
+                    { id: "yearly", label: "Yearly Audits", count: folderCounts.yearly, due: false },
+                    { id: "custom", label: "Scoped Audits", count: folderCounts.custom, due: false },
+                    { id: "chats", label: "Coach Chats", count: folderCounts.chats, due: false },
                   ] as const
                 ).map((f) => (
                   <button
@@ -1051,6 +1255,12 @@ function Progress() {
                         <Folder className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
                       )}
                       <span className="truncate">{f.label}</span>
+                      {f.due && (
+                        <span
+                          className="h-2 w-2 rounded-full bg-amber-400 shrink-0"
+                          title={`${f.label} is due`}
+                        />
+                      )}
                     </span>
                     <span className="ml-1 rounded-full bg-black/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
                       {f.count}
@@ -1172,9 +1382,8 @@ function Progress() {
               </div>
             </div>
 
-            {/* PANE 3 (RIGHT 7 COLS): DOCUMENT VIEWER / INTERACTIVE COACH WORKSPACE */}
+            {/* PANE 3 (RIGHT 7 COLS): DOCUMENT VIEWER + EMBEDDED REPORT Q&A */}
             <div className="lg:col-span-7 bg-[#0d0f14] flex flex-col justify-between p-4">
-              {/* LIVE STREAMING BANNER IF AN AUDIT JOB IS RUNNING */}
               {runningAuditJob && activeDocType === "report" && (
                 <div className="mb-4 rounded-xl border border-amber-500/40 bg-[#121521] p-4 space-y-3">
                   <div className="flex items-center justify-between border-b border-border/40 pb-2">
@@ -1228,7 +1437,7 @@ function Progress() {
                   </div>
                 ) : (
                   <div className="space-y-4">
-                    {/* Document Header & PDF Export Bar */}
+                    {/* Document Header, Continue Report Button & PDF Export */}
                     <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/50 pb-3">
                       <div>
                         <div className="flex items-center gap-2">
@@ -1249,36 +1458,49 @@ function Progress() {
                         <Button
                           size="sm"
                           variant="outline"
-                          onClick={() =>
+                          disabled={Boolean(runningAuditJob)}
+                          onClick={() => void handleContinueReport(activeReport.id)}
+                          className="h-8 text-xs border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20"
+                          title="If this report stopped mid-sentence, click to seamlessly continue & complete remaining sections"
+                        >
+                          <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                          Continue / Complete Report
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            const nl = String.fromCharCode(10);
+                            const qaAppendix =
+                              activeReportComments.length > 0
+                                ? `${nl}${nl}---${nl}## Report Discussion & Q&A${nl}` +
+                                  activeReportComments
+                                    .map(
+                                      (m) =>
+                                        `### ${m.role === "user" ? "Trader Question" : "Coach Answer"}${nl}${m.text}`
+                                    )
+                                    .join(`${nl}${nl}`)
+                                : "";
                             exportDocumentToPdfWindow(
                               activeReport.title,
                               `${activeReport.horizon.toUpperCase()} Audit · ${activeReport.createdAt.slice(0, 10)}`,
-                              activeReport.summaryMd
-                            )
-                          }
+                              `${activeReport.summaryMd}${qaAppendix}`
+                            );
+                          }}
                           className="h-8 text-xs"
                         >
                           <Printer className="mr-1.5 h-3.5 w-3.5 text-indigo-400" />
                           Export PDF
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => void handleNewChatSession(activeReport)}
-                          className="h-8 text-xs border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                        >
-                          <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
-                          Discuss in Chat
-                        </Button>
                       </div>
                     </div>
 
-                    {/* PERIOD-OVER-PERIOD COMPARISON TABLE (IF PRESENT IN TELEMETRY) */}
+                    {/* PERIOD-OVER-PERIOD COMPARISON TABLE (ACCOUNT % RISK NORMALIZED) */}
                     {Array.isArray(activeReport.telemetry?.periodComparisonBuckets) &&
                       activeReport.telemetry.periodComparisonBuckets.length > 0 && (
                         <div className="rounded-xl border border-border/60 bg-[#121521] p-3 space-y-2">
                           <div className="text-[11px] font-bold text-indigo-300">
-                            Period-over-Period Telemetry Comparison (1R Risk Normalized)
+                            Period-over-Period Telemetry Comparison (Account % Risk Normalized)
                           </div>
                           <div className="overflow-x-auto">
                             <table className="w-full text-left text-[11px]">
@@ -1289,8 +1511,8 @@ function Progress() {
                                   <th className="py-1 px-2">Trades</th>
                                   <th className="py-1 px-2">Win Rate</th>
                                   <th className="py-1 px-2">Net P&amp;L</th>
-                                  <th className="py-1 px-2">Avg 1R $</th>
-                                  <th className="py-1 pl-2">&gt;1.35R Drift</th>
+                                  <th className="py-1 px-2">Avg Risk %</th>
+                                  <th className="py-1 px-2">0.5% / 1% / &gt;1.3%</th>
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-border/20 font-mono">
@@ -1311,8 +1533,21 @@ function Progress() {
                                       >
                                         ${b.netPnl}
                                       </td>
-                                      <td className="py-1 px-2">${b.avgRisk1RUsd}</td>
-                                      <td className="py-1 pl-2">{b.riskDriftCount}x</td>
+                                      <td className="py-1 px-2">
+                                        {b.avgAccountRiskPct ?? 0}%
+                                      </td>
+                                      <td className="py-1 px-2 text-[10px]">
+                                        {b.halfRiskTradesCount ?? 0} / {b.standardRiskTradesCount ?? 0} /{" "}
+                                        <span
+                                          className={
+                                            (b.oversizedRiskTradesCount || 0) > 0
+                                              ? "text-amber-400 font-bold"
+                                              : ""
+                                          }
+                                        >
+                                          {b.oversizedRiskTradesCount ?? b.riskDriftCount ?? 0}
+                                        </span>
+                                      </td>
                                     </tr>
                                   )
                                 )}
@@ -1350,12 +1585,12 @@ function Progress() {
                       </div>
                     )}
 
-                    {/* Full Report Body (With Clickable Trade & Journal Links) */}
+                    {/* Full Report Body */}
                     <div className="rounded-xl border border-border/50 bg-[#121521] p-5 max-h-[560px] overflow-y-auto leading-relaxed">
                       <Markdown value={activeReport.summaryMd} />
                     </div>
 
-                    {/* ACTION POINTS TRACKER + 1-CLICK GOAL PROMOTER */}
+                    {/* ACTION POINTS TRACKER WITH INLINE EDIT, DELETE & 1-CLICK GOAL PROMOTER */}
                     <div className="rounded-xl border border-indigo-500/30 bg-[#121521] p-4 space-y-3">
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-2">
@@ -1374,86 +1609,147 @@ function Progress() {
 
                       {activeReport.actionItems && activeReport.actionItems.length > 0 ? (
                         <div className="space-y-2">
-                          {activeReport.actionItems.map((item) => (
-                            <div
-                              key={item.id}
-                              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/50 bg-[#0d0f14] px-3 py-2 text-xs"
-                            >
-                              <label className="flex items-start gap-2.5 flex-1 cursor-pointer">
-                                <Checkbox
-                                  className="mt-0.5"
-                                  checked={item.done}
-                                  onCheckedChange={(c) =>
-                                    void handleToggleReportAction(
-                                      activeReport.id,
-                                      item.id,
-                                      c === true
-                                    )
-                                  }
-                                />
-                                <span
-                                  className={
-                                    item.done
-                                      ? "line-through text-muted-foreground"
-                                      : "text-foreground font-medium"
-                                  }
-                                >
-                                  {item.text}
-                                </span>
-                              </label>
+                          {activeReport.actionItems.map((item) => {
+                            const isEditingThis = editingActionId === item.id;
+                            return (
+                              <div
+                                key={item.id}
+                                className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/50 bg-[#0d0f14] px-3 py-2 text-xs"
+                              >
+                                {isEditingThis ? (
+                                  <div className="flex items-center gap-1.5 flex-1">
+                                    <input
+                                      type="text"
+                                      value={editingActionText}
+                                      onChange={(e) => setEditingActionText(e.target.value)}
+                                      onKeyDown={(e) => {
+                                        if (e.key === "Enter") {
+                                          e.preventDefault();
+                                          void handleSaveEditedAction(activeReport.id, item.id);
+                                        } else if (e.key === "Escape") {
+                                          setEditingActionId(null);
+                                        }
+                                      }}
+                                      className="h-7 flex-1 rounded border border-indigo-500 bg-[#141722] px-2 text-xs text-foreground outline-none"
+                                      autoFocus
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        void handleSaveEditedAction(activeReport.id, item.id)
+                                      }
+                                      className="rounded p-1 text-emerald-400 hover:bg-emerald-500/15"
+                                      title="Save edit"
+                                    >
+                                      <Check className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setEditingActionId(null)}
+                                      className="rounded p-1 text-muted-foreground hover:bg-secondary"
+                                      title="Cancel"
+                                    >
+                                      <X className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <label className="flex items-start gap-2.5 flex-1 cursor-pointer">
+                                    <Checkbox
+                                      className="mt-0.5"
+                                      checked={item.done}
+                                      onCheckedChange={(c) =>
+                                        void handleToggleReportAction(
+                                          activeReport.id,
+                                          item.id,
+                                          c === true
+                                        )
+                                      }
+                                    />
+                                    <span
+                                      className={
+                                        item.done
+                                          ? "line-through text-muted-foreground"
+                                          : "text-foreground font-medium"
+                                      }
+                                    >
+                                      {item.text}
+                                    </span>
+                                  </label>
+                                )}
 
-                              <div className="flex items-center gap-1 shrink-0">
-                                {(["weekly", "monthly", "quarterly"] as const).map((hz) => (
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {(["weekly", "monthly", "quarterly"] as const).map((hz) => (
+                                    <button
+                                      key={hz}
+                                      type="button"
+                                      onClick={() =>
+                                        void handleUpsertGoal({
+                                          horizon: hz,
+                                          periodLabel:
+                                            hz === "weekly"
+                                              ? "This Week"
+                                              : hz === "monthly"
+                                              ? "This Month"
+                                              : "This Quarter",
+                                          title: item.text,
+                                          whyItMatters: `From ${activeReport.title}`,
+                                          targetMetric: item.targetMetric || "Consistent execution",
+                                          status: "on_track",
+                                          progressPct: item.done ? 100 : 0,
+                                        })
+                                      }
+                                      className="rounded border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 capitalize transition"
+                                      title={`Add directly to your ${hz} goals`}
+                                    >
+                                      + {hz} Goal
+                                    </button>
+                                  ))}
                                   <button
-                                    key={hz}
                                     type="button"
                                     onClick={() =>
-                                      void handleUpsertGoal({
-                                        horizon: hz,
-                                        periodLabel:
-                                          hz === "weekly"
-                                            ? "This Week"
-                                            : hz === "monthly"
-                                            ? "This Month"
-                                            : "This Quarter",
-                                        title: item.text,
-                                        whyItMatters: `From ${activeReport.title}`,
-                                        targetMetric: item.targetMetric || "Consistent execution",
-                                        status: "on_track",
-                                        progressPct: item.done ? 100 : 0,
+                                      void act({
+                                        title: item.text.slice(0, 80),
+                                        stage: "Before trading",
+                                        weekdays: [1, 2, 3, 4, 5],
                                       })
                                     }
-                                    className="rounded border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 capitalize transition"
-                                    title={`Add directly to your ${hz} goals`}
+                                    className="rounded border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 transition"
+                                    title="Add as a daily routine checkbox"
                                   >
-                                    + {hz} Goal
+                                    + Routine
                                   </button>
-                                ))}
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    void act({
-                                      title: item.text.slice(0, 80),
-                                      stage: "Before trading",
-                                      weekdays: [1, 2, 3, 4, 5],
-                                    })
-                                  }
-                                  className="rounded border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 transition"
-                                  title="Add as a daily routine checkbox"
-                                >
-                                  + Routine
-                                </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingActionId(item.id);
+                                      setEditingActionText(item.text);
+                                    }}
+                                    className="rounded p-1 text-muted-foreground hover:text-foreground hover:bg-secondary/50"
+                                    title="Edit action point"
+                                  >
+                                    <Pencil className="h-3.5 w-3.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      void handleDeleteReportAction(activeReport.id, item.id)
+                                    }
+                                    className="rounded p-1 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10"
+                                    title="Delete action point"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                </div>
                               </div>
-                            </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       ) : (
                         <p className="text-xs text-muted-foreground">
-                          Add custom action items below or promote AI-suggested goals.
+                          Add custom action items below or click &ldquo;Continue / Complete Report&rdquo; above if the report cut off before generating action points.
                         </p>
                       )}
 
-                      {/* Add Custom Action Step to Report */}
                       <div className="flex items-center gap-2 pt-1">
                         <input
                           type="text"
@@ -1487,37 +1783,93 @@ function Progress() {
                       </div>
                     </div>
 
-                    {/* INLINE "ASK QUESTION ABOUT THIS REPORT" BAR */}
-                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/10 p-3 flex items-center gap-2">
-                      <MessageSquare className="h-4 w-4 text-emerald-400 shrink-0" />
-                      <input
-                        type="text"
-                        value={reportQuestionInput}
-                        onChange={(e) => setReportQuestionInput(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && reportQuestionInput.trim()) {
-                            e.preventDefault();
-                            void handleSendCoachChat(reportQuestionInput, activeReport.id);
+                    {/* EMBEDDED REPORT Q&A DISCUSSION THREAD (BOUND DIRECTLY TO THIS REPORT!) */}
+                    <div className="rounded-xl border border-emerald-500/30 bg-[#121521] p-4 space-y-3">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <MessageSquare className="h-4 w-4 text-emerald-400" />
+                          <span className="text-xs font-bold text-foreground">
+                            Report Discussion &amp; Follow-up Q&amp;A ({activeReportComments.length})
+                          </span>
+                        </div>
+                        <span className="text-[10px] text-muted-foreground">
+                          Linked directly to this report
+                        </span>
+                      </div>
+
+                      {activeReportComments.length > 0 && (
+                        <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
+                          {activeReportComments.map((m) => (
+                            <div
+                              key={m.id}
+                              className={`rounded-xl p-3 text-xs ${
+                                m.role === "user"
+                                  ? "bg-indigo-600/20 border border-indigo-500/30 text-foreground ml-6"
+                                  : "bg-[#0d0f14] border border-border/60 text-foreground mr-2"
+                              }`}
+                            >
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">
+                                {m.role === "user" ? "You" : "AI Coach (Report Context)"}
+                              </div>
+                              <Markdown value={m.text} />
+                            </div>
+                          ))}
+                        </div>
+                      )}
+
+                      {runningChatJob && runningChatJob.targetId === activeReport.id && (
+                        <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/20 p-3 space-y-2 text-xs text-emerald-200">
+                          <div className="flex items-center justify-between">
+                            <span className="flex items-center gap-2 font-semibold">
+                              <RefreshCw className="h-3.5 w-3.5 animate-spin text-emerald-400" />
+                              Coach is answering your question on this report...
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => void handleCancelJob(runningChatJob.id)}
+                              className="rounded bg-rose-500/20 border border-rose-500/40 px-2 py-0.5 text-[10px] text-rose-300"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                          {runningChatJob.partialText && (
+                            <div className="border-t border-emerald-500/20 pt-2 text-foreground">
+                              <Markdown value={runningChatJob.partialText} />
+                            </div>
+                          )}
+                        </div>
+                      )}
+
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={reportQuestionInput}
+                          onChange={(e) => setReportQuestionInput(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && reportQuestionInput.trim()) {
+                              e.preventDefault();
+                              void handleSendCoachChat(reportQuestionInput, activeReport.id);
+                            }
+                          }}
+                          placeholder={`Ask your coach a follow-up question about "${activeReport.title}"...`}
+                          className="h-8 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-emerald-500"
+                        />
+                        <Button
+                          size="sm"
+                          disabled={!reportQuestionInput.trim() || Boolean(runningChatJob)}
+                          onClick={() =>
+                            void handleSendCoachChat(reportQuestionInput, activeReport.id)
                           }
-                        }}
-                        placeholder={`Ask your coach a follow-up question about "${activeReport.title}"...`}
-                        className="h-8 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-emerald-500"
-                      />
-                      <Button
-                        size="sm"
-                        disabled={!reportQuestionInput.trim()}
-                        onClick={() =>
-                          void handleSendCoachChat(reportQuestionInput, activeReport.id)
-                        }
-                        className="h-8 text-xs"
-                      >
-                        Ask Coach &rarr;
-                      </Button>
+                          className="h-8 text-xs"
+                        >
+                          Ask Coach &rarr;
+                        </Button>
+                      </div>
                     </div>
                   </div>
                 )
               ) : (
-                /* VIEW MODE B: ACCOUNTABILITY COACH CONVERSATION VIEWER + PDF EXPORT */
+                /* VIEW MODE B: GENERAL ACCOUNTABILITY COACH CONVERSATION VIEWER + PDF EXPORT */
                 <div className="flex flex-col h-full justify-between space-y-4">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
                     <div>
@@ -1540,13 +1892,13 @@ function Progress() {
                         size="sm"
                         variant="outline"
                         onClick={() => {
+                          const nl = String.fromCharCode(10);
                           const transcript = chatMessages
                             .map(
                               (m) =>
-                                `### ${m.role === "user" ? "Trader" : "AI Accountability Coach"} (${m.createdAt.slice(0, 16).replace("T", " ")})
-${m.text}`
+                                `### ${m.role === "user" ? "Trader" : "AI Accountability Coach"} (${m.createdAt.slice(0, 16).replace("T", " ")}) — ${m.text}`
                             )
-                            .join(String.fromCharCode(10) + String.fromCharCode(10));
+                            .join(nl + nl);
                           exportDocumentToPdfWindow(
                             activeChatSession?.title || "Coaching Transcript",
                             `Accountability Coach Session · ${chatMessages.length} messages`,
@@ -1570,7 +1922,7 @@ ${m.text}`
                         {[
                           "What recurring emotional trigger shows up across my recent journal reviews?",
                           "Help me set realistic Weekly and Monthly goals based on my biggest leak.",
-                          "How has my 1R risk consistency evolved over the last 3 weeks?",
+                          "How has my Account % Risk consistency evolved over the last 3 weeks?",
                         ].map((q) => (
                           <button
                             key={q}
@@ -1600,10 +1952,15 @@ ${m.text}`
                               <button
                                 type="button"
                                 onClick={() => {
+                                  const nl = String.fromCharCode(10);
                                   setEditingGoal({
                                     horizon: "weekly",
                                     periodLabel: "This Week",
-                                    title: m.text.split(String.fromCharCode(10))[0]?.replace(/^[#*-]\s*/, "").slice(0, 90) || "",
+                                    title:
+                                      m.text
+                                        .split(nl)[0]
+                                        ?.replace(/^[#*-]\s*/, "")
+                                        .slice(0, 90) || "",
                                     whyItMatters: "From Accountability Coach session",
                                     targetMetric: "Consistent daily execution",
                                     status: "on_track",
@@ -2011,9 +2368,9 @@ ${m.text}`
                             <span className="uppercase text-[10px]">{t.direction}</span>
                           </div>
                           <div className="flex items-center gap-2 shrink-0 font-mono text-[11px]">
-                            {t.estimated1RUsd && (
-                              <span className="text-[10px] text-muted-foreground">
-                                1R≈${t.estimated1RUsd}
+                            {t.accountRiskPct && (
+                              <span className="text-[10px] text-indigo-300">
+                                Risked {t.accountRiskPct}% Acct
                               </span>
                             )}
                             <span
@@ -2113,7 +2470,7 @@ ${m.text}`
                 <input
                   className={fieldClass}
                   value={editingGoal.targetMetric || ""}
-                  placeholder="e.g., Risk strictly 1.0R per trade; stop trading after -2R"
+                  placeholder="e.g., Risk strictly 0.5%–1.0% of account per trade; stop after -2%"
                   onChange={(e) =>
                     setEditingGoal((prev) => ({ ...prev, targetMetric: e.target.value }))
                   }
