@@ -164,25 +164,39 @@ export function splitThinkAndAnswer(rawText: string): {
 } {
   if (!rawText) return { reasoning: "", answer: "" };
   const thinkMatches: string[] = [];
-  const cleaned = rawText
-    .replace(/<think>([\s\S]*?)<\/think>/gi, (_m, inner) => {
-      if (inner && inner.trim()) thinkMatches.push(inner.trim());
-      return "";
-    })
-    .trim();
+  let working = rawText;
 
-  if (cleaned.includes("<think>") && !cleaned.includes("</think>")) {
-    const [before, after] = cleaned.split("<think>");
-    if (after) thinkMatches.push(after.trim());
-    return {
-      reasoning: thinkMatches.join("\n\n"),
-      answer: (before || "").trim(),
-    };
+  // 1. Handle standard <think>...</think> blocks
+  working = working.replace(/<think>([\s\S]*?)<\/think>/gi, (_m, inner) => {
+    if (inner && inner.trim()) thinkMatches.push(inner.trim());
+    return "";
+  });
+
+  // 2. Handle orphaned closing </think> (when KoboldCpp AutoGuess adapter puts <think> in prompt)
+  if (working.toLowerCase().includes("</think>")) {
+    const parts = working.split(/<\/think>/i);
+    const tailAnswer = parts.pop() || "";
+    const leadingThought = parts.join("\n").replace(/<think>/gi, "").trim();
+    if (leadingThought) thinkMatches.push(leadingThought);
+    working = tailAnswer;
   }
 
+  // 3. Handle unclosed <think> (still streaming thought)
+  if (working.toLowerCase().includes("<think>")) {
+    const [before, after] = working.split(/<think>/i);
+    if (after && after.trim()) thinkMatches.push(after.trim());
+    working = before || "";
+  }
+
+  // Strip any leftover "(Reasoning budget exceeded) Time to respond now." artifacts
+  working = working
+    .replace(/^\s*\(Reasoning budget exceeded\)\s*/i, "")
+    .replace(/^\s*Time to respond now\.?\s*/i, "")
+    .trim();
+
   return {
-    reasoning: thinkMatches.join("\n\n"),
-    answer: cleaned || rawText.trim(),
+    reasoning: thinkMatches.join("\n\n").trim(),
+    answer: working,
   };
 }
 
@@ -211,18 +225,32 @@ export async function runKoboldAi(
     temperature?: number;
     topP?: number;
     keepReasoning?: boolean;
+    thinkingMode?: "fast" | "balanced" | "deep";
     timeoutMs?: number;
     abortSignal?: AbortSignal;
+    onPartial?: (partial: { text: string; reasoning: string }) => void;
   } = {}
 ): Promise<{ text: string; reasoning: string; model: string }> {
   const cfg = loadLocalAiSettings();
   const persona = options.persona === "coach" ? cfg.coach : cfg.general;
   const baseUrl = cfg.baseUrl.replace(/\/+$/, "").replace(/\/v1$/, "");
-  const systemPrompt = options.system || persona.systemPrompt;
+  const thinkingMode = options.thinkingMode || "balanced";
+
+  let systemPrompt = options.system || persona.systemPrompt;
+  if (thinkingMode === "fast") {
+    systemPrompt += "\n\nIMPORTANT: Respond directly with your final analysis. Keep internal <think> reasoning brief (under 150 words) or skip it entirely.";
+  }
+
   const maxTokens = options.maxOutputTokens ?? persona.maxOutputTokens ?? 4096;
   const temperature = options.temperature ?? persona.temperature ?? 0.6;
   const topP = options.topP ?? persona.topP ?? 0.95;
-  const timeoutMs = options.timeoutMs ?? (options.persona === "coach" ? 480_000 : 90_000);
+  // 30-minute timeout ceiling so deep CPU/GPU hybrid audits NEVER get cut off at 480s!
+  const timeoutMs = options.timeoutMs ?? (options.persona === "coach" ? 1_800_000 : 180_000);
+
+  const reasoningEffort =
+    thinkingMode === "fast" ? "low" : thinkingMode === "deep" ? "high" : "medium";
+
+  const useStream = Boolean(options.onPartial);
 
   const res = await fetch(`${baseUrl}/v1/chat/completions`, {
     method: "POST",
@@ -238,9 +266,9 @@ export async function runKoboldAi(
       top_p: topP,
       top_k: 20,
       min_p: 0.0,
-      reasoning_effort: maxTokens >= 3000 ? "high" : "medium",
-      enable_thinking: true,
-      stream: false,
+      reasoning_effort: reasoningEffort,
+      enable_thinking: thinkingMode !== "fast",
+      stream: useStream,
     }),
     signal: options.abortSignal
       ? AbortSignal.any([options.abortSignal, AbortSignal.timeout(timeoutMs)])
@@ -250,6 +278,63 @@ export async function runKoboldAi(
   if (!res.ok) {
     const errText = await res.text().catch(() => "");
     throw new Error(`KoboldCpp error (${res.status}): ${errText.slice(0, 240)}`);
+  }
+
+  if (useStream && res.body) {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let accumulatedRaw = "";
+    let accumulatedReasoning = "";
+    let lastEmitMs = 0;
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split("\n");
+      buffer = lines.pop() || "";
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        if (!trimmed.startsWith("data:")) continue;
+        const dataStr = trimmed.slice(5).trim();
+        if (!dataStr || dataStr === "[DONE]") continue;
+        try {
+          const parsedChunk = JSON.parse(dataStr);
+          const delta = parsedChunk?.choices?.[0]?.delta;
+          if (delta) {
+            if (delta.content) accumulatedRaw += delta.content;
+            if (delta.reasoning_content || delta.reasoning) {
+              accumulatedReasoning += delta.reasoning_content || delta.reasoning;
+            }
+          }
+        } catch {}
+      }
+
+      const now = Date.now();
+      if (now - lastEmitMs > 1200 && options.onPartial) {
+        lastEmitMs = now;
+        const split = splitThinkAndAnswer(accumulatedRaw);
+        options.onPartial({
+          text: split.answer,
+          reasoning: [accumulatedReasoning, split.reasoning].filter(Boolean).join("\n\n"),
+        });
+      }
+    }
+
+    const finalSplit = splitThinkAndAnswer(accumulatedRaw);
+    const finalReasoning = [accumulatedReasoning, finalSplit.reasoning].filter(Boolean).join("\n\n");
+    const finalAnswer = finalSplit.answer || accumulatedRaw;
+
+    return {
+      text:
+        options.keepReasoning && finalReasoning
+          ? `<think>\n${finalReasoning}\n</think>\n\n${finalAnswer}`
+          : finalAnswer,
+      reasoning: finalReasoning,
+      model: cfg.activeModelFile || "koboldcpp",
+    };
   }
 
   const json = (await res.json()) as any;
@@ -262,11 +347,12 @@ export async function runKoboldAi(
   const finalAnswer = parsed.answer || rawContent;
 
   return {
-    text: options.keepReasoning && finalReasoning
-      ? `<think>\n${finalReasoning}\n</think>\n\n${finalAnswer}`
-      : finalAnswer,
+    text:
+      options.keepReasoning && finalReasoning
+        ? `<think>\n${finalReasoning}\n</think>\n\n${finalAnswer}`
+        : finalAnswer,
     reasoning: finalReasoning,
-    model: json?.model || "koboldcpp",
+    model: json?.model || cfg.activeModelFile || "koboldcpp",
   };
 }
 

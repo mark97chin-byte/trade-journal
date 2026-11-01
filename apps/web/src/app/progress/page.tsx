@@ -3,7 +3,7 @@ import { DatePicker } from "@/components/ui/date-picker";
 import { OptionSelect } from "@/components/ui/option-select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HoverHint } from "@/components/ui/tooltip";
-import React, { Suspense, useState, useEffect, useCallback } from "react";
+import React, { Suspense, useState, useEffect, useCallback, useMemo } from "react";
 import { FilterBar } from "@/components/filter-bar";
 import { Field, fieldClass } from "@/components/filter-fields";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -27,13 +27,28 @@ import {
   RefreshCw,
   Square,
   MessageSquarePlus,
-  History,
+  SlidersHorizontal,
+  FileText,
+  TrendingUp,
+  Folder,
+  Search,
+  Printer,
+  CheckSquare,
+  MessageSquare,
 } from "lucide-react";
 
 const STAGES = ["Before trading", "During trading", "After trading"];
 
-type GoalHorizon = "weekly" | "monthly" | "quarterly";
+type GoalHorizon = "weekly" | "monthly" | "quarterly" | "yearly";
 type GoalStatus = "on_track" | "slipping" | "breached" | "completed";
+type NotebookFolder =
+  | "all"
+  | "weekly"
+  | "monthly"
+  | "quarterly"
+  | "yearly"
+  | "custom"
+  | "chats";
 
 interface TraderGoal {
   id: string;
@@ -48,9 +63,17 @@ interface TraderGoal {
   updatedAt: string;
 }
 
+interface ReportActionItem {
+  id: string;
+  text: string;
+  horizon: GoalHorizon;
+  targetMetric: string;
+  done: boolean;
+}
+
 interface AiCoachReport {
   id: string;
-  horizon: GoalHorizon;
+  horizon: string;
   periodKey: string;
   title: string;
   summaryMd: string;
@@ -63,6 +86,7 @@ interface AiCoachReport {
     whyItMatters: string;
     targetMetric: string;
   }>;
+  actionItems: ReportActionItem[];
   modelUsed: string;
   createdAt: string;
 }
@@ -74,11 +98,39 @@ interface ActiveJob {
   label: string;
   status: string;
   startedAt: string;
+  partialText?: string;
+  partialReasoning?: string;
+}
+
+interface SelectableJournal {
+  slug: string;
+  periodType: string;
+  title: string;
+  hasPrep: boolean;
+  hasReview: boolean;
+  prepCharLen: number;
+  reviewCharLen: number;
+  processRating?: number | null;
+}
+
+interface SelectableTrade {
+  key: string;
+  symbol: string;
+  direction: string;
+  openedAt: string;
+  netPnl: number;
+  realizedR: number | null;
+  estimated1RUsd?: number | null;
+  mistakes: string[];
+  tags: string[];
+  hasNotes: boolean;
+  tradeUrl: string;
 }
 
 interface ChatSession {
   id: string;
   title: string;
+  reportId?: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -111,6 +163,45 @@ const STATUS_BADGE: Record<GoalStatus, { label: string; cls: string }> = {
   },
 };
 
+function exportDocumentToPdfWindow(title: string, subtitle: string, bodyPreFormattedHtmlOrMd: string) {
+  const win = window.open("", "_blank", "width=900,height=1000");
+  if (!win) return;
+  const escaped = bodyPreFormattedHtmlOrMd
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/^### (.*)$/gm, "<h3>$1</h3>")
+    .replace(/^## (.*)$/gm, "<h2>$1</h2>")
+    .replace(/^# (.*)$/gm, "<h1>$1</h1>")
+    .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>')
+    .split(String.fromCharCode(10)).join("<br/>");
+
+  win.document.write(`<!DOCTYPE html>
+<html>
+<head>
+  <title>${title}</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #0f172a; padding: 40px; line-height: 1.6; max-width: 820px; margin: 0 auto; }
+    h1 { font-size: 22px; margin-bottom: 4px; color: #0f172a; }
+    h2 { font-size: 17px; margin-top: 22px; border-bottom: 1px solid #e2e8f0; padding-bottom: 4px; }
+    h3 { font-size: 14px; margin-top: 16px; }
+    .meta { font-size: 12px; color: #64748b; margin-bottom: 24px; border-bottom: 2px solid #cbd5e1; padding-bottom: 12px; }
+    .content { font-size: 13px; }
+    a { color: #4f46e5; text-decoration: underline; }
+    @media print { body { padding: 15px; } }
+  </style>
+</head>
+<body>
+  <h1>${title}</h1>
+  <div class="meta">${subtitle}</div>
+  <div class="content">${escaped}</div>
+  <script>setTimeout(() => { window.print(); }, 350);</script>
+</body>
+</html>`);
+  win.document.close();
+}
+
 export default function ProgressPage() {
   return (
     <Suspense>
@@ -137,6 +228,8 @@ function Progress() {
   const [coachData, setCoachData] = useState<{
     kobold: { mode: string; baseUrl: string; online: boolean; modelName: string };
     telemetry: any;
+    selectableJournals: SelectableJournal[];
+    selectableTrades: SelectableTrade[];
     activeJobs: ActiveJob[];
     chatSessions: ChatSession[];
     activeSessionId: string;
@@ -145,11 +238,28 @@ function Progress() {
     reports: AiCoachReport[];
   } | null>(null);
 
+  // 3-Pane Notebook State
+  const [activeFolder, setActiveFolder] = useState<NotebookFolder>("all");
+  const [notebookSearch, setNotebookSearch] = useState("");
+  const [activeDocType, setActiveDocType] = useState<"report" | "chat">("report");
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
+
   const [showReasoning, setShowReasoning] = useState(false);
-  const [koboldUrlInput, setKoboldUrlInput] = useState("http://100.75.201.34:5001");
+  const [koboldUrlInput, setKoboldUrlInput] = useState("[http://100.75.201.34:5001](http://100.75.201.34:5001)");
   const [configOpen, setConfigOpen] = useState(false);
+  const [newActionText, setNewActionText] = useState("");
+  const [reportQuestionInput, setReportQuestionInput] = useState("");
+
+  // Custom Scoped Audit Builder Modal State
+  const [scopeModalOpen, setScopeModalOpen] = useState(false);
+  const [scopeHorizon, setScopeHorizon] = useState<GoalHorizon>("weekly");
+  const [scopePeriodFilter, setScopePeriodFilter] = useState<string>("all");
+  const [selectedJournalSlugs, setSelectedJournalSlugs] = useState<string[]>([]);
+  const [selectedTradeKeys, setSelectedTradeKeys] = useState<string[]>([]);
+  const [includeTabs, setIncludeTabs] = useState<"both" | "review_only" | "prep_only">("both");
+  const [thinkingMode, setThinkingMode] = useState<"fast" | "balanced" | "deep">("balanced");
+  const [customFocusPrompt, setCustomFocusPrompt] = useState("");
 
   const [goalModalOpen, setGoalModalOpen] = useState(false);
   const [editingGoal, setEditingGoal] = useState<Partial<TraderGoal>>({
@@ -195,12 +305,11 @@ function Progress() {
   const runningAuditJob = activeJobs.find((j) => j.jobType.startsWith("audit_"));
   const runningChatJob = activeJobs.find((j) => j.jobType === "chat");
 
-  // Automatically poll every 2.5 seconds whenever any background AI job (audit or chat) is running!
   useEffect(() => {
     if (!isAnyJobRunning) return;
     const timer = setInterval(() => {
       void fetchCoachData();
-    }, 2500);
+    }, 2000);
     return () => clearInterval(timer);
   }, [isAnyJobRunning, fetchCoachData]);
 
@@ -232,18 +341,34 @@ function Progress() {
     }
   }
 
-  const handleGenerateAudit = async (horizon: GoalHorizon) => {
+  const handleGenerateAudit = async (
+    horizon: GoalHorizon,
+    customScope?: {
+      selectedJournalSlugs?: string[];
+      selectedTradeKeys?: string[];
+      includeTabs?: "both" | "review_only" | "prep_only";
+      thinkingMode?: "fast" | "balanced" | "deep";
+      customFocusPrompt?: string;
+    }
+  ) => {
     setFailure("");
+    setScopeModalOpen(false);
+    setActiveDocType("report");
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "generate_report", horizon }),
+        body: JSON.stringify({
+          action: "generate_report",
+          horizon,
+          customScope: customScope || { thinkingMode },
+        }),
       });
       const json = await res.json();
       if (!json.ok) {
         setFailure(json.error || "Failed to start longitudinal AI report.");
       } else {
+        setSelectedReportId(null);
         await fetchCoachData();
       }
     } catch (err: any) {
@@ -257,6 +382,44 @@ function Progress() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ action: "cancel_job", jobId }),
+      });
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const handleDeleteReport = async (repId: string) => {
+    if (!window.confirm("Delete this AI report from your notebook?")) return;
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_report", reportId: repId }),
+      });
+      if (selectedReportId === repId) setSelectedReportId(null);
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const handleToggleReportAction = async (reportId: string, actionId: string, done: boolean) => {
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_report_action", reportId, actionId, done }),
+      });
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const handleAddCustomReportAction = async (reportId: string, horizon: GoalHorizon) => {
+    const clean = newActionText.trim();
+    if (!clean) return;
+    setNewActionText("");
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add_report_action", reportId, text: clean, horizon }),
       });
       await fetchCoachData();
     } catch {}
@@ -288,16 +451,21 @@ function Progress() {
     } catch {}
   };
 
-  const handleNewChatSession = async () => {
+  const handleNewChatSession = async (linkedReport?: AiCoachReport) => {
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "new_chat_session" }),
+        body: JSON.stringify({
+          action: "new_chat_session",
+          reportId: linkedReport?.id || "",
+          title: linkedReport ? `Q&A · ${linkedReport.title.slice(0, 32)}` : undefined,
+        }),
       });
       const json = await res.json();
       if (json.ok && json.sessionId) {
         setSelectedSessionId(json.sessionId);
+        setActiveDocType("chat");
         await fetchCoachData(json.sessionId);
       }
     } catch {}
@@ -317,23 +485,35 @@ function Progress() {
     } catch {}
   };
 
-  const handleSendCoachChat = async () => {
-    const msg = chatInput.trim();
+  const handleSendCoachChat = async (overrideMessage?: string, linkedReportId?: string) => {
+    const msg = (overrideMessage ?? chatInput).trim();
     if (!msg || runningChatJob) return;
     setChatInput("");
+    setReportQuestionInput("");
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           action: "chat_coach",
-          sessionId: selectedSessionId,
+          sessionId: linkedReportId ? "" : selectedSessionId,
+          reportId: linkedReportId || "",
           message: msg,
+          customScope:
+            selectedJournalSlugs.length > 0 || selectedTradeKeys.length > 0
+              ? {
+                  selectedJournalSlugs,
+                  selectedTradeKeys,
+                  includeTabs,
+                  thinkingMode,
+                }
+              : { thinkingMode },
         }),
       });
       const json = await res.json();
       if (json.ok && json.sessionId) {
         setSelectedSessionId(json.sessionId);
+        setActiveDocType("chat");
         await fetchCoachData(json.sessionId);
       } else if (!json.ok) {
         setFailure(json.error || "Could not send message.");
@@ -343,22 +523,100 @@ function Progress() {
     }
   };
 
-  const activeReport =
-    coachData?.reports.find((r) => r.id === selectedReportId) ||
-    coachData?.reports[0] ||
-    null;
-
-  const tel = coachData?.telemetry;
-  const chatMessages = coachData?.chatMessages || [];
+  const reports = coachData?.reports || [];
   const chatSessions = coachData?.chatSessions || [];
+  const chatMessages = coachData?.chatMessages || [];
+  const tel = coachData?.telemetry;
+  const selectableJournals = coachData?.selectableJournals || [];
+  const selectableTrades = coachData?.selectableTrades || [];
+
+  const activeReport =
+    reports.find((r) => r.id === selectedReportId) || reports[0] || null;
+
+  const activeChatSession =
+    chatSessions.find((s) => s.id === selectedSessionId) || chatSessions[0] || null;
+
+  const filteredSelectableJournals = useMemo(() => {
+    if (scopePeriodFilter === "all") return selectableJournals;
+    return selectableJournals.filter((j) => j.periodType === scopePeriodFilter);
+  }, [selectableJournals, scopePeriodFilter]);
+
+  // Unified Notebook Items for Middle List
+  const notebookItems = useMemo(() => {
+    const q = notebookSearch.trim().toLowerCase();
+    const repItems = reports
+      .filter((r) => {
+        if (activeFolder === "chats") return false;
+        if (activeFolder !== "all" && r.horizon !== activeFolder) return false;
+        if (q && !r.title.toLowerCase().includes(q) && !r.summaryMd.toLowerCase().includes(q)) {
+          return false;
+        }
+        return true;
+      })
+      .map((r) => {
+        const doneCount = (r.actionItems || []).filter((a) => a.done).length;
+        const totalActions = (r.actionItems || []).length;
+        return {
+          kind: "report" as const,
+          id: r.id,
+          title: r.title,
+          badge: r.horizon.toUpperCase(),
+          sub:
+            totalActions > 0
+              ? `${doneCount}/${totalActions} actions done · ${r.createdAt.slice(0, 10)}`
+              : r.createdAt.slice(0, 10),
+          updatedAt: r.createdAt,
+        };
+      });
+
+    const chatItems = chatSessions
+      .filter((s) => {
+        if (activeFolder !== "all" && activeFolder !== "chats") return false;
+        if (q && !s.title.toLowerCase().includes(q)) return false;
+        return true;
+      })
+      .map((s) => ({
+        kind: "chat" as const,
+        id: s.id,
+        title: s.title,
+        badge: "CHAT",
+        sub: s.updatedAt.slice(0, 16).replace("T", " "),
+        updatedAt: s.updatedAt,
+      }));
+
+    return [...repItems, ...chatItems].sort((a, b) =>
+      String(b.updatedAt).localeCompare(String(a.updatedAt))
+    );
+  }, [reports, chatSessions, activeFolder, notebookSearch]);
+
+  const folderCounts = useMemo(() => {
+    return {
+      all: reports.length + chatSessions.length,
+      weekly: reports.filter((r) => r.horizon === "weekly").length,
+      monthly: reports.filter((r) => r.horizon === "monthly").length,
+      quarterly: reports.filter((r) => r.horizon === "quarterly").length,
+      yearly: reports.filter((r) => r.horizon === "yearly").length,
+      custom: reports.filter((r) => r.horizon === "custom").length,
+      chats: chatSessions.length,
+    };
+  }, [reports, chatSessions]);
 
   return (
     <div>
       <FilterBar
-        title="Progress, Goals & AI Accountability Coach"
+        title="Progress, Goals & AI Accountability Notebook"
         actions={
           <div className="flex flex-wrap items-center gap-2">
             <AiLogButton label="AI Logs" onAborted={() => void fetchCoachData()} />
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setScopeModalOpen(true)}
+              className="border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20"
+            >
+              <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
+              Custom / Scoped Audit
+            </Button>
             <Button
               size="sm"
               variant="outline"
@@ -396,7 +654,7 @@ function Progress() {
           </p>
         )}
 
-        {/* 1. KOBOLDCPP DESKTOP AI STATUS & BACKGROUND AUDIT BAR */}
+        {/* 1. KOBOLDCPP DESKTOP AI STATUS & 1R-NORMALIZED TELEMETRY BAR */}
         <Card className="border-indigo-500/30 bg-[#12141d]">
           <CardContent className="py-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -427,17 +685,28 @@ function Progress() {
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Audits run in the background—you can freely switch pages while your desktop GPU generates reports or chat replies.
+                    Compares Target Period vs. Prior 3 Periods and evaluates 1R risk % consistency rather than raw lot sizes.
                   </p>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={thinkingMode}
+                  onChange={(e) => setThinkingMode(e.target.value as any)}
+                  className="h-8 rounded-lg border border-border/70 bg-[#0d0f14] px-2 text-xs text-foreground outline-none"
+                  title="Choose AI reasoning depth vs speed"
+                >
+                  <option value="fast">⚡ Fast Direct (Best for Chat &amp; Quick Audits)</option>
+                  <option value="balanced">🧠 Balanced Reasoning (Recommended for Weekly)</option>
+                  <option value="deep">🔬 Deep Overnight CoT (Monthly / Quarterly)</option>
+                </select>
+
                 {runningAuditJob ? (
                   <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs">
                     <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400" />
                     <span className="font-semibold text-amber-200">
-                      Running {runningAuditJob.label} in background...
+                      {runningAuditJob.label}...
                     </span>
                     <button
                       type="button"
@@ -449,18 +718,29 @@ function Progress() {
                     </button>
                   </div>
                 ) : (
-                  (["weekly", "monthly", "quarterly"] as GoalHorizon[]).map((h) => (
+                  <>
                     <Button
-                      key={h}
                       size="sm"
-                      variant={h === "weekly" ? "default" : "outline"}
-                      onClick={() => void handleGenerateAudit(h)}
-                      className="text-xs capitalize"
+                      variant="outline"
+                      onClick={() => setScopeModalOpen(true)}
+                      className="text-xs border-indigo-500/50 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25"
                     >
-                      <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                      {`Run ${h} Audit`}
+                      <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
+                      Pick Entries ({selectedJournalSlugs.length || "Auto"})
                     </Button>
-                  ))
+                    {(["weekly", "monthly", "quarterly", "yearly"] as GoalHorizon[]).map((h) => (
+                      <Button
+                        key={h}
+                        size="sm"
+                        variant={h === "weekly" ? "default" : "outline"}
+                        onClick={() => void handleGenerateAudit(h)}
+                        className="text-xs capitalize"
+                      >
+                        <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                        {`Run ${h}`}
+                      </Button>
+                    ))}
+                  </>
                 )}
 
                 <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
@@ -486,7 +766,7 @@ function Progress() {
                     type="text"
                     value={koboldUrlInput}
                     onChange={(e) => setKoboldUrlInput(e.target.value)}
-                    placeholder="http://100.75.201.34:5001"
+                    placeholder="[http://100.75.201.34:5001](http://100.75.201.34:5001)"
                     className="h-8 w-64 rounded-lg border border-border/70 bg-[#141722] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
                   />
                   <Button
@@ -513,7 +793,7 @@ function Progress() {
               </div>
             )}
 
-            {/* BEHAVIORAL TELEMETRY STRIP */}
+            {/* 1R RISK-NORMALIZED BEHAVIORAL TELEMETRY STRIP */}
             {tel && (
               <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 pt-2 border-t border-border/40 text-xs">
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
@@ -530,18 +810,28 @@ function Progress() {
                 </div>
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
                   <div className="text-[10px] text-muted-foreground">
-                    Profit Giveback Days
+                    Post-Loss Risk % Expansion (&gt;1.35R)
                   </div>
-                  <div className="font-bold text-sm text-foreground mt-0.5">
-                    {tel.profitGivebackDays?.length || 0} sessions
+                  <div
+                    className={`font-bold text-sm mt-0.5 ${
+                      (tel.postLossRiskExpansionCount || 0) > 0
+                        ? "text-amber-400"
+                        : "text-emerald-400"
+                    }`}
+                    title={`Baseline 1R Unit: ~$${tel.baseline1RUsd || 500} (${tel.baseline1RPct || 1}% of account)`}
+                  >
+                    {tel.postLossRiskExpansionCount || 0} occurrences{" "}
+                    <span className="text-[10px] font-normal text-muted-foreground">
+                      (1R ≈ ${tel.baseline1RUsd || 500})
+                    </span>
                   </div>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
                   <div className="text-[10px] text-muted-foreground">
-                    Post-Loss Size Expansion
+                    Profit Giveback Days
                   </div>
                   <div className="font-bold text-sm text-foreground mt-0.5">
-                    {tel.postLossSizeExpansionCount} occurrences
+                    {tel.profitGivebackDays?.length || 0} sessions
                   </div>
                 </div>
                 <div className="rounded-lg border border-border/40 bg-[#0d0f14] px-3 py-2">
@@ -628,7 +918,7 @@ function Progress() {
                 <CardContent className="space-y-2.5">
                   {colGoals.length === 0 ? (
                     <div className="rounded-lg border border-dashed border-border/50 p-4 text-center text-xs text-muted-foreground">
-                      No {col.key} goals active yet. Run an AI Audit or click + Add.
+                      No {col.key} goals active yet. Promote action points from your AI Notebook below or click + Add.
                     </div>
                   ) : (
                     colGoals.map((g) => {
@@ -720,274 +1010,681 @@ function Progress() {
           })}
         </div>
 
-        {/* 3. LONGITUDINAL AI REPORT VIEWER + PERSISTENT ACCOUNTABILITY CHAT */}
-        <div className="grid gap-4 lg:grid-cols-12">
-          {/* Left 7 Cols: Longitudinal Report */}
-          <Card className="lg:col-span-7 bg-[#12141d] border-border/70">
-            <CardHeader className="pb-3 border-b border-border/40">
-              <div className="flex flex-wrap items-center justify-between gap-2">
-                <CardTitle className="text-sm font-bold flex items-center gap-2">
-                  <Sparkles className="h-4 w-4 text-amber-400" />
-                  <span>Longitudinal Review Synthesis &amp; Behavioral Reports</span>
-                </CardTitle>
-                {coachData?.reports && coachData.reports.length > 0 && (
-                  <select
-                    value={activeReport?.id || ""}
-                    onChange={(e) => setSelectedReportId(e.target.value)}
-                    className="h-8 rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none"
-                  >
-                    {coachData.reports.map((r) => (
-                      <option key={r.id} value={r.id}>
-                        [{r.horizon.toUpperCase()}] {r.title} ({r.createdAt.slice(0, 10)})
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </div>
-            </CardHeader>
-            <CardContent className="pt-4 space-y-4">
-              {!activeReport ? (
-                <div className="rounded-xl border border-dashed border-border/50 p-8 text-center space-y-2">
-                  <p className="text-sm font-semibold text-foreground">
-                    No Longitudinal AI Reports Generated Yet
-                  </p>
-                  <p className="text-xs text-muted-foreground max-w-md mx-auto">
-                    Click &ldquo;Run Weekly Audit&rdquo;, &ldquo;Run Monthly Audit&rdquo;, or &ldquo;Run Quarterly Audit&rdquo; above.
-                  </p>
+        {/* 3. 3-PANE AI NOTEBOOK STRUCTURE (FOLDERS -> ITEM LIST -> DOCUMENT / CHAT VIEWER + PDF EXPORT) */}
+        <Card className="bg-[#0d0f14] border-border/70 overflow-hidden">
+          <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[680px]">
+            {/* PANE 1 (LEFT 2 COLS): NOTEBOOK FOLDERS */}
+            <div className="lg:col-span-2 border-b lg:border-b-0 lg:border-r border-border/50 bg-[#11131c] p-3 flex flex-col justify-between">
+              <div className="space-y-1">
+                <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                  AI Notebook Folders
                 </div>
-              ) : (
-                <>
-                  {activeReport.reasoningTrace && (
-                    <div className="rounded-xl border border-indigo-500/30 bg-[#0d0f14] overflow-hidden">
-                      <button
-                        type="button"
-                        onClick={() => setShowReasoning((v) => !v)}
-                        className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/10 transition"
-                      >
-                        <span className="flex items-center gap-1.5">
-                          {showReasoning ? (
-                            <ChevronDown className="h-3.5 w-3.5" />
-                          ) : (
-                            <ChevronRight className="h-3.5 w-3.5" />
-                          )}
-                          <span>
-                            🧠 View AI Chain-of-Thought Reasoning Trace ({activeReport.modelUsed})
-                          </span>
-                        </span>
-                        <span className="text-[10px] text-muted-foreground">
-                          {showReasoning ? "Hide" : "Expand"}
-                        </span>
-                      </button>
-                      {showReasoning && (
-                        <pre className="max-h-72 overflow-y-auto border-t border-indigo-500/20 p-3 text-[11px] font-mono whitespace-pre-wrap text-muted-foreground leading-relaxed">
-                          {activeReport.reasoningTrace}
-                        </pre>
-                      )}
-                    </div>
-                  )}
-
-                  <div className="rounded-xl border border-border/50 bg-[#0d0f14] p-4 max-h-[540px] overflow-y-auto">
-                    <Markdown value={activeReport.summaryMd} />
-                  </div>
-
-                  {activeReport.suggestedGoals && activeReport.suggestedGoals.length > 0 && (
-                    <div className="space-y-2 pt-2 border-t border-border/40">
-                      <div className="text-xs font-bold text-foreground">
-                        AI-Proposed Goals from This Audit (Click to Adopt):
-                      </div>
-                      <div className="grid gap-2 sm:grid-cols-3">
-                        {activeReport.suggestedGoals.map((sg, idx) => (
-                          <div
-                            key={idx}
-                            className="rounded-xl border border-indigo-500/30 bg-indigo-950/15 p-2.5 flex flex-col justify-between gap-2 text-xs"
-                          >
-                            <div className="space-y-1">
-                              <span className="text-[10px] font-bold uppercase tracking-wider text-indigo-400">
-                                {sg.horizon} · {sg.periodLabel}
-                              </span>
-                              <div className="font-bold text-foreground">{sg.title}</div>
-                              <div className="text-[11px] text-muted-foreground">
-                                {sg.targetMetric}
-                              </div>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="w-full h-7 text-[11px]"
-                              onClick={() =>
-                                void handleUpsertGoal({
-                                  horizon: sg.horizon || "weekly",
-                                  periodLabel: sg.periodLabel || "Upcoming",
-                                  title: sg.title,
-                                  whyItMatters: sg.whyItMatters || "",
-                                  targetMetric: sg.targetMetric || "",
-                                  status: "on_track",
-                                  progressPct: 0,
-                                })
-                              }
-                            >
-                              + Adopt {sg.horizon} Goal
-                            </Button>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-                </>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Right 5 Cols: Persistent Multi-Session Accountability Coach Chat */}
-          <Card className="lg:col-span-5 bg-[#12141d] border-border/70 flex flex-col">
-            <CardHeader className="pb-3 border-b border-border/40 space-y-2.5">
-              <div className="flex items-center justify-between gap-2">
-                <CardTitle className="text-sm font-bold flex items-center gap-2">
-                  <Brain className="h-4 w-4 text-emerald-400" />
-                  <span>Accountability Coach Chat</span>
-                </CardTitle>
-                <div className="flex items-center gap-1.5">
-                  <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
+                {(
+                  [
+                    { id: "all", label: "All Notes & Audits", count: folderCounts.all },
+                    { id: "weekly", label: "Weekly Audits", count: folderCounts.weekly },
+                    { id: "monthly", label: "Monthly Audits", count: folderCounts.monthly },
+                    { id: "quarterly", label: "Quarterly Audits", count: folderCounts.quarterly },
+                    { id: "yearly", label: "Yearly Audits", count: folderCounts.yearly },
+                    { id: "custom", label: "Scoped Audits", count: folderCounts.custom },
+                    { id: "chats", label: "Coach Chats", count: folderCounts.chats },
+                  ] as const
+                ).map((f) => (
                   <button
+                    key={f.id}
                     type="button"
-                    onClick={() => void handleNewChatSession()}
-                    className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 px-2 py-1 text-[11px] font-semibold text-indigo-300 transition"
-                    title="Start a new coaching conversation"
+                    onClick={() => {
+                      setActiveFolder(f.id);
+                      if (f.id === "chats") setActiveDocType("chat");
+                      else if (f.id !== "all") setActiveDocType("report");
+                    }}
+                    className={`flex w-full items-center justify-between rounded-lg px-2.5 py-2 text-xs font-medium transition ${
+                      activeFolder === f.id
+                        ? "bg-secondary text-foreground font-bold border border-border/80 shadow-2xs"
+                        : "text-muted-foreground hover:bg-secondary/40 hover:text-foreground"
+                    }`}
                   >
-                    <MessageSquarePlus className="h-3 w-3" />
-                    <span>New Chat</span>
+                    <span className="flex items-center gap-2 truncate">
+                      {f.id === "chats" ? (
+                        <MessageSquare className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                      ) : (
+                        <Folder className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+                      )}
+                      <span className="truncate">{f.label}</span>
+                    </span>
+                    <span className="ml-1 rounded-full bg-black/40 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                      {f.count}
+                    </span>
                   </button>
+                ))}
+              </div>
+
+              <div className="pt-4 border-t border-border/40 space-y-1.5">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleNewChatSession()}
+                  className="w-full justify-start text-xs h-8"
+                >
+                  <MessageSquarePlus className="mr-1.5 h-3.5 w-3.5 text-emerald-400" />
+                  New Coach Chat
+                </Button>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setScopeModalOpen(true)}
+                  className="w-full justify-start text-xs h-8"
+                >
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5 text-amber-400" />
+                  New Scoped Audit
+                </Button>
+              </div>
+            </div>
+
+            {/* PANE 2 (MIDDLE 3 COLS): SEARCHABLE DOCUMENT & CHAT LIST */}
+            <div className="lg:col-span-3 border-b lg:border-b-0 lg:border-r border-border/50 bg-[#0f1119] flex flex-col">
+              <div className="p-3 border-b border-border/50">
+                <div className="relative">
+                  <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
+                  <input
+                    type="text"
+                    value={notebookSearch}
+                    onChange={(e) => setNotebookSearch(e.target.value)}
+                    placeholder="Search reports & chats..."
+                    className="h-8 w-full rounded-lg border border-border/70 bg-[#161925] pl-8 pr-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                  />
                 </div>
               </div>
 
-              {/* Conversation History Dropdown */}
-              {chatSessions.length > 0 && (
-                <div className="flex items-center gap-1.5">
-                  <History className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-                  <select
-                    value={selectedSessionId}
-                    onChange={(e) => {
-                      const nextId = e.target.value;
-                      setSelectedSessionId(nextId);
-                      void fetchCoachData(nextId);
-                    }}
-                    className="h-7 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-2 text-[11px] text-foreground outline-none"
-                  >
-                    {chatSessions.map((s) => (
-                      <option key={s.id} value={s.id}>
-                        {s.title} ({s.updatedAt.slice(5, 16).replace("T", " ")})
-                      </option>
-                    ))}
-                  </select>
-                  {selectedSessionId && (
-                    <button
-                      type="button"
-                      onClick={() => void handleDeleteChatSession(selectedSessionId)}
-                      className="rounded p-1 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10"
-                      title="Delete this conversation"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </button>
-                  )}
-                </div>
-              )}
-            </CardHeader>
-
-            <CardContent className="flex-1 flex flex-col justify-between pt-4 gap-3">
-              <div className="flex-1 min-h-[280px] max-h-[440px] overflow-y-auto space-y-3 rounded-xl border border-border/50 bg-[#0d0f14] p-3 text-xs">
-                {chatMessages.length === 0 ? (
-                  <div className="space-y-2 text-muted-foreground">
-                    <p>
-                      Conversations are automatically saved—even if you switch tabs while the AI is replying. Try asking:
-                    </p>
-                    {[
-                      "What recurring emotional trigger shows up across my recent journal reviews?",
-                      "Help me set realistic Weekly and Monthly goals based on my biggest leak.",
-                      "Where did I deviate from my process most this month compared to last month?",
-                    ].map((q) => (
-                      <button
-                        key={q}
-                        type="button"
-                        onClick={() => setChatInput(q)}
-                        className="block w-full rounded-lg border border-border/50 bg-[#141722] px-2.5 py-1.5 text-left text-[11px] text-foreground hover:border-indigo-500/50 transition"
-                      >
-                        &ldquo;{q}&rdquo;
-                      </button>
-                    ))}
+              <div className="flex-1 max-h-[620px] overflow-y-auto divide-y divide-border/30">
+                {notebookItems.length === 0 ? (
+                  <div className="p-6 text-center text-xs text-muted-foreground">
+                    No notes or reports in this folder yet.
                   </div>
                 ) : (
-                  chatMessages.map((m) => (
-                    <div
-                      key={m.id}
-                      className={`rounded-xl p-2.5 ${
-                        m.role === "user"
-                          ? "bg-indigo-600/20 border border-indigo-500/30 text-foreground ml-6"
-                          : "bg-secondary/50 border border-border/60 text-foreground mr-2"
-                      }`}
-                    >
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">
-                        {m.role === "user" ? "You" : "AI Accountability Coach"}
-                      </div>
-                      <Markdown value={m.text} />
-                    </div>
-                  ))
-                )}
+                  notebookItems.map((item) => {
+                    const isSelected =
+                      (item.kind === "report" &&
+                        activeDocType === "report" &&
+                        activeReport?.id === item.id) ||
+                      (item.kind === "chat" &&
+                        activeDocType === "chat" &&
+                        selectedSessionId === item.id);
 
-                {runningChatJob && (
-                  <div className="flex items-center justify-between gap-2 rounded-xl border border-indigo-500/30 bg-indigo-950/20 px-3 py-2 text-xs text-indigo-200">
-                    <div className="flex items-center gap-2">
-                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-indigo-400" />
-                      <span>Coach is thinking in the background...</span>
+                    return (
+                      <div
+                        key={`${item.kind}-${item.id}`}
+                        onClick={() => {
+                          if (item.kind === "report") {
+                            setActiveDocType("report");
+                            setSelectedReportId(item.id);
+                          } else {
+                            setActiveDocType("chat");
+                            setSelectedSessionId(item.id);
+                            void fetchCoachData(item.id);
+                          }
+                        }}
+                        className={`group flex items-start justify-between gap-2 p-3 cursor-pointer transition ${
+                          isSelected
+                            ? "bg-indigo-600/15 border-l-2 border-l-indigo-400"
+                            : "hover:bg-secondary/30"
+                        }`}
+                      >
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase ${
+                                item.kind === "chat"
+                                  ? "bg-emerald-500/15 text-emerald-300 border border-emerald-500/30"
+                                  : "bg-indigo-500/15 text-indigo-300 border border-indigo-500/30"
+                              }`}
+                            >
+                              {item.badge}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground truncate">
+                              {item.sub}
+                            </span>
+                          </div>
+                          <div className="text-xs font-semibold text-foreground line-clamp-2">
+                            {item.title}
+                          </div>
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            if (item.kind === "report") {
+                              void handleDeleteReport(item.id);
+                            } else {
+                              void handleDeleteChatSession(item.id);
+                            }
+                          }}
+                          className="opacity-0 group-hover:opacity-100 rounded p-1 text-rose-400/70 hover:text-rose-400 hover:bg-rose-500/10 transition"
+                          title="Delete item"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </div>
+
+            {/* PANE 3 (RIGHT 7 COLS): DOCUMENT VIEWER / INTERACTIVE COACH WORKSPACE */}
+            <div className="lg:col-span-7 bg-[#0d0f14] flex flex-col justify-between p-4">
+              {/* LIVE STREAMING BANNER IF AN AUDIT JOB IS RUNNING */}
+              {runningAuditJob && activeDocType === "report" && (
+                <div className="mb-4 rounded-xl border border-amber-500/40 bg-[#121521] p-4 space-y-3">
+                  <div className="flex items-center justify-between border-b border-border/40 pb-2">
+                    <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400" />
+                      <span>Live Stream: {runningAuditJob.label}</span>
                     </div>
                     <button
                       type="button"
-                      onClick={() => void handleCancelJob(runningChatJob.id)}
+                      onClick={() => void handleCancelJob(runningAuditJob.id)}
                       className="inline-flex items-center gap-1 rounded bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 px-2 py-0.5 text-[10px] font-semibold text-rose-300"
                     >
                       <Square className="h-2.5 w-2.5 fill-current" />
-                      <span>Cancel</span>
+                      <span>Stop</span>
                     </button>
                   </div>
-                )}
-              </div>
 
-              <div className="flex items-center gap-2">
-                <input
-                  type="text"
-                  value={chatInput}
-                  onChange={(e) => setChatInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !e.shiftKey) {
-                      e.preventDefault();
-                      void handleSendCoachChat();
-                    }
-                  }}
-                  placeholder="Ask your coach or co-design a goal..."
-                  className="h-9 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-indigo-500"
-                />
-                {runningChatJob ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => void handleCancelJob(runningChatJob.id)}
-                    className="border-rose-500/40 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
-                    title="Cancel current generation"
-                  >
-                    <Square className="h-3.5 w-3.5 fill-current" />
-                  </Button>
+                  {runningAuditJob.partialReasoning && (
+                    <div className="rounded-lg border border-indigo-500/25 bg-black/60 p-2.5">
+                      <div className="text-[10px] font-semibold uppercase tracking-wider text-indigo-400 mb-1">
+                        🧠 Live Chain-of-Thought (&lt;think&gt;)
+                      </div>
+                      <pre className="max-h-36 overflow-y-auto font-mono text-[10px] text-muted-foreground whitespace-pre-wrap">
+                        {runningAuditJob.partialReasoning}
+                      </pre>
+                    </div>
+                  )}
+
+                  {runningAuditJob.partialText ? (
+                    <div className="max-h-96 overflow-y-auto">
+                      <Markdown value={runningAuditJob.partialText} />
+                    </div>
+                  ) : (
+                    <div className="text-xs text-muted-foreground animate-pulse">
+                      Comparing periods and synthesizing behavioral patterns...
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* VIEW MODE A: LONGITUDINAL REPORT DOCUMENT */}
+              {activeDocType === "report" ? (
+                !activeReport ? (
+                  <div className="my-auto py-16 text-center space-y-3">
+                    <p className="text-sm font-semibold text-foreground">
+                      No Report Selected
+                    </p>
+                    <p className="text-xs text-muted-foreground max-w-md mx-auto">
+                      Select a report from the Notebook list on the left, or click <strong>Run Weekly / Monthly / Quarterly</strong> above to generate a new longitudinal audit.
+                    </p>
+                  </div>
                 ) : (
-                  <Button
-                    size="sm"
-                    disabled={!chatInput.trim()}
-                    onClick={() => void handleSendCoachChat()}
-                  >
-                    <Send className="h-3.5 w-3.5" />
-                  </Button>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
+                  <div className="space-y-4">
+                    {/* Document Header & PDF Export Bar */}
+                    <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border/50 pb-3">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="rounded bg-indigo-500/20 border border-indigo-500/40 px-2 py-0.5 text-[10px] font-bold uppercase text-indigo-300">
+                            {activeReport.horizon}
+                          </span>
+                          <span className="text-xs text-muted-foreground">
+                            Generated {activeReport.createdAt.slice(0, 16).replace("T", " ")} ·{" "}
+                            {activeReport.modelUsed}
+                          </span>
+                        </div>
+                        <h3 className="text-base font-bold text-foreground mt-1">
+                          {activeReport.title}
+                        </h3>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() =>
+                            exportDocumentToPdfWindow(
+                              activeReport.title,
+                              `${activeReport.horizon.toUpperCase()} Audit · ${activeReport.createdAt.slice(0, 10)}`,
+                              activeReport.summaryMd
+                            )
+                          }
+                          className="h-8 text-xs"
+                        >
+                          <Printer className="mr-1.5 h-3.5 w-3.5 text-indigo-400" />
+                          Export PDF
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => void handleNewChatSession(activeReport)}
+                          className="h-8 text-xs border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                        >
+                          <MessageSquare className="mr-1.5 h-3.5 w-3.5" />
+                          Discuss in Chat
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* PERIOD-OVER-PERIOD COMPARISON TABLE (IF PRESENT IN TELEMETRY) */}
+                    {Array.isArray(activeReport.telemetry?.periodComparisonBuckets) &&
+                      activeReport.telemetry.periodComparisonBuckets.length > 0 && (
+                        <div className="rounded-xl border border-border/60 bg-[#121521] p-3 space-y-2">
+                          <div className="text-[11px] font-bold text-indigo-300">
+                            Period-over-Period Telemetry Comparison (1R Risk Normalized)
+                          </div>
+                          <div className="overflow-x-auto">
+                            <table className="w-full text-left text-[11px]">
+                              <thead>
+                                <tr className="border-b border-border/40 text-muted-foreground">
+                                  <th className="py-1 pr-2">Period</th>
+                                  <th className="py-1 px-2">Dates</th>
+                                  <th className="py-1 px-2">Trades</th>
+                                  <th className="py-1 px-2">Win Rate</th>
+                                  <th className="py-1 px-2">Net P&amp;L</th>
+                                  <th className="py-1 px-2">Avg 1R $</th>
+                                  <th className="py-1 pl-2">&gt;1.35R Drift</th>
+                                </tr>
+                              </thead>
+                              <tbody className="divide-y divide-border/20 font-mono">
+                                {activeReport.telemetry.periodComparisonBuckets.map(
+                                  (b: any, idx: number) => (
+                                    <tr
+                                      key={idx}
+                                      className={idx === 0 ? "font-bold text-foreground" : "text-muted-foreground"}
+                                    >
+                                      <td className="py-1 pr-2 font-sans">{b.periodLabel}</td>
+                                      <td className="py-1 px-2 text-[10px]">{b.dateRange}</td>
+                                      <td className="py-1 px-2">{b.trades}</td>
+                                      <td className="py-1 px-2">{b.winRatePct}%</td>
+                                      <td
+                                        className={`py-1 px-2 ${
+                                          b.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                                        }`}
+                                      >
+                                        ${b.netPnl}
+                                      </td>
+                                      <td className="py-1 px-2">${b.avgRisk1RUsd}</td>
+                                      <td className="py-1 pl-2">{b.riskDriftCount}x</td>
+                                    </tr>
+                                  )
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        </div>
+                      )}
+
+                    {/* Collapsible Reasoning Trace */}
+                    {activeReport.reasoningTrace && (
+                      <div className="rounded-xl border border-indigo-500/30 bg-[#121521] overflow-hidden">
+                        <button
+                          type="button"
+                          onClick={() => setShowReasoning((v) => !v)}
+                          className="flex w-full items-center justify-between px-3 py-2 text-xs font-semibold text-indigo-300 hover:bg-indigo-500/10 transition"
+                        >
+                          <span className="flex items-center gap-1.5">
+                            {showReasoning ? (
+                              <ChevronDown className="h-3.5 w-3.5" />
+                            ) : (
+                              <ChevronRight className="h-3.5 w-3.5" />
+                            )}
+                            <span>🧠 View AI Chain-of-Thought Reasoning Trace</span>
+                          </span>
+                          <span className="text-[10px] text-muted-foreground">
+                            {showReasoning ? "Hide" : "Expand"}
+                          </span>
+                        </button>
+                        {showReasoning && (
+                          <pre className="max-h-64 overflow-y-auto border-t border-indigo-500/20 p-3 text-[11px] font-mono whitespace-pre-wrap text-muted-foreground leading-relaxed">
+                            {activeReport.reasoningTrace}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Full Report Body (With Clickable Trade & Journal Links) */}
+                    <div className="rounded-xl border border-border/50 bg-[#121521] p-5 max-h-[560px] overflow-y-auto leading-relaxed">
+                      <Markdown value={activeReport.summaryMd} />
+                    </div>
+
+                    {/* ACTION POINTS TRACKER + 1-CLICK GOAL PROMOTER */}
+                    <div className="rounded-xl border border-indigo-500/30 bg-[#121521] p-4 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <CheckSquare className="h-4 w-4 text-emerald-400" />
+                          <span className="text-xs font-bold text-foreground">
+                            Action Points &amp; Next Steps Tracker
+                          </span>
+                        </div>
+                        {activeReport.actionItems && activeReport.actionItems.length > 0 && (
+                          <span className="text-[11px] font-semibold text-emerald-300">
+                            {activeReport.actionItems.filter((a) => a.done).length} of{" "}
+                            {activeReport.actionItems.length} completed
+                          </span>
+                        )}
+                      </div>
+
+                      {activeReport.actionItems && activeReport.actionItems.length > 0 ? (
+                        <div className="space-y-2">
+                          {activeReport.actionItems.map((item) => (
+                            <div
+                              key={item.id}
+                              className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/50 bg-[#0d0f14] px-3 py-2 text-xs"
+                            >
+                              <label className="flex items-start gap-2.5 flex-1 cursor-pointer">
+                                <Checkbox
+                                  className="mt-0.5"
+                                  checked={item.done}
+                                  onCheckedChange={(c) =>
+                                    void handleToggleReportAction(
+                                      activeReport.id,
+                                      item.id,
+                                      c === true
+                                    )
+                                  }
+                                />
+                                <span
+                                  className={
+                                    item.done
+                                      ? "line-through text-muted-foreground"
+                                      : "text-foreground font-medium"
+                                  }
+                                >
+                                  {item.text}
+                                </span>
+                              </label>
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                {(["weekly", "monthly", "quarterly"] as const).map((hz) => (
+                                  <button
+                                    key={hz}
+                                    type="button"
+                                    onClick={() =>
+                                      void handleUpsertGoal({
+                                        horizon: hz,
+                                        periodLabel:
+                                          hz === "weekly"
+                                            ? "This Week"
+                                            : hz === "monthly"
+                                            ? "This Month"
+                                            : "This Quarter",
+                                        title: item.text,
+                                        whyItMatters: `From ${activeReport.title}`,
+                                        targetMetric: item.targetMetric || "Consistent execution",
+                                        status: "on_track",
+                                        progressPct: item.done ? 100 : 0,
+                                      })
+                                    }
+                                    className="rounded border border-indigo-500/30 bg-indigo-500/10 hover:bg-indigo-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 capitalize transition"
+                                    title={`Add directly to your ${hz} goals`}
+                                  >
+                                    + {hz} Goal
+                                  </button>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    void act({
+                                      title: item.text.slice(0, 80),
+                                      stage: "Before trading",
+                                      weekdays: [1, 2, 3, 4, 5],
+                                    })
+                                  }
+                                  className="rounded border border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/25 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-300 transition"
+                                  title="Add as a daily routine checkbox"
+                                >
+                                  + Routine
+                                </button>
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-xs text-muted-foreground">
+                          Add custom action items below or promote AI-suggested goals.
+                        </p>
+                      )}
+
+                      {/* Add Custom Action Step to Report */}
+                      <div className="flex items-center gap-2 pt-1">
+                        <input
+                          type="text"
+                          value={newActionText}
+                          onChange={(e) => setNewActionText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void handleAddCustomReportAction(
+                                activeReport.id,
+                                (activeReport.horizon as GoalHorizon) || "weekly"
+                              );
+                            }
+                          }}
+                          placeholder="Add an action point to track on this report..."
+                          className="h-8 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 text-xs"
+                          onClick={() =>
+                            void handleAddCustomReportAction(
+                              activeReport.id,
+                              (activeReport.horizon as GoalHorizon) || "weekly"
+                            )
+                          }
+                        >
+                          + Add Action
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* INLINE "ASK QUESTION ABOUT THIS REPORT" BAR */}
+                    <div className="rounded-xl border border-emerald-500/30 bg-emerald-950/10 p-3 flex items-center gap-2">
+                      <MessageSquare className="h-4 w-4 text-emerald-400 shrink-0" />
+                      <input
+                        type="text"
+                        value={reportQuestionInput}
+                        onChange={(e) => setReportQuestionInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter" && reportQuestionInput.trim()) {
+                            e.preventDefault();
+                            void handleSendCoachChat(reportQuestionInput, activeReport.id);
+                          }
+                        }}
+                        placeholder={`Ask your coach a follow-up question about "${activeReport.title}"...`}
+                        className="h-8 flex-1 rounded-lg border border-border/70 bg-[#0d0f14] px-3 text-xs text-foreground outline-none focus:border-emerald-500"
+                      />
+                      <Button
+                        size="sm"
+                        disabled={!reportQuestionInput.trim()}
+                        onClick={() =>
+                          void handleSendCoachChat(reportQuestionInput, activeReport.id)
+                        }
+                        className="h-8 text-xs"
+                      >
+                        Ask Coach &rarr;
+                      </Button>
+                    </div>
+                  </div>
+                )
+              ) : (
+                /* VIEW MODE B: ACCOUNTABILITY COACH CONVERSATION VIEWER + PDF EXPORT */
+                <div className="flex flex-col h-full justify-between space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/50 pb-3">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <span className="rounded bg-emerald-500/20 border border-emerald-500/40 px-2 py-0.5 text-[10px] font-bold uppercase text-emerald-300">
+                          COACH CONVERSATION
+                        </span>
+                        <span className="text-xs text-muted-foreground">
+                          {activeChatSession?.updatedAt.slice(0, 16).replace("T", " ")}
+                        </span>
+                      </div>
+                      <h3 className="text-base font-bold text-foreground mt-1">
+                        {activeChatSession?.title || "Accountability Coaching Session"}
+                      </h3>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          const transcript = chatMessages
+                            .map(
+                              (m) =>
+                                `### ${m.role === "user" ? "Trader" : "AI Accountability Coach"} (${m.createdAt.slice(0, 16).replace("T", " ")})
+${m.text}`
+                            )
+                            .join(String.fromCharCode(10) + String.fromCharCode(10));
+                          exportDocumentToPdfWindow(
+                            activeChatSession?.title || "Coaching Transcript",
+                            `Accountability Coach Session · ${chatMessages.length} messages`,
+                            transcript
+                          );
+                        }}
+                        className="h-8 text-xs"
+                      >
+                        <Printer className="mr-1.5 h-3.5 w-3.5 text-emerald-400" />
+                        Export Chat PDF
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 min-h-[420px] max-h-[540px] overflow-y-auto space-y-3 rounded-xl border border-border/50 bg-[#121521] p-4 text-xs">
+                    {chatMessages.length === 0 ? (
+                      <div className="space-y-2 text-muted-foreground">
+                        <p>
+                          Ask your Accountability Coach anything about your journals, trades, or goals:
+                        </p>
+                        {[
+                          "What recurring emotional trigger shows up across my recent journal reviews?",
+                          "Help me set realistic Weekly and Monthly goals based on my biggest leak.",
+                          "How has my 1R risk consistency evolved over the last 3 weeks?",
+                        ].map((q) => (
+                          <button
+                            key={q}
+                            type="button"
+                            onClick={() => setChatInput(q)}
+                            className="block w-full rounded-lg border border-border/50 bg-[#161925] px-3 py-2 text-left text-xs text-foreground hover:border-indigo-500/50 transition"
+                          >
+                            &ldquo;{q}&rdquo;
+                          </button>
+                        ))}
+                      </div>
+                    ) : (
+                      chatMessages.map((m) => (
+                        <div
+                          key={m.id}
+                          className={`rounded-xl p-3 space-y-2 ${
+                            m.role === "user"
+                              ? "bg-indigo-600/20 border border-indigo-500/30 text-foreground ml-8"
+                              : "bg-[#0d0f14] border border-border/60 text-foreground mr-4"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
+                              {m.role === "user" ? "You" : "AI Accountability Coach"}
+                            </span>
+                            {m.role === "coach" && (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingGoal({
+                                    horizon: "weekly",
+                                    periodLabel: "This Week",
+                                    title: m.text.split(String.fromCharCode(10))[0]?.replace(/^[#*-]\s*/, "").slice(0, 90) || "",
+                                    whyItMatters: "From Accountability Coach session",
+                                    targetMetric: "Consistent daily execution",
+                                    status: "on_track",
+                                    progressPct: 0,
+                                  });
+                                  setGoalModalOpen(true);
+                                }}
+                                className="text-[10px] text-indigo-400 hover:underline"
+                              >
+                                + Convert to Goal
+                              </button>
+                            )}
+                          </div>
+                          <Markdown value={m.text} />
+                        </div>
+                      ))
+                    )}
+
+                    {runningChatJob && (
+                      <div className="rounded-xl border border-indigo-500/30 bg-indigo-950/20 p-3 space-y-2 text-xs text-indigo-200">
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <RefreshCw className="h-3.5 w-3.5 animate-spin text-indigo-400" />
+                            <span className="font-semibold">Coach is replying...</span>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void handleCancelJob(runningChatJob.id)}
+                            className="inline-flex items-center gap-1 rounded bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 px-2 py-0.5 text-[10px] font-semibold text-rose-300"
+                          >
+                            <Square className="h-2.5 w-2.5 fill-current" />
+                            <span>Cancel</span>
+                          </button>
+                        </div>
+                        {runningChatJob.partialText && (
+                          <div className="border-t border-indigo-500/20 pt-2 text-foreground">
+                            <Markdown value={runningChatJob.partialText} />
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="text"
+                      value={chatInput}
+                      onChange={(e) => setChatInput(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" && !e.shiftKey) {
+                          e.preventDefault();
+                          void handleSendCoachChat();
+                        }
+                      }}
+                      placeholder="Reply to your coach or ask about specific trades..."
+                      className="h-9 flex-1 rounded-lg border border-border/70 bg-[#121521] px-3 text-xs text-foreground outline-none focus:border-indigo-500"
+                    />
+                    {runningChatJob ? (
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => void handleCancelJob(runningChatJob.id)}
+                        className="border-rose-500/40 bg-rose-500/15 text-rose-300 hover:bg-rose-500/25"
+                      >
+                        <Square className="h-3.5 w-3.5 fill-current" />
+                      </Button>
+                    ) : (
+                      <Button
+                        size="sm"
+                        disabled={!chatInput.trim()}
+                        onClick={() => void handleSendCoachChat()}
+                      >
+                        <Send className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+        </Card>
 
         {/* 4. DAILY EXECUTION ROUTINES & 13-WEEK CONSISTENCY HEATMAP */}
         <Card>
@@ -1109,6 +1806,265 @@ function Progress() {
           </CardContent>
         </Card>
 
+        {/* CUSTOM SCOPED AUDIT & ENTRY PICKER DIALOG */}
+        <Dialog open={scopeModalOpen} onOpenChange={setScopeModalOpen}>
+          <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <SlidersHorizontal className="h-4 w-4 text-indigo-400" />
+                <span>Custom Scoped AI Audit — Pick Exact Journals &amp; Trades</span>
+              </DialogTitle>
+            </DialogHeader>
+
+            <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <Field label="Target Horizon">
+                  <OptionSelect
+                    className={fieldClass}
+                    value={scopeHorizon}
+                    onValueChange={(v) => setScopeHorizon(v as GoalHorizon)}
+                  >
+                    <option value="weekly">Weekly Audit</option>
+                    <option value="monthly">Monthly Audit</option>
+                    <option value="quarterly">Quarterly Audit</option>
+                    <option value="yearly">Yearly Audit</option>
+                  </OptionSelect>
+                </Field>
+
+                <Field label="Which Journal Tabs to Feed AI">
+                  <OptionSelect
+                    className={fieldClass}
+                    value={includeTabs}
+                    onValueChange={(v) => setIncludeTabs(v as any)}
+                  >
+                    <option value="both">Both Prep &amp; Review Tabs</option>
+                    <option value="review_only">Review Tab Only (Faster &amp; Focused)</option>
+                    <option value="prep_only">Prep / Forecast Tab Only</option>
+                  </OptionSelect>
+                </Field>
+
+                <Field label="Reasoning Depth vs Speed">
+                  <OptionSelect
+                    className={fieldClass}
+                    value={thinkingMode}
+                    onValueChange={(v) => setThinkingMode(v as any)}
+                  >
+                    <option value="fast">⚡ Fast Direct (~3x Faster)</option>
+                    <option value="balanced">🧠 Balanced Thinking</option>
+                    <option value="deep">🔬 Deep Overnight CoT</option>
+                  </OptionSelect>
+                </Field>
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-border/60 bg-[#0d0f14] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <FileText className="h-3.5 w-3.5 text-indigo-400" />
+                    <span className="font-bold text-foreground">
+                      1. Choose Journal Entries ({selectedJournalSlugs.length} selected — leave 0 for auto)
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {(["all", "day", "week", "month", "quarter", "year"] as const).map((pt) => (
+                      <button
+                        key={pt}
+                        type="button"
+                        onClick={() => setScopePeriodFilter(pt)}
+                        className={`rounded px-2 py-0.5 text-[10px] font-semibold uppercase transition ${
+                          scopePeriodFilter === pt
+                            ? "bg-indigo-600 text-white"
+                            : "bg-secondary/50 text-muted-foreground hover:text-foreground"
+                        }`}
+                      >
+                        {pt}
+                      </button>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedJournalSlugs(filteredSelectableJournals.map((j) => j.slug))
+                      }
+                      className="ml-1 text-[10px] text-indigo-400 hover:underline px-1"
+                    >
+                      Select All
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSelectedJournalSlugs([])}
+                      className="text-[10px] text-muted-foreground hover:underline px-1"
+                    >
+                      Clear
+                    </button>
+                  </div>
+                </div>
+
+                <div className="max-h-48 overflow-y-auto space-y-1 pr-1">
+                  {filteredSelectableJournals.length === 0 ? (
+                    <div className="py-4 text-center text-muted-foreground">
+                      No non-empty journal entries found for this filter.
+                    </div>
+                  ) : (
+                    filteredSelectableJournals.map((j) => {
+                      const checked = selectedJournalSlugs.includes(j.slug);
+                      return (
+                        <label
+                          key={j.slug}
+                          className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 cursor-pointer transition ${
+                            checked
+                              ? "border-indigo-500/50 bg-indigo-500/15 text-foreground"
+                              : "border-border/40 bg-[#141722] text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(c) => {
+                                if (c === true) {
+                                  setSelectedJournalSlugs((prev) => [...prev, j.slug]);
+                                } else {
+                                  setSelectedJournalSlugs((prev) =>
+                                    prev.filter((s) => s !== j.slug)
+                                  );
+                                }
+                              }}
+                            />
+                            <span className="rounded bg-secondary px-1.5 py-0.5 text-[9px] font-bold uppercase text-foreground">
+                              {j.periodType}
+                            </span>
+                            <span className="font-medium text-foreground truncate">
+                              {j.title}
+                            </span>
+                            <span className="text-[10px] text-muted-foreground font-mono">
+                              ({j.slug})
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-1.5 shrink-0 text-[10px]">
+                            {j.hasPrep && (
+                              <span className="rounded bg-indigo-500/15 border border-indigo-500/30 px-1.5 py-0.5 text-indigo-300">
+                                Prep ({j.prepCharLen}c)
+                              </span>
+                            )}
+                            {j.hasReview && (
+                              <span className="rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.5 text-emerald-300">
+                                Review ({j.reviewCharLen}c)
+                              </span>
+                            )}
+                          </div>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2 rounded-xl border border-border/60 bg-[#0d0f14] p-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <TrendingUp className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="font-bold text-foreground">
+                      2. Choose Specific Trades ({selectedTradeKeys.length} selected — leave 0 for auto)
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedTradeKeys([])}
+                    className="text-[10px] text-muted-foreground hover:underline"
+                  >
+                    Clear Trades
+                  </button>
+                </div>
+
+                <div className="max-h-40 overflow-y-auto space-y-1 pr-1">
+                  {selectableTrades.length === 0 ? (
+                    <div className="py-3 text-center text-muted-foreground">
+                      No executed trades recorded yet.
+                    </div>
+                  ) : (
+                    selectableTrades.map((t) => {
+                      const checked = selectedTradeKeys.includes(t.key);
+                      return (
+                        <label
+                          key={t.key}
+                          className={`flex items-center justify-between gap-2 rounded-lg border px-2.5 py-1.5 cursor-pointer transition ${
+                            checked
+                              ? "border-indigo-500/50 bg-indigo-500/15 text-foreground"
+                              : "border-border/40 bg-[#141722] text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2 truncate">
+                            <Checkbox
+                              checked={checked}
+                              onCheckedChange={(c) => {
+                                if (c === true) {
+                                  setSelectedTradeKeys((prev) => [...prev, t.key]);
+                                } else {
+                                  setSelectedTradeKeys((prev) =>
+                                    prev.filter((k) => k !== t.key)
+                                  );
+                                }
+                              }}
+                            />
+                            <span className="font-mono text-[10px]">
+                              {t.openedAt.slice(0, 16).replace("T", " ")}
+                            </span>
+                            <span className="font-bold text-foreground">{t.symbol}</span>
+                            <span className="uppercase text-[10px]">{t.direction}</span>
+                          </div>
+                          <div className="flex items-center gap-2 shrink-0 font-mono text-[11px]">
+                            {t.estimated1RUsd && (
+                              <span className="text-[10px] text-muted-foreground">
+                                1R≈${t.estimated1RUsd}
+                              </span>
+                            )}
+                            <span
+                              className={
+                                t.netPnl >= 0 ? "text-emerald-400 font-bold" : "text-rose-400 font-bold"
+                              }
+                            >
+                              {t.netPnl >= 0 ? `+$${t.netPnl.toFixed(2)}` : `-$${Math.abs(t.netPnl).toFixed(2)}`}
+                            </span>
+                          </div>
+                        </label>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+
+              <Field label="3. Optional Specific Instruction or Question for This Audit">
+                <textarea
+                  rows={2}
+                  value={customFocusPrompt}
+                  onChange={(e) => setCustomFocusPrompt(e.target.value)}
+                  placeholder="e.g., Compare my execution and emotional triggers in this week's review against the prior 2 weeks..."
+                  className="w-full rounded-lg border border-border/70 bg-[#0d0f14] p-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                />
+              </Field>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/40">
+                <Button variant="outline" size="sm" onClick={() => setScopeModalOpen(false)}>
+                  Cancel
+                </Button>
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    void handleGenerateAudit(scopeHorizon, {
+                      selectedJournalSlugs,
+                      selectedTradeKeys,
+                      includeTabs,
+                      thinkingMode,
+                      customFocusPrompt,
+                    })
+                  }
+                >
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                  Run Scoped Audit Now
+                </Button>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
+
         {/* ADD / EDIT MULTI-HORIZON GOAL DIALOG */}
         <Dialog open={goalModalOpen} onOpenChange={setGoalModalOpen}>
           <DialogContent>
@@ -1157,7 +2113,7 @@ function Progress() {
                 <input
                   className={fieldClass}
                   value={editingGoal.targetMetric || ""}
-                  placeholder="e.g., 0 revenge trades; stop trading for the day after -2R"
+                  placeholder="e.g., Risk strictly 1.0R per trade; stop trading after -2R"
                   onChange={(e) =>
                     setEditingGoal((prev) => ({ ...prev, targetMetric: e.target.value }))
                   }
