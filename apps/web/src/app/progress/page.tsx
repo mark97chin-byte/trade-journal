@@ -270,6 +270,7 @@ function Progress() {
   const [notebookSearch, setNotebookSearch] = useState("");
   const [activeDocType, setActiveDocType] = useState<"report" | "chat">("report");
   const [selectedReportId, setSelectedReportId] = useState<string | null>(null);
+  const [latestKnownReportId, setLatestKnownReportId] = useState<string | null>(null);
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
 
   const [showReasoning, setShowReasoning] = useState(false);
@@ -328,8 +329,13 @@ function Progress() {
           if (json.activeSessionId && !selectedSessionId) {
             setSelectedSessionId(json.activeSessionId);
           }
-          if (json.reports?.length > 0 && !selectedReportId) {
-            setSelectedReportId(json.reports[0].id);
+          if (json.reports?.length > 0) {
+            const newestId = json.reports[0].id;
+            if (!selectedReportId || (latestKnownReportId && newestId !== latestKnownReportId)) {
+              setSelectedReportId(newestId);
+              setActiveDocType("report");
+            }
+            setLatestKnownReportId(newestId);
           }
         }
       } catch {}
@@ -343,7 +349,12 @@ function Progress() {
 
   const activeJobs = coachData?.activeJobs || [];
   const isAnyJobRunning = activeJobs.length > 0;
-  const runningAuditJob = activeJobs.find((j) => j.jobType.startsWith("audit_"));
+  const runningAuditJob = activeJobs.find(
+    (j) => j.jobType.startsWith("audit_") && j.status === "running"
+  );
+  const queuedAuditJobs = activeJobs.filter(
+    (j) => j.jobType.startsWith("audit_") && j.status === "queued"
+  );
   const runningChatJob = activeJobs.find((j) => j.jobType === "chat");
 
   useEffect(() => {
@@ -410,6 +421,30 @@ function Progress() {
         setFailure(json.error || "Failed to start longitudinal AI report.");
       } else {
         setSelectedReportId(null);
+        await fetchCoachData();
+      }
+    } catch (err: any) {
+      setFailure(err?.message || "Failed to connect to KoboldCpp.");
+    }
+  };
+
+  const handleQueueBatchAudits = async (horizons: GoalHorizon[]) => {
+    setFailure("");
+    setActiveDocType("report");
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "queue_multiple_reports",
+          horizons,
+          customScope: { thinkingMode },
+        }),
+      });
+      const json = await res.json();
+      if (!json.ok) {
+        setFailure(json.error || "Failed to queue audits.");
+      } else {
         await fetchCoachData();
       }
     } catch (err: any) {
@@ -857,54 +892,51 @@ function Progress() {
                 <select
                   value={thinkingMode}
                   onChange={(e) => setThinkingMode(e.target.value as any)}
-                  className="h-8 rounded-lg border border-border/70 bg-[#0d0f14] px-2 text-xs text-foreground outline-none"
-                  title="Choose AI reasoning depth vs speed"
+                  className="h-8 rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none font-medium"
+                  title="Unified Reasoning Depth & Output Token Budget (Applies to all audits & chats)"
                 >
-                  <option value="fast">⚡ Fast Direct (Best for Chat &amp; Quick Audits)</option>
-                  <option value="balanced">🧠 Balanced Reasoning (Recommended for Weekly)</option>
-                  <option value="deep">🔬 Deep Overnight CoT (Monthly / Quarterly)</option>
+                  <option value="fast">⚡ Fast Direct · 8K Output (No &lt;think&gt; delay)</option>
+                  <option value="balanced">🧠 Balanced Reasoning · 12K Output (Recommended)</option>
+                  <option value="deep">🔬 Deep Overnight CoT · 16K Output (Max Depth)</option>
                 </select>
 
-                {runningAuditJob ? (
-                  <div className="flex items-center gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-1.5 text-xs">
-                    <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400" />
-                    <span className="font-semibold text-amber-200">
-                      {runningAuditJob.label}...
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => void handleCancelJob(runningAuditJob.id)}
-                      className="ml-1 inline-flex items-center gap-1 rounded-lg bg-rose-500/20 hover:bg-rose-500/30 border border-rose-500/40 px-2 py-0.5 text-[11px] font-semibold text-rose-300 transition"
-                    >
-                      <Square className="h-2.5 w-2.5 fill-current" />
-                      <span>Cancel</span>
-                    </button>
-                  </div>
-                ) : (
-                  <>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      onClick={() => setScopeModalOpen(true)}
-                      className="text-xs border-indigo-500/50 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25"
-                    >
-                      <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
-                      Pick Entries ({selectedJournalSlugs.length || "Auto"})
-                    </Button>
-                    {(["weekly", "monthly", "quarterly", "yearly"] as GoalHorizon[]).map((h) => (
-                      <Button
-                        key={h}
-                        size="sm"
-                        variant={h === "weekly" ? "default" : "outline"}
-                        onClick={() => void handleGenerateAudit(h)}
-                        className="text-xs capitalize"
-                      >
-                        <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                        {`Run ${h}`}
-                      </Button>
-                    ))}
-                  </>
-                )}
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => setScopeModalOpen(true)}
+                  className="text-xs border-indigo-500/50 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25"
+                >
+                  <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
+                  Pick Entries ({selectedJournalSlugs.length || "Auto"})
+                </Button>
+
+                {(["weekly", "monthly", "quarterly", "yearly"] as GoalHorizon[]).map((h) => (
+                  <Button
+                    key={h}
+                    size="sm"
+                    variant={h === "weekly" && !runningAuditJob ? "default" : "outline"}
+                    onClick={() => void handleGenerateAudit(h)}
+                    className="text-xs capitalize"
+                    title={
+                      runningAuditJob
+                        ? `Add ${h} audit to sequential background queue`
+                        : `Run ${h} audit or mid-period check-in now`
+                    }
+                  >
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    {runningAuditJob ? `+ Queue ${h}` : `Run ${h}`}
+                  </Button>
+                ))}
+
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handleQueueBatchAudits(["weekly", "monthly", "quarterly"])}
+                  className="text-xs border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                  title="Queue Weekly, Monthly, and Quarterly audits to run back-to-back in sequence while you are away"
+                >
+                  ⚡ Queue W+M+Q
+                </Button>
 
                 <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
 
@@ -918,6 +950,55 @@ function Progress() {
                 </Button>
               </div>
             </div>
+
+            {/* SEQUENTIAL BACKGROUND QUEUE STATUS BAR */}
+            {(runningAuditJob || queuedAuditJobs.length > 0) && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3.5 py-2.5 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  {runningAuditJob && (
+                    <span className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/50 bg-black/40 px-2.5 py-1 font-semibold text-amber-200">
+                      <RefreshCw className="h-3.5 w-3.5 animate-spin text-amber-400" />
+                      <span>Running Now: {runningAuditJob.label}</span>
+                      <button
+                        type="button"
+                        onClick={() => void handleCancelJob(runningAuditJob.id)}
+                        className="ml-1 rounded bg-rose-500/25 hover:bg-rose-500/40 px-1.5 py-0.5 text-[10px] text-rose-200"
+                        title="Abort active generation"
+                      >
+                        Stop
+                      </button>
+                    </span>
+                  )}
+
+                  {queuedAuditJobs.map((qj, idx) => (
+                    <span
+                      key={qj.id}
+                      className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-[#0d0f14] px-2.5 py-1 text-[11px] text-muted-foreground"
+                    >
+                      <span className="font-mono text-indigo-400 font-bold">#{idx + 1} Queued:</span>
+                      <span className="text-foreground">{qj.label}</span>
+                      <button
+                        type="button"
+                        onClick={() => void handleCancelJob(qj.id)}
+                        className="ml-1 text-rose-400 hover:text-rose-300"
+                        title="Remove from queue"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => void handleCancelJob()}
+                  className="inline-flex items-center gap-1 rounded-lg border border-rose-500/40 bg-rose-500/15 hover:bg-rose-500/25 px-2.5 py-1 text-[11px] font-semibold text-rose-300"
+                >
+                  <Square className="h-2.5 w-2.5 fill-current" />
+                  <span>Clear All Queue</span>
+                </button>
+              </div>
+            )}
 
             {configOpen && (
               <div className="grid grid-cols-1 md:grid-cols-3 gap-3 rounded-xl border border-border/60 bg-[#0d0f14] p-3 text-xs">

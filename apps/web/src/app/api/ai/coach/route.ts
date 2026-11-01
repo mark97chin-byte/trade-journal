@@ -16,6 +16,76 @@ export const dynamic = "force-dynamic";
 
 const activeJobControllers = new Map<string, AbortController>();
 
+let isQueueWorkerActive = false;
+
+function getIsoWeekKey(d: Date): string {
+  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const dayNum = date.getUTCDay() || 7;
+  date.setUTCDate(date.getUTCDate() + 4 - dayNum);
+  const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
+  const weekNo = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
+  return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+
+function getPeriodTimingContext(horizon: GoalHorizon, now: Date): {
+  isMidPeriod: boolean;
+  timingTag: string;
+  basePeriodKey: string;
+  timingInstruction: string;
+} {
+  const dayOfWeek = now.getDay(); // 0=Sun, 6=Sat, 5=Fri
+  const dayOfMonth = now.getDate();
+  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
+  const monthInQuarter = now.getMonth() % 3; // 0, 1, 2
+
+  if (horizon === "weekly") {
+    const isEndOfWeek = dayOfWeek === 0 || dayOfWeek === 6 || dayOfWeek === 5;
+    const wkKey = getIsoWeekKey(now);
+    return {
+      isMidPeriod: !isEndOfWeek,
+      timingTag: isEndOfWeek ? "End-of-Week Audit" : "Mid-Week Check-In",
+      basePeriodKey: wkKey,
+      timingInstruction: isEndOfWeek
+        ? `This is an END-OF-WEEK AUDIT for ${wkKey}. Evaluate the full week's execution against the prior 3 weeks and set concrete adjustments for next week.`
+        : `This is a MID-WEEK PROGRESS CHECK-IN for ${wkKey} (ran mid-period). Do NOT complain that the week is incomplete—evaluate progress so far this week against prior weeks, highlight early behavioral wins or leaks, and give immediate tactical adjustments for the remaining sessions of this week!`,
+    };
+  }
+
+  if (horizon === "monthly") {
+    const isEndOfMonth = dayOfMonth >= daysInMonth - 3 || dayOfMonth <= 2;
+    const mKey = now.toISOString().slice(0, 7);
+    return {
+      isMidPeriod: !isEndOfMonth,
+      timingTag: isEndOfMonth ? "Monthly Audit" : `Mid-Month Check-In (Day ${dayOfMonth}/${daysInMonth})`,
+      basePeriodKey: mKey,
+      timingInstruction: isEndOfMonth
+        ? `This is an END-OF-MONTH AUDIT for ${mKey}. Compare the completed month against the prior 3 months.`
+        : `This is a MID-MONTH PROGRESS CHECK-IN (${mKey}, Day ${dayOfMonth} of ${daysInMonth}). Evaluate month-to-date progress against prior months and all recent Weekly/Check-In reports, and provide mid-course corrections for the rest of the month!`,
+    };
+  }
+
+  if (horizon === "quarterly") {
+    const qNum = Math.floor(now.getMonth() / 3) + 1;
+    const qKey = `${now.getFullYear()}-Q${qNum}`;
+    const isEndOfQuarter = monthInQuarter === 2 && dayOfMonth >= daysInMonth - 5;
+    return {
+      isMidPeriod: !isEndOfQuarter,
+      timingTag: isEndOfQuarter ? "Quarterly Synthesis" : "Mid-Quarter Progress Pulse",
+      basePeriodKey: qKey,
+      timingInstruction: `This is a ${isEndOfQuarter ? "QUARTERLY SYNTHESIS" : "MID-QUARTER PROGRESS PULSE"} for ${qKey}. Synthesize all journals, trades, and prior Weekly/Monthly reports within this quarter window to assess trajectory and course-correct for the remainder of the quarter.`,
+    };
+  }
+
+  const yKey = `${now.getFullYear()}`;
+  return {
+    isMidPeriod: true,
+    timingTag: "Annual Evolution Check-In",
+    basePeriodKey: yKey,
+    timingInstruction: `This is an ANNUAL EVOLUTION AUDIT for ${yKey}. Synthesize year-to-date progress, habit maturity, and macro account risk discipline.`,
+  };
+}
+
+
 function getControlDaemonUrl(baseUrl: string): string {
   try {
     const clean = (baseUrl || "[http://100.75.201.34:5001](http://100.75.201.34:5001)").replace(/\/+$/, "").replace(/\/v1$/, "");
@@ -728,42 +798,41 @@ async function executeAuditJobInBackground(
       .prepare(`SELECT * FROM trader_goals WHERE status != 'completed' ORDER BY updated_at DESC`)
       .all() as any[];
 
-    const priorReports = db
-      .prepare(`SELECT period_key, horizon, title, summary_md, created_at FROM ai_coach_reports WHERE horizon = ? ORDER BY created_at DESC LIMIT 3`)
-      .all(horizon) as any[];
-
     const now = new Date();
+    const timing = getPeriodTimingContext(horizon, now);
+
+    // Pull ALL non-deleted reports within the lookback window (Weekly, Monthly, Scoped, etc.)
+    // If the user deletes an irrelevant report in the Notebook, it is automatically excluded here!
+    const priorReports = db
+      .prepare(
+        `SELECT period_key, horizon, title, summary_md, action_items_json, created_at
+         FROM ai_coach_reports
+         WHERE created_at >= ?
+         ORDER BY created_at DESC LIMIT 6`
+      )
+      .all(telemetry.cutoffDate) as any[];
+
     const isCustomScoped =
       (customScope?.selectedJournalSlugs && customScope.selectedJournalSlugs.length > 0) ||
       (customScope?.selectedTradeKeys && customScope.selectedTradeKeys.length > 0) ||
       Boolean(customScope?.customFocusPrompt?.trim());
 
+    // Count how many reports already exist for this base period so every run gets a unique #N sequence number
+    const existingCountRow = db
+      .prepare(`SELECT COUNT(*) as cnt FROM ai_coach_reports WHERE period_key LIKE ?`)
+      .get(`${timing.basePeriodKey}%`) as { cnt: number } | undefined;
+    const seqNum = (existingCountRow?.cnt || 0) + 1;
+    const shortStamp = now.toISOString().slice(5, 16).replace("T", " ");
+
     const periodKey = isCustomScoped
-      ? `Scoped (${parsedJournals.length}J / ${recentTradesSample.length}T)`
-      : horizon === "weekly"
-      ? `${now.toISOString().slice(0, 10)}`
-      : horizon === "monthly"
-      ? `${now.toISOString().slice(0, 7)}`
-      : horizon === "quarterly"
-      ? `${now.getFullYear()}-Q${Math.floor(now.getMonth() / 3) + 1}`
-      : `${now.getFullYear()}`;
+      ? `${timing.basePeriodKey}-Scoped-#${seqNum}`
+      : `${timing.basePeriodKey}-#${seqNum}`;
 
     const reportTitle = isCustomScoped
-      ? `Scoped Audit · ${parsedJournals.map((j: any) => j.slug).slice(0, 2).join(", ")}${parsedJournals.length > 2 ? ` +${parsedJournals.length - 2}` : ""}`
-      : horizon === "weekly"
-      ? `Weekly Delta Audit (${periodKey})`
-      : horizon === "monthly"
-      ? `Monthly Habit & Trajectory Report (${periodKey})`
-      : horizon === "quarterly"
-      ? `Quarterly Psychological Synthesis (${periodKey})`
-      : `Annual Trading Evolution Audit (${periodKey})`;
+      ? `Scoped ${timing.timingTag} #${seqNum} · ${parsedJournals.map((j: any) => j.slug).slice(0, 2).join(", ") || timing.basePeriodKey} (${shortStamp})`
+      : `${timing.timingTag} #${seqNum} · ${timing.basePeriodKey} (${shortStamp})`;
 
-    const horizonRoleGuide =
-      horizon === "weekly"
-        ? "This is a WEEKLY DELTA AUDIT: Use the most recent week (Target Week) as your primary subject and explicitly compare it against the previous 3 weeks (Week -1, Week -2, Week -3). Focus on immediate session execution, emotional triggers, and week-over-week shifts."
-        : horizon === "monthly"
-        ? "This is a MONTHLY HABIT & TRAJECTORY AUDIT: Compare the Target Month against the previous 3 months (Month -1, Month -2, Month -3). Focus on recurring behavioral loops, routine consistency, and whether weekly adjustments solidified into habits."
-        : "This is a MACRO QUARTERLY / YEARLY AUDIT: Synthesize multi-month evolution, risk-of-ruin discipline, drawdown recovery, and long-term edge maturity across quarters.";
+    const horizonRoleGuide = timing.timingInstruction;
 
     const customFocusSection = customScope?.customFocusPrompt?.trim()
       ? `\n=== SPECIFIC FOCUS REQUESTED BY TRADER ===\n${customScope.customFocusPrompt.trim()}\n`
@@ -858,7 +927,7 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
     const thinkingMode = customScope?.thinkingMode || "balanced";
     const maxOut =
       customScope?.maxOutputTokens ||
-      (thinkingMode === "fast" ? 6144 : thinkingMode === "balanced" ? 8192 : 12288);
+      (thinkingMode === "fast" ? 8192 : thinkingMode === "balanced" ? 12288 : 16384);
 
     const aiRes = await runKoboldAi(deepPrompt, {
       persona: "coach",
@@ -1027,6 +1096,64 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
     }
   } finally {
     activeJobControllers.delete(jobId);
+  }
+}
+
+
+async function processAuditQueue() {
+  if (isQueueWorkerActive) return;
+  isQueueWorkerActive = true;
+  try {
+    while (true) {
+      const dbPath = resolveDbPath();
+      const db = new Database(dbPath);
+      let nextJob: any = null;
+      try {
+        ensureCoachTables(db);
+        // If there is already a 'running' audit job that has an active controller, wait for it
+        const runningRow = db
+          .prepare(`SELECT id FROM ai_background_jobs WHERE status = 'running' AND job_type LIKE 'audit_%' LIMIT 1`)
+          .get() as any;
+        if (runningRow && activeJobControllers.has(runningRow.id)) {
+          db.close();
+          break;
+        }
+        nextJob = db
+          .prepare(`SELECT * FROM ai_background_jobs WHERE status = 'queued' AND job_type LIKE 'audit_%' ORDER BY started_at ASC LIMIT 1`)
+          .get() as any;
+        if (nextJob) {
+          db.prepare(`UPDATE ai_background_jobs SET status = 'running', updated_at = ? WHERE id = ?`).run(
+            new Date().toISOString(),
+            nextJob.id
+          );
+        }
+      } finally {
+        db.close();
+      }
+
+      if (!nextJob) break;
+
+      let payload: { horizon: GoalHorizon; customScope?: CustomAuditScope } = {
+        horizon: (nextJob.target_id as GoalHorizon) || "weekly",
+      };
+      try {
+        const parsed = JSON.parse(nextJob.result_json || "{}");
+        if (parsed.horizon) payload.horizon = parsed.horizon;
+        if (parsed.customScope) payload.customScope = parsed.customScope;
+      } catch {}
+
+      const controller = new AbortController();
+      activeJobControllers.set(nextJob.id, controller);
+
+      await executeAuditJobInBackground(
+        nextJob.id,
+        payload.horizon,
+        controller,
+        payload.customScope
+      );
+    }
+  } finally {
+    isQueueWorkerActive = false;
   }
 }
 
@@ -1310,7 +1437,7 @@ export async function GET(req: NextRequest) {
     `).run(staleCutoff);
 
     const activeJobsRaw = db
-      .prepare(`SELECT id, job_type as jobType, target_id as targetId, label, status, result_json as resultJson, started_at as startedAt FROM ai_background_jobs WHERE status = 'running' ORDER BY started_at DESC`)
+      .prepare(`SELECT id, job_type as jobType, target_id as targetId, label, status, result_json as resultJson, started_at as startedAt FROM ai_background_jobs WHERE status IN ('running', 'queued') ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at ASC`)
       .all() as any[];
 
     const activeJobs = activeJobsRaw.map((j) => {
@@ -1770,6 +1897,10 @@ export async function POST(req: NextRequest) {
       const targetJobId = body.jobId ? String(body.jobId) : null;
       const nowIso = new Date().toISOString();
 
+      const targetRow = targetJobId
+        ? (db.prepare(`SELECT status FROM ai_background_jobs WHERE id = ?`).get(targetJobId) as any)
+        : null;
+
       if (targetJobId) {
         const ctrl = activeJobControllers.get(targetJobId);
         if (ctrl) ctrl.abort();
@@ -1780,21 +1911,26 @@ export async function POST(req: NextRequest) {
           ctrl.abort();
           activeJobControllers.delete(jid);
         }
-        db.prepare(`UPDATE ai_background_jobs SET status = 'cancelled', error_text = 'Cancelled by user', updated_at = ? WHERE status = 'running'`).run(nowIso);
+        db.prepare(`UPDATE ai_background_jobs SET status = 'cancelled', error_text = 'Cancelled by user', updated_at = ? WHERE status IN ('running', 'queued')`).run(nowIso);
       }
 
-      const settings = loadLocalAiSettings();
-      await abortKoboldGeneration(settings.baseUrl);
-      const daemonUrl = getControlDaemonUrl(settings.baseUrl);
-      try {
-        await fetch(daemonUrl, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "abort" }),
-          signal: AbortSignal.timeout(2000),
-        });
-      } catch {}
+      // Only send hardware abort to KoboldCpp if we cancelled a currently 'running' job (not a 'queued' one)
+      if (!targetJobId || targetRow?.status === "running") {
+        const settings = loadLocalAiSettings();
+        await abortKoboldGeneration(settings.baseUrl);
+        const daemonUrl = getControlDaemonUrl(settings.baseUrl);
+        try {
+          await fetch(daemonUrl, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ action: "abort" }),
+            signal: AbortSignal.timeout(2000),
+          });
+        } catch {}
+      }
 
+      // Trigger next item in queue if any remain
+      setTimeout(() => void processAuditQueue(), 300);
       return NextResponse.json({ ok: true, cancelled: true });
     }
 
@@ -1909,8 +2045,10 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    if (action === "generate_report" || action === "overnight_auto_audit") {
-      const horizon: GoalHorizon = body.horizon || "weekly";
+    if (action === "generate_report" || action === "queue_multiple_reports" || action === "overnight_auto_audit") {
+      const horizonsToQueue: GoalHorizon[] = Array.isArray(body.horizons) && body.horizons.length > 0
+        ? body.horizons
+        : [body.horizon || "weekly"];
       const customScope: CustomAuditScope | undefined = body.customScope;
 
       if (action === "overnight_auto_audit") {
@@ -1924,28 +2062,42 @@ export async function POST(req: NextRequest) {
         }
       }
 
-      const nowIso = new Date().toISOString();
-      const jobId = `job_audit_${horizon}_${Date.now()}`;
-      const label =
-        customScope?.selectedJournalSlugs?.length || customScope?.selectedTradeKeys?.length
-          ? `Scoped Audit (${customScope?.selectedJournalSlugs?.length || 0} journals, ${customScope?.selectedTradeKeys?.length || 0} trades)`
-          : `${horizon.charAt(0).toUpperCase() + horizon.slice(1)} Longitudinal Audit`;
+      const queuedJobIds: string[] = [];
+      let baseTs = Date.now();
 
-      db.prepare(`
-        INSERT INTO ai_background_jobs (id, job_type, target_id, label, status, started_at, updated_at)
-        VALUES (?, ?, ?, ?, 'running', ?, ?)
-      `).run(jobId, `audit_${horizon}`, horizon, label, nowIso, nowIso);
+      for (const hz of horizonsToQueue) {
+        baseTs += 5;
+        const nowIso = new Date(baseTs).toISOString();
+        const jobId = `job_audit_${hz}_${baseTs}`;
+        const timing = getPeriodTimingContext(hz, new Date());
+        const label =
+          customScope?.selectedJournalSlugs?.length || customScope?.selectedTradeKeys?.length
+            ? `Scoped ${timing.timingTag} (${customScope?.selectedJournalSlugs?.length || 0}J / ${customScope?.selectedTradeKeys?.length || 0}T)`
+            : `${timing.timingTag} (${timing.basePeriodKey})`;
 
-      const controller = new AbortController();
-      activeJobControllers.set(jobId, controller);
+        db.prepare(`
+          INSERT INTO ai_background_jobs (id, job_type, target_id, label, status, result_json, started_at, updated_at)
+          VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)
+        `).run(
+          jobId,
+          `audit_${hz}`,
+          hz,
+          label,
+          JSON.stringify({ horizon: hz, customScope }),
+          nowIso,
+          nowIso
+        );
+        queuedJobIds.push(jobId);
+      }
 
-      void executeAuditJobInBackground(jobId, horizon, controller, customScope);
+      // Kick off sequential queue processor
+      setTimeout(() => void processAuditQueue(), 50);
 
       return NextResponse.json({
         ok: true,
         background: true,
-        jobId,
-        horizon,
+        jobIds: queuedJobIds,
+        jobId: queuedJobIds[0],
       });
     }
 

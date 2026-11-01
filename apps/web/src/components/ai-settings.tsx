@@ -638,39 +638,12 @@ export function AiSettings() {
           </div>
 
           <div className="p-4 space-y-4">
-            <div className="grid gap-3 sm:grid-cols-4">
-              <div className="space-y-1">
-                <Label>Context Window</Label>
-                <OptionSelect
-                  value={String(curPersona.contextSize)}
-                  onValueChange={(val) => {
-                    const num = Number(val);
-                    updateCurrentPersona({ contextSize: num });
-                    if (num > hwState.contextSize) {
-                      setHwState((prev) => ({ ...prev, contextSize: num }));
-                    }
-                  }}
-                >
-                  {currentCtxOptions.map((opt) => (
-                    <option key={opt.value} value={String(opt.value)}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </OptionSelect>
-              </div>
-
-              <div className="space-y-1">
-                <Label>Max Output Allowance</Label>
-                <OptionSelect
-                  value={String(curPersona.maxOutputTokens)}
-                  onValueChange={(val) => updateCurrentPersona({ maxOutputTokens: Number(val) })}
-                >
-                  {currentOutOptions.map((opt) => (
-                    <option key={opt.value} value={String(opt.value)}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </OptionSelect>
+            <div className="grid gap-4 sm:grid-cols-3 items-center">
+              <div className="rounded-lg border border-indigo-500/25 bg-indigo-950/15 px-3 py-2 text-[11px] text-indigo-200">
+                <div className="font-bold text-indigo-300">Unified Token &amp; Reasoning Control</div>
+                <div className="text-muted-foreground mt-0.5">
+                  Server Context is fixed at <strong>{hwState.contextSize.toLocaleString()} tokens</strong>. Output budgets (8K Fast / 12K Balanced / 16K Deep) are selected directly in the <strong>Progress</strong> tab.
+                </div>
               </div>
 
               <div className="space-y-1">
