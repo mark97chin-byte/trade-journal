@@ -2,6 +2,8 @@ import { createAnthropic } from "@ai-sdk/anthropic";
 import { createOpenAI } from "@ai-sdk/openai";
 import { APICallError, RetryError, generateText } from "ai";
 import Database from "better-sqlite3";
+import http from "http";
+import https from "https";
 import path from "path";
 import fs from "fs";
 import { getAiKey, getAiModel, getAiProvider } from "./settings";
@@ -49,7 +51,7 @@ the trader knows. Keep it tight.`,
   },
   coach: {
     contextSize: 32768,
-    maxOutputTokens: 8192,
+    maxOutputTokens: 12288,
     temperature: 0.6,
     topP: 0.95,
     systemPrompt: `You are a longitudinal trading psychology and behavioral performance analyst.
@@ -215,7 +217,8 @@ export function splitThinkAndAnswer(rawText: string): {
   };
 }
 
-async function singleKoboldStreamCall(
+// Native Node http.request streaming client with ZERO timeout (runs for hours if needed)
+function singleKoboldStreamCall(
   baseUrl: string,
   messages: Array<{ role: string; content: string }>,
   params: {
@@ -224,15 +227,16 @@ async function singleKoboldStreamCall(
     topP: number;
     reasoningEffort: string;
     enableThinking: boolean;
-    timeoutMs: number;
     abortSignal?: AbortSignal;
     onDelta?: (rawAcc: string, reasoningAcc: string) => void;
   }
 ): Promise<{ rawContent: string; explicitReasoning: string; finishReason: string }> {
-  const res = await fetch(`${baseUrl}/v1/chat/completions`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
+  return new Promise((resolve, reject) => {
+    const targetUrl = new URL(`${baseUrl}/v1/chat/completions`);
+    const isHttps = targetUrl.protocol === "https:";
+    const transport = isHttps ? https : http;
+
+    const postData = JSON.stringify({
       model: "koboldcpp",
       messages,
       max_tokens: params.maxTokens,
@@ -243,75 +247,127 @@ async function singleKoboldStreamCall(
       reasoning_effort: params.reasoningEffort,
       enable_thinking: params.enableThinking,
       stream: true,
-    }),
-    signal: params.abortSignal
-      ? AbortSignal.any([params.abortSignal, AbortSignal.timeout(params.timeoutMs)])
-      : AbortSignal.timeout(params.timeoutMs),
-  });
+    });
 
-  if (!res.ok) {
-    const errText = await res.text().catch(() => "");
-    throw new Error(`KoboldCpp error (${res.status}): ${errText.slice(0, 240)}`);
-  }
-
-  const reader = res.body?.getReader();
-  if (!reader) {
-    const json = (await res.json()) as any;
-    const choice = json?.choices?.[0];
-    return {
-      rawContent: choice?.message?.content || "",
-      explicitReasoning: choice?.message?.reasoning_content || choice?.message?.reasoning || "",
-      finishReason: choice?.finish_reason || "stop",
-    };
-  }
-
-  const decoder = new TextDecoder();
-  let buffer = "";
-  let accumulatedRaw = "";
-  let accumulatedReasoning = "";
-  let finishReason = "stop";
-  let lastEmitMs = 0;
-
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data:")) continue;
-      const dataStr = trimmed.slice(5).trim();
-      if (!dataStr || dataStr === "[DONE]") continue;
-      try {
-        const parsedChunk = JSON.parse(dataStr);
-        const choice = parsedChunk?.choices?.[0];
-        if (choice?.finish_reason) {
-          finishReason = choice.finish_reason;
+    const req = transport.request(
+      {
+        hostname: targetUrl.hostname,
+        port: targetUrl.port || (isHttps ? 443 : 80),
+        path: targetUrl.pathname + targetUrl.search,
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(postData),
+          Connection: "keep-alive",
+        },
+      },
+      (res) => {
+        if ((res.statusCode || 500) >= 400) {
+          let errBody = "";
+          res.on("data", (chunk) => {
+            errBody += chunk.toString();
+          });
+          res.on("end", () => {
+            reject(
+              new Error(`KoboldCpp HTTP ${res.statusCode}: ${errBody.slice(0, 240)}`)
+            );
+          });
+          return;
         }
-        const delta = choice?.delta;
-        if (delta) {
-          if (delta.content) accumulatedRaw += delta.content;
-          if (delta.reasoning_content || delta.reasoning) {
-            accumulatedReasoning += delta.reasoning_content || delta.reasoning;
+
+        let buffer = "";
+        let accumulatedRaw = "";
+        let accumulatedReasoning = "";
+        let finishReason = "stop";
+        let lastEmitMs = 0;
+
+        res.on("data", (chunk: Buffer) => {
+          buffer += chunk.toString("utf-8");
+          const lines = buffer.split("\n");
+          buffer = lines.pop() || "";
+
+          for (const line of lines) {
+            const trimmed = line.trim();
+            if (!trimmed.startsWith("data:")) continue;
+            const dataStr = trimmed.slice(5).trim();
+            if (!dataStr || dataStr === "[DONE]") continue;
+            try {
+              const parsedChunk = JSON.parse(dataStr);
+              const choice = parsedChunk?.choices?.[0];
+              if (choice?.finish_reason) {
+                finishReason = choice.finish_reason;
+              }
+              const delta = choice?.delta;
+              if (delta) {
+                if (delta.content) accumulatedRaw += delta.content;
+                if (delta.reasoning_content || delta.reasoning) {
+                  accumulatedReasoning += delta.reasoning_content || delta.reasoning;
+                }
+              }
+            } catch {}
           }
-        }
-      } catch {}
+
+          const now = Date.now();
+          if (now - lastEmitMs > 1200 && params.onDelta) {
+            lastEmitMs = now;
+            params.onDelta(accumulatedRaw, accumulatedReasoning);
+          }
+        });
+
+        res.on("end", () => {
+          if (params.onDelta) {
+            params.onDelta(accumulatedRaw, accumulatedReasoning);
+          }
+          resolve({
+            rawContent: accumulatedRaw,
+            explicitReasoning: accumulatedReasoning,
+            finishReason,
+          });
+        });
+
+        res.on("error", (err) => {
+          // If we already generated substantial content before a socket hiccup, resolve with what we have!
+          if (accumulatedRaw.length > 100) {
+            resolve({
+              rawContent: accumulatedRaw,
+              explicitReasoning: accumulatedReasoning,
+              finishReason: "length",
+            });
+          } else {
+            reject(err);
+          }
+        });
+      }
+    );
+
+    // Disable all socket timeouts so 30–120+ minute generations never drop
+    req.setTimeout(0);
+    req.on("socket", (socket) => {
+      socket.setTimeout(0);
+      socket.setKeepAlive(true, 30_000);
+    });
+
+    if (params.abortSignal) {
+      if (params.abortSignal.aborted) {
+        req.destroy(new Error("Aborted by user"));
+        return;
+      }
+      params.abortSignal.addEventListener(
+        "abort",
+        () => {
+          req.destroy(new Error("Aborted by user"));
+        },
+        { once: true }
+      );
     }
 
-    const now = Date.now();
-    if (now - lastEmitMs > 1200 && params.onDelta) {
-      lastEmitMs = now;
-      params.onDelta(accumulatedRaw, accumulatedReasoning);
-    }
-  }
+    req.on("error", (err) => {
+      reject(err);
+    });
 
-  return {
-    rawContent: accumulatedRaw,
-    explicitReasoning: accumulatedReasoning,
-    finishReason,
-  };
+    req.write(postData);
+    req.end();
+  });
 }
 
 export async function runKoboldAi(
@@ -344,10 +400,9 @@ export async function runKoboldAi(
       "\n\nIMPORTANT: Keep your internal <think> reasoning concise (under 350 words) so you have plenty of token budget to complete all 5 report sections and the closing JSON block without cutting off.";
   }
 
-  const maxTokens = Math.max(options.maxOutputTokens ?? persona.maxOutputTokens ?? 6144, 4096);
+  const maxTokens = Math.max(options.maxOutputTokens ?? persona.maxOutputTokens ?? 12288, 6144);
   const temperature = options.temperature ?? persona.temperature ?? 0.6;
   const topP = options.topP ?? persona.topP ?? 0.95;
-  const timeoutMs = options.timeoutMs ?? (options.persona === "coach" ? 1_800_000 : 180_000);
   const reasoningEffort =
     thinkingMode === "fast" ? "low" : thinkingMode === "deep" ? "high" : "medium";
 
@@ -363,7 +418,6 @@ export async function runKoboldAi(
       topP,
       reasoningEffort,
       enableThinking: thinkingMode !== "fast",
-      timeoutMs,
       abortSignal: options.abortSignal,
       onDelta: (rawAcc, reasonAcc) => {
         if (!options.onPartial) return;
@@ -382,47 +436,61 @@ export async function runKoboldAi(
     .filter(Boolean)
     .join("\n\n");
 
-  // Auto-Continuation: If the model hit max_tokens or got cut off mid-sentence before finishing
-  const looksCutOff =
-    firstPass.finishReason === "length" ||
-    (options.autoContinue &&
-      combinedAnswer.length > 100 &&
-      !/[.!?>`\]}]\s*$/.test(combinedAnswer.trim()));
+  // Multi-Pass Auto-Continuation (up to 3 continuation passes if the model stops mid-sentence or before closing JSON)
+  for (let pass = 1; pass <= 3; pass++) {
+    if (options.autoContinue === false || options.abortSignal?.aborted) break;
 
-  if (looksCutOff && options.autoContinue !== false && !options.abortSignal?.aborted) {
-    const contPass = await singleKoboldStreamCall(
-      baseUrl,
-      [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: prompt },
-        { role: "assistant", content: combinedAnswer },
+    const trimmedAns = combinedAnswer.trim();
+    const hasClosingJson = /```json[\s\S]*?```/i.test(trimmedAns);
+    const endsMidSentence =
+      trimmedAns.length > 80 && !/[.!?>`\]}*]\s*$/.test(trimmedAns);
+    const needsMore =
+      firstPass.finishReason === "length" ||
+      endsMidSentence ||
+      (options.persona === "coach" && !hasClosingJson && pass === 1);
+
+    if (!needsMore) break;
+
+    try {
+      const contPass = await singleKoboldStreamCall(
+        baseUrl,
+        [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: prompt },
+          { role: "assistant", content: combinedAnswer },
+          {
+            role: "user",
+            content:
+              "Continue writing seamlessly from the exact word where you stopped above. Do NOT repeat any prior text. Complete the remaining report sections (including Section 4 Action Plan and Section 5 Multi-Level Goals) and finish with the closing ```json block.",
+          },
+        ],
         {
-          role: "user",
-          content:
-            "Continue seamlessly from the exact word where you stopped above. Do NOT repeat what was already written—finish the remaining sections and append the closing ```json block.",
-        },
-      ],
-      {
-        maxTokens: 4096,
-        temperature,
-        topP,
-        reasoningEffort: "low",
-        enableThinking: false,
-        timeoutMs,
-        abortSignal: options.abortSignal,
-        onDelta: (rawCont) => {
-          if (!options.onPartial) return;
-          const contSplit = splitThinkAndAnswer(rawCont);
-          options.onPartial({
-            text: `${combinedAnswer}${contSplit.answer}`,
-            reasoning: combinedReasoning,
-          });
-        },
+          maxTokens: 8192,
+          temperature,
+          topP,
+          reasoningEffort: "low",
+          enableThinking: false,
+          abortSignal: options.abortSignal,
+          onDelta: (rawCont) => {
+            if (!options.onPartial) return;
+            const contSplit = splitThinkAndAnswer(rawCont);
+            options.onPartial({
+              text: `${combinedAnswer.trimEnd()} ${contSplit.answer.trimStart()}`,
+              reasoning: combinedReasoning,
+            });
+          },
+        }
+      );
+
+      const contSplit = splitThinkAndAnswer(contPass.rawContent);
+      if (contSplit.answer.trim()) {
+        combinedAnswer = `${combinedAnswer.trimEnd()} ${contSplit.answer.trimStart()}`;
+      } else {
+        break;
       }
-    );
-    const contSplit = splitThinkAndAnswer(contPass.rawContent);
-    if (contSplit.answer) {
-      combinedAnswer = `${combinedAnswer.trimEnd()} ${contSplit.answer.trimStart()}`;
+    } catch {
+      // Never lose already-generated text if a continuation pass fails
+      break;
     }
   }
 
@@ -456,6 +524,7 @@ export const runAi = async (prompt: string, maxOutputTokens = 1200): Promise<str
       const result = await runKoboldAi(prompt, {
         persona: "general",
         thinkingMode: "fast",
+        autoContinue: false,
         maxOutputTokens: Math.max(maxOutputTokens + 1500, 2500),
       });
       if (result.text.trim()) return result.text.trim();
@@ -515,3 +584,14 @@ export const runAi = async (prompt: string, maxOutputTokens = 1200): Promise<str
     throw new Error("AI request failed. Check your provider settings or try again shortly.");
   }
 };
+
+
+export function getControlDaemonUrl(baseUrl?: string): string {
+  try {
+    if (!baseUrl) return "http://127.0.0.1:5002";
+    const u = new URL(baseUrl);
+    return `${u.protocol}//${u.hostname}:5002`;
+  } catch {
+    return "http://127.0.0.1:5002";
+  }
+}

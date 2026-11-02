@@ -39,6 +39,12 @@ import {
   Check,
   X,
   Bell,
+  Maximize2,
+  Minimize2,
+  PanelLeftClose,
+  PanelLeftOpen,
+  BookOpen,
+  ArrowsUpFromLine,
 } from "lucide-react";
 
 const STAGES = ["Before trading", "During trading", "After trading"];
@@ -54,6 +60,12 @@ type NotebookFolder =
   | "custom"
   | "chats";
 
+interface GoalStep {
+  id: string;
+  text: string;
+  done: boolean;
+}
+
 interface TraderGoal {
   id: string;
   horizon: GoalHorizon;
@@ -63,6 +75,7 @@ interface TraderGoal {
   targetMetric: string;
   status: GoalStatus;
   progressPct: number;
+  steps?: GoalStep[];
   aiAccountabilityNote: string;
   updatedAt: string;
 }
@@ -217,6 +230,262 @@ function exportDocumentToPdfWindow(title: string, subtitle: string, bodyPreForma
   win.document.close();
 }
 
+
+// Interactive Markdown Renderer that reliably parses [label](url) (even with nested parentheses!)
+// and opens /journal or /trades links in the Side-by-Side Evidence Inspector
+function renderInlineTokens(
+  text: string,
+  onInspectLink?: (href: string, label: string) => void
+): React.ReactNode[] {
+  const nodes: React.ReactNode[] = [];
+  // Match [label](href) where label can contain anything except unescaped ] and href is (/... or https://...)
+  const linkRegex = /\[([^\]]+)\]\(((?:\/|https?:\/\/)[^\s)]+(?:\([^\s)]*\)[^\s)]*)*)\)/g;
+  let lastIndex = 0;
+  let match: RegExpExecArray | null;
+  let keyCounter = 0;
+
+  const formatBoldItalicCode = (segment: string, baseKey: string): React.ReactNode[] => {
+    const parts = segment.split(/(\*\*.*?\*\*|`[^`]+`|\*[^*]+\*)/g);
+    return parts.map((part, idx) => {
+      if (part.startsWith("**") && part.endsWith("**") && part.length > 4) {
+        return (
+          <strong key={`${baseKey}-b-${idx}`} className="font-bold text-foreground">
+            {part.slice(2, -2)}
+          </strong>
+        );
+      }
+      if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
+        return (
+          <code
+            key={`${baseKey}-c-${idx}`}
+            className="rounded bg-black/50 border border-border/60 px-1.5 py-0.5 font-mono text-[11px] text-indigo-300"
+          >
+            {part.slice(1, -1)}
+          </code>
+        );
+      }
+      if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
+        return (
+          <em key={`${baseKey}-i-${idx}`} className="italic text-foreground/90">
+            {part.slice(1, -1)}
+          </em>
+        );
+      }
+      return part;
+    });
+  };
+
+  while ((match = linkRegex.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(
+        ...formatBoldItalicCode(text.slice(lastIndex, match.index), `seg-${keyCounter++}`)
+      );
+    }
+    const label = match[1] || "";
+    const href = match[2] || "";
+    const isTradeLink = href.startsWith("/trades");
+    const isJournalLink = href.startsWith("/journal");
+
+    nodes.push(
+      <a
+        key={`lnk-${keyCounter++}`}
+        href={href}
+        onClick={(e) => {
+          if ((isTradeLink || isJournalLink) && onInspectLink) {
+            e.preventDefault();
+            onInspectLink(href, label);
+          }
+        }}
+        className={`inline-flex items-center gap-1 rounded-md border px-1.5 py-0.5 text-[11px] font-semibold transition mx-0.5 ${
+          isTradeLink
+            ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25"
+            : isJournalLink
+            ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25"
+            : "border-border bg-secondary text-indigo-300 underline"
+        }`}
+        title={
+          isTradeLink || isJournalLink
+            ? "Click to inspect side-by-side (or middle-click to open full tab)"
+            : href
+        }
+      >
+        <span>{isTradeLink ? "📈" : isJournalLink ? "📓" : "🔗"}</span>
+        <span className="underline decoration-dotted underline-offset-2">{label}</span>
+      </a>
+    );
+    lastIndex = match.index + match[0].length;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(...formatBoldItalicCode(text.slice(lastIndex), `tail-${keyCounter++}`));
+  }
+
+  return nodes;
+}
+
+function InteractiveCoachMarkdown({
+  value,
+  onInspectLink,
+}: {
+  value: string;
+  onInspectLink?: (href: string, label: string) => void;
+}) {
+  if (!value) return null;
+  const cleanedValue = value
+    .replace(/```json[\s\S]*$/i, "")
+    .replace(/\{\s*"goalAudits"\s*:[\s\S]*$/i, "")
+    .trimEnd();
+  const nl = String.fromCharCode(10);
+  const lines = cleanedValue.split(nl);
+  const elements: React.ReactNode[] = [];
+  let listItems: React.ReactNode[] = [];
+  let tableRows: string[][] = [];
+
+  const flushList = (keyPrefix: string) => {
+    if (listItems.length > 0) {
+      elements.push(
+        <ul key={`${keyPrefix}-ul`} className="list-disc pl-5 space-y-1.5 my-2 text-xs text-foreground/90">
+          {listItems}
+        </ul>
+      );
+      listItems = [];
+    }
+  };
+
+  const flushTable = (keyPrefix: string) => {
+    if (tableRows.length > 0) {
+      const header = tableRows[0] || [];
+      const body = tableRows.slice(1).filter((r) => !r.every((c) => /^[-:\s]+$/.test(c)));
+      elements.push(
+        <div key={`${keyPrefix}-tbl`} className="my-3 overflow-x-auto rounded-lg border border-border/60">
+          <table className="w-full text-left text-[11px]">
+            <thead className="bg-secondary/60 text-muted-foreground border-b border-border/50">
+              <tr>
+                {header.map((h, cIdx) => (
+                  <th key={cIdx} className="px-2.5 py-1.5 font-bold">
+                    {renderInlineTokens(h, onInspectLink)}
+                  </th>
+                ))}
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border/30">
+              {body.map((row, rIdx) => (
+                <tr key={rIdx} className="hover:bg-secondary/20">
+                  {row.map((cell, cIdx) => (
+                    <td key={cIdx} className="px-2.5 py-1.5">
+                      {renderInlineTokens(cell, onInspectLink)}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      );
+      tableRows = [];
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const rawLine = lines[i] || "";
+    const trimmed = rawLine.trim();
+
+    // If line is empty and we are currently accumulating table rows, peek ahead:
+    // Qwen/LLMs often insert blank lines between | Header |, |---|---|, and | Row |!
+    if (!trimmed) {
+      if (tableRows.length > 0) {
+        continue;
+      }
+      flushList(`l-${i}`);
+      continue;
+    }
+
+    if (trimmed.startsWith("|") && (trimmed.endsWith("|") || trimmed.split("|").length >= 3)) {
+      flushList(`l-${i}`);
+      const cleanRow = trimmed.replace(/^\|/, "").replace(/\|$/, "");
+      const cells = cleanRow.split("|").map((c) => c.trim());
+      tableRows.push(cells);
+      continue;
+    } else {
+      flushTable(`t-${i}`);
+    }
+
+    if (/^---+$/.test(trimmed)) {
+      flushList(`l-${i}`);
+      elements.push(<hr key={`hr-${i}`} className="my-4 border-border/50" />);
+      continue;
+    }
+
+    if (trimmed.startsWith("### ")) {
+      flushList(`l-${i}`);
+      elements.push(
+        <h3 key={`h3-${i}`} className="text-sm font-bold text-foreground mt-4 mb-1.5">
+          {renderInlineTokens(trimmed.slice(4), onInspectLink)}
+        </h3>
+      );
+      continue;
+    }
+
+    if (trimmed.startsWith("## ")) {
+      flushList(`l-${i}`);
+      elements.push(
+        <h2
+          key={`h2-${i}`}
+          className="text-base font-bold text-foreground mt-5 mb-2 border-b border-border/40 pb-1"
+        >
+          {renderInlineTokens(trimmed.slice(3), onInspectLink)}
+        </h2>
+      );
+      continue;
+    }
+
+    if (trimmed.startsWith("# ")) {
+      flushList(`l-${i}`);
+      elements.push(
+        <h1 key={`h1-${i}`} className="text-lg font-bold text-foreground mt-5 mb-2">
+          {renderInlineTokens(trimmed.slice(2), onInspectLink)}
+        </h1>
+      );
+      continue;
+    }
+
+    if (trimmed.startsWith("> ")) {
+      flushList(`l-${i}`);
+      elements.push(
+        <blockquote
+          key={`bq-${i}`}
+          className="my-2 border-l-2 border-indigo-400 bg-indigo-950/20 pl-3 py-1.5 italic text-xs text-indigo-200 rounded-r"
+        >
+          {renderInlineTokens(trimmed.slice(2), onInspectLink)}
+        </blockquote>
+      );
+      continue;
+    }
+
+    if (/^([-*•]|\d+\.)\s+/.test(trimmed)) {
+      const content = trimmed.replace(/^([-*•]|\d+\.)\s+/, "");
+      listItems.push(
+        <li key={`li-${i}`} className="leading-relaxed">
+          {renderInlineTokens(content, onInspectLink)}
+        </li>
+      );
+      continue;
+    }
+
+    flushList(`l-${i}`);
+    elements.push(
+      <p key={`p-${i}`} className="text-xs text-foreground/90 leading-relaxed my-2">
+        {renderInlineTokens(trimmed, onInspectLink)}
+      </p>
+    );
+  }
+
+  flushList("end");
+  flushTable("end");
+
+  return <div className="space-y-1">{elements}</div>;
+}
+
 export default function ProgressPage() {
   return (
     <Suspense>
@@ -274,7 +543,7 @@ function Progress() {
   const [selectedSessionId, setSelectedSessionId] = useState<string>("");
 
   const [showReasoning, setShowReasoning] = useState(false);
-  const [koboldUrlInput, setKoboldUrlInput] = useState("[http://100.75.201.34:5001](http://100.75.201.34:5001)");
+  const [koboldUrlInput, setKoboldUrlInput] = useState("http://100.75.201.34:5001");
   const [baselineRiskPctInput, setBaselineRiskPctInput] = useState("1.0");
   const [accountBalInput, setAccountBalInput] = useState("");
   const [configOpen, setConfigOpen] = useState(false);
@@ -286,6 +555,10 @@ function Progress() {
   const [editingActionText, setEditingActionText] = useState("");
 
   const [reportQuestionInput, setReportQuestionInput] = useState("");
+  const [syncNotice, setSyncNotice] = useState("");
+  const [evidenceModalOpen, setEvidenceModalOpen] = useState(false);
+  const [evidenceLoading, setEvidenceLoading] = useState(false);
+  const [evidenceData, setEvidenceData] = useState<any>(null);
 
   // Custom Scoped Audit Builder Modal State
   const [scopeModalOpen, setScopeModalOpen] = useState(false);
@@ -295,6 +568,9 @@ function Progress() {
   const [selectedTradeKeys, setSelectedTradeKeys] = useState<string[]>([]);
   const [includeTabs, setIncludeTabs] = useState<"both" | "review_only" | "prep_only">("both");
   const [thinkingMode, setThinkingMode] = useState<"fast" | "balanced" | "deep">("balanced");
+  const [reportStyle, setReportStyle] = useState<"auto" | "end_of_period" | "mid_period">("auto");
+  const [periodOffset, setPeriodOffset] = useState<number>(0);
+  const [autoStopAfterQueue, setAutoStopAfterQueue] = useState<boolean>(false);
   const [customFocusPrompt, setCustomFocusPrompt] = useState("");
 
   const [goalModalOpen, setGoalModalOpen] = useState(false);
@@ -305,8 +581,30 @@ function Progress() {
     whyItMatters: "",
     targetMetric: "",
     status: "on_track",
-    progressPct: 50,
+    progressPct: 0,
+    steps: [],
   });
+  const [modalNewStepText, setModalNewStepText] = useState("");
+  const [goalStepInputs, setGoalStepInputs] = useState<Record<string, string>>({});
+
+  // Adjustable 3-Pane Notebook Layout, Expandable Height & Full-Screen State
+  const [foldersCollapsed, setFoldersCollapsed] = useState(false);
+  const [folderPaneWidthPct, setFolderPaneWidthPct] = useState(16);
+  const [listPaneWidthPct, setListPaneWidthPct] = useState(24);
+  const [notebookHeightMode, setNotebookHeightMode] = useState<"standard" | "tall" | "expanded">("tall");
+  const [notebookFullscreen, setNotebookFullscreen] = useState(false);
+
+  // Side-Tab Journal Quick Editor Drawer State
+  const [sideJournalOpen, setSideJournalOpen] = useState(false);
+  const [sideJournalLoading, setSideJournalLoading] = useState(false);
+  const [sideJournalSlug, setSideJournalSlug] = useState("");
+  const [sideJournalTitle, setSideJournalTitle] = useState("");
+  const [sideJournalPrepMd, setSideJournalPrepMd] = useState("");
+  const [sideJournalRevMd, setSideJournalRevMd] = useState("");
+  const [sideJournalNewPrep, setSideJournalNewPrep] = useState("");
+  const [sideJournalNewRev, setSideJournalNewRev] = useState("");
+  const [sideJournalLessons, setSideJournalLessons] = useState("");
+  const [sideJournalRating, setSideJournalRating] = useState<string>("");
 
   const [chatInput, setChatInput] = useState("");
 
@@ -319,6 +617,9 @@ function Progress() {
         const json = await res.json();
         if (json.ok) {
           setCoachData(json);
+          if (typeof json.autoStopAfterQueue === "boolean") {
+            setAutoStopAfterQueue(json.autoStopAfterQueue);
+          }
           if (json.kobold?.baseUrl) setKoboldUrlInput(json.kobold.baseUrl);
           if (json.kobold?.baselineRiskPct) {
             setBaselineRiskPctInput(String(json.kobold.baselineRiskPct));
@@ -393,6 +694,17 @@ function Progress() {
     }
   }
 
+  const handleToggleAutoStopServer = async (nextVal: boolean) => {
+    setAutoStopAfterQueue(nextVal);
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "set_auto_stop_server", enabled: nextVal }),
+      });
+    } catch {}
+  };
+
   const handleGenerateAudit = async (
     horizon: GoalHorizon,
     customScope?: {
@@ -400,6 +712,9 @@ function Progress() {
       selectedTradeKeys?: string[];
       includeTabs?: "both" | "review_only" | "prep_only";
       thinkingMode?: "fast" | "balanced" | "deep";
+      reportStyle?: "auto" | "end_of_period" | "mid_period";
+      periodOffset?: number;
+      stopServerAfterQueue?: boolean;
       customFocusPrompt?: string;
     }
   ) => {
@@ -413,7 +728,13 @@ function Progress() {
         body: JSON.stringify({
           action: "generate_report",
           horizon,
-          customScope: customScope || { thinkingMode },
+          stopServerAfterQueue: customScope?.stopServerAfterQueue ?? autoStopAfterQueue,
+          customScope: customScope || {
+            thinkingMode,
+            reportStyle,
+            periodOffset,
+            stopServerAfterQueue: autoStopAfterQueue,
+          },
         }),
       });
       const json = await res.json();
@@ -438,7 +759,13 @@ function Progress() {
         body: JSON.stringify({
           action: "queue_multiple_reports",
           horizons,
-          customScope: { thinkingMode },
+          stopServerAfterQueue: autoStopAfterQueue,
+          customScope: {
+            thinkingMode,
+            reportStyle,
+            periodOffset,
+            stopServerAfterQueue: autoStopAfterQueue,
+          },
         }),
       });
       const json = await res.json();
@@ -554,6 +881,134 @@ function Progress() {
     } catch {}
   };
 
+  const handleOpenSideJournalEditor = async (slug: string) => {
+    setSideJournalOpen(true);
+    setSideJournalLoading(true);
+    setSideJournalSlug(slug);
+    setSideJournalNewPrep("");
+    setSideJournalNewRev("");
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "inspect_evidence",
+          href: `/journal?slug=${encodeURIComponent(slug)}`,
+        }),
+      });
+      const json = await res.json();
+      if (json.ok && json.journal) {
+        setSideJournalTitle(json.journal.title || slug);
+        setSideJournalPrepMd(json.journal.prepMd || "");
+        setSideJournalRevMd(json.journal.reviewMd || "");
+        setSideJournalLessons(json.journal.lessonsLearned || "");
+        setSideJournalRating(json.journal.rating != null ? String(json.journal.rating) : "");
+      } else {
+        setSideJournalTitle(slug);
+        setSideJournalPrepMd("*(No Prep notes yet)*");
+        setSideJournalRevMd("*(No Review notes yet)*");
+        setSideJournalLessons("");
+        setSideJournalRating("");
+      }
+    } catch {
+      setSideJournalTitle(slug);
+    } finally {
+      setSideJournalLoading(false);
+    }
+  };
+
+  const handleSaveSideJournal = async () => {
+    if (!sideJournalSlug) return;
+    setSideJournalLoading(true);
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "save_journal_quick_edit",
+          slug: sideJournalSlug,
+          prepNoteToAppend: sideJournalNewPrep,
+          reviewNoteToAppend: sideJournalNewRev,
+          lessonsLearned: sideJournalLessons,
+          rating: sideJournalRating !== "" ? Number(sideJournalRating) : null,
+        }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setSyncNotice(`✓ Updated ${sideJournalTitle} (${sideJournalSlug})!`);
+        setSideJournalNewPrep("");
+        setSideJournalNewRev("");
+        await handleOpenSideJournalEditor(sideJournalSlug);
+        await fetchCoachData();
+        setTimeout(() => setSyncNotice(""), 5000);
+      }
+    } finally {
+      setSideJournalLoading(false);
+    }
+  };
+
+  const handleToggleGoalStep = async (goalId: string, stepId: string, done: boolean) => {
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "toggle_goal_step", goalId, stepId, done }),
+      });
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const handleAddGoalStep = async (goalId: string) => {
+    const txt = (goalStepInputs[goalId] || "").trim();
+    if (!txt) return;
+    setGoalStepInputs((prev) => ({ ...prev, [goalId]: "" }));
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "add_goal_step", goalId, text: txt }),
+      });
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const handleDeleteGoalStep = async (goalId: string, stepId: string) => {
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "delete_goal_step", goalId, stepId }),
+      });
+      await fetchCoachData();
+    } catch {}
+  };
+
+  const startColumnResize = (
+    whichDivider: "folder" | "list",
+    e: React.MouseEvent<HTMLDivElement>
+  ) => {
+    e.preventDefault();
+    const container = e.currentTarget.parentElement;
+    if (!container) return;
+    const rect = container.getBoundingClientRect();
+    const onMove = (moveEv: MouseEvent) => {
+      const relPct = ((moveEv.clientX - rect.left) / rect.width) * 100;
+      if (whichDivider === "folder") {
+        setFolderPaneWidthPct(Math.max(10, Math.min(28, Math.round(relPct))));
+      } else {
+        const effFolder = foldersCollapsed ? 0 : folderPaneWidthPct;
+        const newListPct = Math.max(15, Math.min(45, Math.round(relPct - effFolder)));
+        setListPaneWidthPct(newListPct);
+      }
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   const handleUpsertGoal = async (goalPayload: Partial<TraderGoal>) => {
     try {
       const res = await fetch("/api/ai/coach", {
@@ -613,6 +1068,79 @@ function Progress() {
   };
 
   // If linkedReportId is passed, the question & reply stay embedded inside the Report view!
+  const handleInspectLink = async (href: string, label: string) => {
+    setEvidenceModalOpen(true);
+    setEvidenceLoading(true);
+    setEvidenceData({ href, label });
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "inspect_evidence", href }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setEvidenceData({ ...json, label });
+      } else {
+        setEvidenceData({ href, label, error: json.error || "Could not load item" });
+      }
+    } catch (e: any) {
+      setEvidenceData({ href, label, error: e?.message || "Failed to load evidence" });
+    } finally {
+      setEvidenceLoading(false);
+    }
+  };
+
+  const handlePushToJournal = async (reportId?: string, targetPeriod: "week" | "day" = "week") => {
+    setSyncNotice("");
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "push_actions_to_journal",
+          reportId: reportId || activeReport?.id || "",
+          targetPeriod,
+        }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setSyncNotice(`✓ ${json.message}`);
+        setTimeout(() => setSyncNotice(""), 6000);
+      } else {
+        setFailure(json.error || "Failed to sync to journal.");
+      }
+    } catch (e: any) {
+      setFailure(e?.message || "Sync error.");
+    }
+  };
+
+  const handleSaveDebriefToJournal = async (text: string, question?: string) => {
+    try {
+      const res = await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "append_to_journal_review",
+          text,
+          question,
+        }),
+      });
+      const json = await res.json();
+      if (json.ok) {
+        setSyncNotice(`✓ ${json.message}`);
+        await fetchCoachData();
+        setTimeout(() => setSyncNotice(""), 6000);
+      }
+    } catch {}
+  };
+
+  const handleStartSocraticDebrief = async () => {
+    const prompt =
+      "Run a 60-second Pre-Audit Socratic Debrief for me: Based on my recent trades, Account % Risk sizing, and journal entries this week, ask me 3 short, direct, high-leverage reflection questions to uncover any emotional blind spots or hesitation before I run my next audit.";
+    await handleSendCoachChat(prompt);
+  };
+
   const handleSendCoachChat = async (overrideMessage?: string, linkedReportId?: string) => {
     const msg = (overrideMessage ?? chatInput).trim();
     if (!msg || runningChatJob) return;
@@ -812,47 +1340,16 @@ function Progress() {
           </p>
         )}
 
-        {/* AUDIT DUE NOTIFICATION BANNER */}
-        {!dismissedDueBanner && dueHorizons.length > 0 && !runningAuditJob && (
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-4 py-2.5 text-xs">
-            <div className="flex flex-wrap items-center gap-2">
-              <Bell className="h-4 w-4 text-amber-400 shrink-0" />
-              <span className="font-bold text-amber-200">Audit Reminder:</span>
-              {dueHorizons.map((d) => (
-                <span
-                  key={d.horizon}
-                  className="inline-flex items-center gap-1.5 rounded-full border border-amber-500/30 bg-black/30 px-2.5 py-0.5 text-[11px] text-amber-100"
-                >
-                  <strong>{d.label}:</strong> {d.reason}
-                </span>
-              ))}
-            </div>
-            <div className="flex items-center gap-2">
-              {dueHorizons.map((d) => (
-                <Button
-                  key={d.horizon}
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void handleGenerateAudit(d.horizon)}
-                  className="h-7 text-[11px] border-amber-500/50 bg-amber-500/20 text-amber-200 hover:bg-amber-500/30 capitalize"
-                >
-                  <Sparkles className="mr-1 h-3 w-3" />
-                  Run {d.horizon} Now
-                </Button>
-              ))}
-              <button
-                type="button"
-                onClick={() => setDismissedDueBanner(true)}
-                className="text-muted-foreground hover:text-foreground p-1"
-                title="Dismiss reminder for this session"
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-            </div>
+        {syncNotice && (
+          <div className="flex items-center justify-between rounded-xl border border-emerald-500/40 bg-emerald-500/15 px-4 py-2.5 text-xs font-semibold text-emerald-200">
+            <span>{syncNotice}</span>
+            <button type="button" onClick={() => setSyncNotice("")} className="text-emerald-300 hover:text-white">
+              <X className="h-3.5 w-3.5" />
+            </button>
           </div>
         )}
 
-        {/* 1. KOBOLDCPP DESKTOP AI STATUS & ACCOUNT % RISK TELEMETRY BAR */}
+{/* 1. KOBOLDCPP DESKTOP AI STATUS & ACCOUNT % RISK TELEMETRY BAR */}
         <Card className="border-indigo-500/30 bg-[#12141d]">
           <CardContent className="py-4 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-4">
@@ -900,14 +1397,32 @@ function Progress() {
                   <option value="deep">🔬 Deep Overnight CoT · 16K Output (Max Depth)</option>
                 </select>
 
+                <select
+                  value={`${reportStyle}:${periodOffset}`}
+                  onChange={(e) => {
+                    const [st, off] = e.target.value.split(":");
+                    setReportStyle((st as any) || "auto");
+                    setPeriodOffset(Number(off || 0));
+                  }}
+                  className="h-8 rounded-lg border border-indigo-500/40 bg-[#0d0f14] px-2 text-xs text-indigo-200 outline-none font-medium"
+                  title="Choose whether to run an End-of-Period Final Audit (e.g. for last week/month if you missed Sunday) or a Mid-Period Check-In"
+                >
+                  <option value="auto:0">🔄 Smart Auto (Monday-&gt;Last Wk / Mid-Wk Check-In)</option>
+                  <option value="end_of_period:1">🏁 End-of-Period Audit · Last Completed Period (W-1 / M-1)</option>
+                  <option value="end_of_period:0">🏁 End-of-Period Audit · Current Period (W0 / M0)</option>
+                  <option value="mid_period:0">📊 Mid-Period Progress Check-In · Current Period</option>
+                  <option value="end_of_period:2">🕰️ Historical Audit · 2 Periods Ago (W-2 / M-2)</option>
+                </select>
+
                 <Button
                   size="sm"
                   variant="outline"
                   onClick={() => setScopeModalOpen(true)}
                   className="text-xs border-indigo-500/50 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25"
+                  title="Open the Report Generation & Queue Manager"
                 >
                   <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
-                  Pick Entries ({selectedJournalSlugs.length || "Auto"})
+                  Report Manager ({selectedJournalSlugs.length || "Auto"})
                 </Button>
 
                 {(["weekly", "monthly", "quarterly", "yearly"] as GoalHorizon[]).map((h) => (
@@ -937,6 +1452,19 @@ function Progress() {
                 >
                   ⚡ Queue W+M+Q
                 </Button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleToggleAutoStopServer(!autoStopAfterQueue)}
+                  className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition ${
+                    autoStopAfterQueue
+                      ? "border-amber-500/50 bg-amber-500/20 text-amber-200"
+                      : "border-border/60 bg-[#0d0f14] text-muted-foreground hover:text-foreground"
+                  }`}
+                  title="When enabled, KoboldCpp will automatically shut down as soon as the queue finishes so your desktop PC can go to sleep overnight"
+                >
+                  <span>🌙 Auto-Stop Server: {autoStopAfterQueue ? "ON (PC Sleeps)" : "OFF"}</span>
+                </button>
 
                 <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
 
@@ -1010,7 +1538,7 @@ function Progress() {
                     type="text"
                     value={koboldUrlInput}
                     onChange={(e) => setKoboldUrlInput(e.target.value)}
-                    placeholder="[http://100.75.201.34:5001](http://100.75.201.34:5001)"
+                    placeholder="http://100.75.201.34:5001"
                     className="h-8 w-full rounded-lg border border-border/70 bg-[#141722] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
                   />
                 </div>
@@ -1223,6 +1751,81 @@ function Progress() {
                             </div>
                           )}
 
+                          {/* MULTI-STEP GOAL CHECKLIST & PROGRESS BAR */}
+                          <div className="space-y-1.5 pt-1">
+                            {g.steps && g.steps.length > 0 && (
+                              <>
+                                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                                  <span>
+                                    Checklist ({g.steps.filter((s) => s.done).length}/{g.steps.length} steps)
+                                  </span>
+                                  <span className="font-mono font-bold text-indigo-300">
+                                    {g.progressPct}%
+                                  </span>
+                                </div>
+                                <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                                  <div
+                                    className="h-full bg-indigo-500 transition-all"
+                                    style={{ width: `${Math.min(100, Math.max(0, g.progressPct || 0))}%` }}
+                                  />
+                                </div>
+                                <div className="space-y-1 pt-1">
+                                  {g.steps.map((st) => (
+                                    <div
+                                      key={st.id}
+                                      className="flex items-center justify-between gap-2 rounded bg-[#141722] px-2 py-1 text-[11px]"
+                                    >
+                                      <label className="flex items-start gap-2 flex-1 cursor-pointer">
+                                        <Checkbox checked={st.done} className="mt-0.5" onCheckedChange={(c) => void handleToggleGoalStep(g.id, st.id, c === true)} />
+                                        <span
+                                          className={
+                                            st.done
+                                              ? "line-through text-muted-foreground"
+                                              : "text-foreground"
+                                          }
+                                        >
+                                          {st.text}
+                                        </span>
+                                      </label>
+                                      <button
+                                        type="button"
+                                        onClick={() => void handleDeleteGoalStep(g.id, st.id)}
+                                        className="text-muted-foreground hover:text-rose-400"
+                                        title="Remove step"
+                                      >
+                                        <X className="h-3 w-3"/>
+                                      </button>
+                                    </div>
+                                  ))}
+                                </div>
+                              </>
+                            )}
+                            <div className="flex items-center gap-1 pt-0.5">
+                              <input
+                                type="text"
+                                value={goalStepInputs[g.id] || ""}
+                                onChange={(e) =>
+                                  setGoalStepInputs((prev) => ({ ...prev, [g.id]: e.target.value }))
+                                }
+                                onKeyDown={(e) => {
+                                  if (e.key === "Enter") {
+                                    e.preventDefault();
+                                    void handleAddGoalStep(g.id);
+                                  }
+                                }}
+                                placeholder="+ Add milestone step to check off..."
+                                className="h-6 flex-1 rounded border border-border/50 bg-[#141722] px-2 text-[10px] text-foreground outline-none focus:border-indigo-500"
+                              />
+                              <button
+                                type="button"
+                                onClick={() => void handleAddGoalStep(g.id)}
+                                className="rounded border border-border/60 bg-secondary/50 hover:bg-secondary px-1.5 py-0.5 text-[10px] font-semibold"
+                              >
+                                Add
+                              </button>
+                            </div>
+                          </div>
+
                           {g.aiAccountabilityNote && (
                             <div className="rounded-lg border border-indigo-500/25 bg-indigo-950/20 px-2.5 py-1.5 text-[11px] text-indigo-200">
                               <strong className="text-indigo-400">AI Audit:</strong>{" "}
@@ -1280,11 +1883,108 @@ function Progress() {
           })}
         </div>
 
-        {/* 3. 3-PANE AI NOTEBOOK STRUCTURE */}
-        <Card className="bg-[#0d0f14] border-border/70 overflow-hidden">
-          <div className="grid grid-cols-1 lg:grid-cols-12 min-h-[680px]">
-            {/* PANE 1 (LEFT 2 COLS): NOTEBOOK FOLDERS WITH DUE DOTS */}
-            <div className="lg:col-span-2 border-b lg:border-b-0 lg:border-r border-border/50 bg-[#11131c] p-3 flex flex-col justify-between">
+        {/* 3. 3-PANE AI NOTEBOOK STRUCTURE WITH ADJUSTABLE DIVIDERS, EXPANDABLE HEIGHT & FULL-SCREEN */}
+        <Card className={`bg-[#0d0f14] border-border/70 overflow-hidden transition-all ${notebookFullscreen ? "fixed inset-0 z-50 rounded-none border-0 w-screen h-screen flex flex-col" : ""}`}>
+          {/* NOTEBOOK WORKSPACE TOOLBAR */}
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/60 bg-[#141722] px-3 py-2 text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setFoldersCollapsed((v) => !v)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-[#0d0f14] hover:bg-secondary px-2 py-1 text-[11px] font-medium text-foreground transition"
+                title={foldersCollapsed ? "Show Folders Sidebar" : "Collapse Folders Sidebar"}
+              >
+                {foldersCollapsed ? (
+                  <PanelLeftOpen className="h-3.5 w-3.5 text-indigo-400" />
+                ) : (
+                  <PanelLeftClose className="h-3.5 w-3.5 text-indigo-400" />
+                )}
+                <span>{foldersCollapsed ? "Show Folders" : "Hide Folders"}</span>
+              </button>
+              <span className="text-[11px] text-muted-foreground hidden sm:inline">
+                Drag vertical dividers between panes to resize width
+              </span>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex items-center rounded-lg border border-border/60 bg-[#0d0f14] p-0.5 text-[11px]">
+                {(
+                  [
+                    { id: "standard", label: "Compact" },
+                    { id: "tall", label: "Tall" },
+                    { id: "expanded", label: "↕ Full Expand" },
+                  ] as const
+                ).map((hm) => (
+                  <button
+                    key={hm.id}
+                    type="button"
+                    onClick={() => setNotebookHeightMode(hm.id)}
+                    className={`rounded-md px-2 py-0.5 font-semibold transition ${
+                      notebookHeightMode === hm.id
+                        ? "bg-indigo-600 text-white"
+                        : "text-muted-foreground hover:text-foreground"
+                    }`}
+                    title="Adjust vertical height of the Notebook and reading pane"
+                  >
+                    {hm.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                type="button"
+                onClick={() => {
+                  const defaultSlug =
+                    selectableJournals[0]?.slug ||
+                    `week-${new Date().toISOString().slice(0, 10)}`;
+                  void handleOpenSideJournalEditor(defaultSlug);
+                }}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 hover:bg-emerald-500/20 px-2.5 py-1 text-[11px] font-semibold text-emerald-300 transition"
+                title="Open the Quick Journal Side-Tab Editor to add review notes or takeaways without leaving this page"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span>Journal Side-Tab</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setNotebookFullscreen((v) => !v)}
+                className="inline-flex items-center gap-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 px-2.5 py-1 text-[11px] font-semibold text-indigo-200 transition"
+                title={notebookFullscreen ? "Exit Full Screen" : "Expand Notebook to Full Screen"}
+              >
+                {notebookFullscreen ? (
+                  <>
+                    <Minimize2 className="h-3.5 w-3.5" />
+                    <span>Exit Full Screen</span>
+                  </>
+                ) : (
+                  <>
+                    <Maximize2 className="h-3.5 w-3.5" />
+                    <span>Full Screen</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          <div
+            className={`flex flex-col lg:flex-row ${
+              notebookFullscreen
+                ? "flex-1 overflow-hidden"
+                : notebookHeightMode === "standard"
+                ? "min-h-[640px]"
+                : notebookHeightMode === "tall"
+                ? "min-h-[920px]"
+                : "min-h-[1100px]"
+            }`}
+          >
+            {/* PANE 1: NOTEBOOK FOLDERS WITH DUE DOTS */}
+            {!foldersCollapsed && (
+              <>
+                <div
+                  style={{ width: `${folderPaneWidthPct}%` }}
+                  className="w-full lg:w-auto shrink-0 border-b lg:border-b-0 bg-[#11131c] p-3 flex flex-col justify-between"
+                >
               <div className="space-y-1">
                 <div className="px-2 py-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                   AI Notebook Folders
@@ -1372,8 +2072,22 @@ function Progress() {
               </div>
             </div>
 
-            {/* PANE 2 (MIDDLE 3 COLS): SEARCHABLE DOCUMENT & CHAT LIST */}
-            <div className="lg:col-span-3 border-b lg:border-b-0 lg:border-r border-border/50 bg-[#0f1119] flex flex-col">
+            {/* DRAGGABLE RESIZER HANDLE 1 (FOLDERS <-> LIST) */}
+            <div
+              onMouseDown={(e) => startColumnResize("folder", e)}
+              className="hidden lg:flex w-1.5 cursor-col-resize items-center justify-center bg-border/30 hover:bg-indigo-500/60 transition group select-none shrink-0"
+              title="Drag to resize Folders pane"
+            >
+              <div className="h-8 w-0.5 rounded bg-muted-foreground/40 group-hover:bg-white" />
+            </div>
+              </>
+            )}
+
+            {/* PANE 2: SEARCHABLE DOCUMENT & CHAT LIST */}
+            <div
+              style={{ width: `${listPaneWidthPct}%` }}
+              className="w-full lg:w-auto shrink-0 border-b lg:border-b-0 bg-[#0f1119] flex flex-col"
+            >
               <div className="p-3 border-b border-border/50">
                 <div className="relative">
                   <Search className="absolute left-2.5 top-2.5 h-3.5 w-3.5 text-muted-foreground" />
@@ -1463,8 +2177,17 @@ function Progress() {
               </div>
             </div>
 
-            {/* PANE 3 (RIGHT 7 COLS): DOCUMENT VIEWER + EMBEDDED REPORT Q&A */}
-            <div className="lg:col-span-7 bg-[#0d0f14] flex flex-col justify-between p-4">
+            {/* DRAGGABLE RESIZER HANDLE 2 (LIST <-> REPORT VIEWER) */}
+            <div
+              onMouseDown={(e) => startColumnResize("list", e)}
+              className="hidden lg:flex w-1.5 cursor-col-resize items-center justify-center bg-border/30 hover:bg-indigo-500/60 transition group select-none shrink-0"
+              title="Drag to resize Document List vs Reading Pane"
+            >
+              <div className="h-8 w-0.5 rounded bg-muted-foreground/40 group-hover:bg-white" />
+            </div>
+
+            {/* PANE 3: DOCUMENT VIEWER + EMBEDDED REPORT Q&A */}
+            <div className="flex-1 min-w-0 bg-[#0d0f14] flex flex-col justify-between p-4 overflow-y-auto">
               {runningAuditJob && activeDocType === "report" && (
                 <div className="mb-4 rounded-xl border border-amber-500/40 bg-[#121521] p-4 space-y-3">
                   <div className="flex items-center justify-between border-b border-border/40 pb-2">
@@ -1495,7 +2218,7 @@ function Progress() {
 
                   {runningAuditJob.partialText ? (
                     <div className="max-h-96 overflow-y-auto">
-                      <Markdown value={runningAuditJob.partialText} />
+                      <InteractiveCoachMarkdown value={runningAuditJob.partialText} onInspectLink={handleInspectLink} />
                     </div>
                   ) : (
                     <div className="text-xs text-muted-foreground animate-pulse">
@@ -1666,10 +2389,79 @@ function Progress() {
                       </div>
                     )}
 
-                    {/* Full Report Body */}
-                    <div className="rounded-xl border border-border/50 bg-[#121521] p-5 max-h-[560px] overflow-y-auto leading-relaxed">
-                      <Markdown value={activeReport.summaryMd} />
+                    {/* Full Report Body (Respects Compact / Tall / Full Expand height mode) */}
+                    <div
+                      className={`rounded-xl border border-border/50 bg-[#121521] p-5 leading-relaxed ${
+                        notebookFullscreen
+                          ? "max-h-none"
+                          : notebookHeightMode === "standard"
+                          ? "max-h-[560px] overflow-y-auto resize-y"
+                          : notebookHeightMode === "tall"
+                          ? "max-h-[920px] overflow-y-auto resize-y"
+                          : "max-h-none"
+                      }`}
+                    >
+                      <InteractiveCoachMarkdown value={activeReport.summaryMd} onInspectLink={handleInspectLink} />
                     </div>
+
+                    {/* AI RECOMMENDED MULTI-LEVEL GOALS (WITH PRE-BUILT MULTI-STEP CHECKLISTS) */}
+                    {Array.isArray(activeReport.suggestedGoals) &&
+                      activeReport.suggestedGoals.length > 0 && (
+                        <div className="rounded-xl border border-indigo-500/30 bg-[#121521] p-4 space-y-2.5">
+                          <div className="flex items-center justify-between">
+                            <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
+                              <Target className="h-4 w-4" />
+                              Recommended Multi-Step Goals from This Audit
+                            </span>
+                            <span className="text-[10px] text-muted-foreground">
+                              1-Click Add to Goal Board
+                            </span>
+                          </div>
+                          <div className="grid gap-2.5 md:grid-cols-3">
+                            {activeReport.suggestedGoals.map((sg: any, idx: number) => (
+                              <div
+                                key={idx}
+                                className="rounded-lg border border-border/60 bg-[#0d0f14] p-3 flex flex-col justify-between space-y-2 text-xs"
+                              >
+                                <div className="space-y-1">
+                                  <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[9px] font-bold uppercase text-indigo-300">
+                                    {sg.horizon} · {sg.periodLabel}
+                                  </span>
+                                  <div className="font-bold text-foreground">{sg.title}</div>
+                                  <div className="text-[11px] text-indigo-300">{sg.targetMetric}</div>
+                                  {Array.isArray(sg.steps) && sg.steps.length > 0 && (
+                                    <ul className="list-disc pl-4 text-[10px] text-muted-foreground space-y-0.5 pt-1">
+                                      {sg.steps.map((st: string, sIdx: number) => (
+                                        <li key={sIdx}>{st}</li>
+                                      ))}
+                                    </ul>
+                                  )}
+                                </div>
+                                <Button className="h-7 w-full text-[11px] border-indigo-500/40 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25" onClick={() => void handleUpsertGoal({
+                                      horizon: sg.horizon || "weekly",
+                                      periodLabel: sg.periodLabel || "Current Period",
+                                      title: sg.title,
+                                      whyItMatters: sg.whyItMatters || `From ${activeReport.title}`,
+                                      targetMetric: sg.targetMetric || "",
+                                      steps: Array.isArray(sg.steps)
+                                        ? sg.steps.map((sText: string, i: number) => ({
+                                            id: `st_${Date.now()}_${i}`,
+                                            text: sText,
+                                            done: false,
+                                          }))
+                                        : [],
+                                      status: "on_track",
+                                      progressPct: 0,
+                                    })
+                                  }
+                                >
+                                  + Activate {sg.horizon} Goal
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      )}
 
                     {/* ACTION POINTS TRACKER WITH INLINE EDIT, DELETE & 1-CLICK GOAL PROMOTER */}
                     <div className="rounded-xl border border-indigo-500/30 bg-[#121521] p-4 space-y-3">
@@ -1679,6 +2471,24 @@ function Progress() {
                           <span className="text-xs font-bold text-foreground">
                             Action Points &amp; Next Steps Tracker
                           </span>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => void handlePushToJournal(activeReport.id, "week")}
+                            className="rounded border border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 px-2 py-0.5 text-[10px] font-semibold text-indigo-200 transition"
+                            title="Inject these Action Points & Active Goals as a checklist banner at the top of your current Weekly Journal Prep tab"
+                          >
+                            📌 Push to Weekly Journal Prep
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => void handlePushToJournal(activeReport.id, "day")}
+                            className="rounded border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-2 py-0.5 text-[10px] font-semibold text-emerald-200 transition"
+                            title="Inject these Action Points & Active Goals into Today's Daily Journal Prep tab"
+                          >
+                            📌 Push to Today&apos;s Prep
+                          </button>
                         </div>
                         {activeReport.actionItems && activeReport.actionItems.length > 0 && (
                           <span className="text-[11px] font-semibold text-emerald-300">
@@ -1892,7 +2702,7 @@ function Progress() {
                               <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">
                                 {m.role === "user" ? "You" : "AI Coach (Report Context)"}
                               </div>
-                              <Markdown value={m.text} />
+                              <InteractiveCoachMarkdown value={m.text} onInspectLink={handleInspectLink} />
                             </div>
                           ))}
                         </div>
@@ -1915,7 +2725,7 @@ function Progress() {
                           </div>
                           {runningChatJob.partialText && (
                             <div className="border-t border-emerald-500/20 pt-2 text-foreground">
-                              <Markdown value={runningChatJob.partialText} />
+                              <InteractiveCoachMarkdown value={runningChatJob.partialText} onInspectLink={handleInspectLink} />
                             </div>
                           )}
                         </div>
@@ -2029,6 +2839,16 @@ function Progress() {
                             <span className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground">
                               {m.role === "user" ? "You" : "AI Accountability Coach"}
                             </span>
+                            {m.role === "user" && (
+                              <button
+                                type="button"
+                                onClick={() => void handleSaveDebriefToJournal(m.text)}
+                                className="text-[10px] text-emerald-400 hover:underline font-semibold"
+                                title="Append your reflection response directly into your current Weekly Journal Review tab"
+                              >
+                                📥 Save Reflection to Weekly Journal Review
+                              </button>
+                            )}
                             {m.role === "coach" && (
                               <button
                                 type="button"
@@ -2055,7 +2875,7 @@ function Progress() {
                               </button>
                             )}
                           </div>
-                          <Markdown value={m.text} />
+                          <InteractiveCoachMarkdown value={m.text} onInspectLink={handleInspectLink} />
                         </div>
                       ))
                     )}
@@ -2078,7 +2898,7 @@ function Progress() {
                         </div>
                         {runningChatJob.partialText && (
                           <div className="border-t border-indigo-500/20 pt-2 text-foreground">
-                            <Markdown value={runningChatJob.partialText} />
+                            <InteractiveCoachMarkdown value={runningChatJob.partialText} onInspectLink={handleInspectLink} />
                           </div>
                         )}
                       </div>
@@ -2123,6 +2943,73 @@ function Progress() {
             </div>
           </div>
         </Card>
+
+        {/* 3B. JOURNAL REFLECTION READINESS CARD (TEMPLATE-AWARE + SIDE-TAB QUICK EDITOR) */}
+        {tel?.reflectionReadiness && (
+          <Card className="bg-[#12141d] border-border/70">
+            <CardContent className="py-4 flex flex-wrap items-center justify-between gap-4 text-xs">
+              <div className="space-y-1">
+                <div className="flex flex-wrap items-center gap-2">
+                  <BookOpen className="h-4 w-4 text-indigo-400" />
+                  <span className="font-bold text-foreground">
+                    Journal Reflection Readiness (Template-Filtered): {tel.reflectionReadiness.readinessPct}%
+                  </span>
+                  <span className="text-muted-foreground">
+                    ({tel.reflectionReadiness.reviewedCount} of {tel.reflectionReadiness.totalRecentJournals} recent entries have substantive user-written reviews; untouched templates are excluded)
+                  </span>
+                </div>
+                {tel.reflectionReadiness.unreviewedJournals?.length > 0 && (
+                  <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                    <span className="text-[11px] text-amber-300 font-medium">
+                      Click to open in Side-Tab Editor:
+                    </span>
+                    {tel.reflectionReadiness.unreviewedJournals.slice(0, 6).map((uj: any) => (
+                      <button
+                        key={uj.slug}
+                        type="button"
+                        onClick={() => void handleOpenSideJournalEditor(uj.slug)}
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/25 px-2 py-0.5 text-[10px] font-mono text-amber-200 transition"
+                        title={
+                          uj.isTemplateOnly
+                            ? "Auto-populated template only (considered empty until you add notes)"
+                            : "Has Prep notes, missing Review reflection"
+                        }
+                      >
+                        <span>✏️ {uj.slug}</span>
+                        <span className="text-[9px] text-amber-300/80">
+                          {uj.isTemplateOnly ? "(Template Only)" : "(Needs Review)"}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const targetSlug =
+                      tel.reflectionReadiness.unreviewedJournals?.[0]?.slug ||
+                      selectableJournals[0]?.slug ||
+                      `week-${new Date().toISOString().slice(0, 10)}`;
+                    void handleOpenSideJournalEditor(targetSlug);
+                  }}
+                  className="h-8 text-xs border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                >
+                  <BookOpen className="mr-1.5 h-3.5 w-3.5" />
+                  Open Journal Side-Tab Editor
+                </Button>
+                <Button onClick={() => void handlePushToJournal(activeReport?.id, "week")}
+                  className="h-8 text-xs border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20"
+                >
+                  📌 Push Active Focus Rules to Weekly Journal
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        )}
 
         {/* 4. DAILY EXECUTION ROUTINES & 13-WEEK CONSISTENCY HEATMAP */}
         <Card>
@@ -2250,11 +3137,38 @@ function Progress() {
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
                 <SlidersHorizontal className="h-4 w-4 text-indigo-400" />
-                <span>Custom Scoped AI Audit — Pick Exact Journals &amp; Trades</span>
+                <span>Report Generation &amp; Queue Manager — Period Timing, Scope &amp; Overnight Sleep</span>
               </DialogTitle>
             </DialogHeader>
 
             <div className="space-y-4 text-xs">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 rounded-xl border border-indigo-500/30 bg-[#121521] p-3">
+                <Field label="Report Type (End-of-Period Final vs Mid-Period Check-In)">
+                  <OptionSelect
+                    className={fieldClass}
+                    value={reportStyle}
+                    onValueChange={(v) => setReportStyle(v as any)}
+                  >
+                    <option value="auto">🔄 Smart Auto (Detects End-of-Period vs Mid-Period)</option>
+                    <option value="end_of_period">🏁 Force End-of-Period Final Audit (Full Review)</option>
+                    <option value="mid_period">📊 Force Mid-Period Progress Check-In (Tactical Pulse)</option>
+                  </OptionSelect>
+                </Field>
+
+                <Field label="Target Period Window (Compared vs Prior 3 Periods)">
+                  <OptionSelect
+                    className={fieldClass}
+                    value={String(periodOffset)}
+                    onValueChange={(v) => setPeriodOffset(Number(v))}
+                  >
+                    <option value="0">Current Active Period (This Week / Month / Quarter)</option>
+                    <option value="1">Last Completed Period (Missed Sunday/Month-End? Run W-1 / M-1)</option>
+                    <option value="2">2 Periods Ago (W-2 / M-2 vs Prior 3 Periods)</option>
+                    <option value="3">3 Periods Ago (W-3 / M-3 vs Prior 3 Periods)</option>
+                  </OptionSelect>
+                </Field>
+              </div>
+
               <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                 <Field label="Target Horizon">
                   <OptionSelect
@@ -2479,25 +3393,51 @@ function Progress() {
                 />
               </Field>
 
-              <div className="flex items-center justify-end gap-2 pt-2 border-t border-border/40">
-                <Button variant="outline" size="sm" onClick={() => setScopeModalOpen(false)}>
-                  Cancel
-                </Button>
-                <Button
-                  size="sm"
-                  onClick={() =>
-                    void handleGenerateAudit(scopeHorizon, {
-                      selectedJournalSlugs,
-                      selectedTradeKeys,
-                      includeTabs,
-                      thinkingMode,
-                      customFocusPrompt,
-                    })
-                  }
-                >
-                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                  Run Scoped Audit Now
-                </Button>
+              <div className="flex flex-wrap items-center justify-between gap-3 pt-3 border-t border-border/40">
+                <label className="flex items-center gap-2 cursor-pointer text-xs text-amber-200 font-medium">
+                  <Checkbox
+                    checked={autoStopAfterQueue}
+                    onCheckedChange={(c) => void handleToggleAutoStopServer(c === true)}
+                  />
+                  <span>
+                    🌙 Auto-stop KoboldCpp server when queue finishes (allows desktop PC to sleep overnight)
+                  </span>
+                </label>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button variant="outline" size="sm" onClick={() => setScopeModalOpen(false)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                    onClick={() => {
+                      setScopeModalOpen(false);
+                      void handleQueueBatchAudits(["weekly", "monthly", "quarterly"]);
+                    }}
+                  >
+                    ⚡ Queue W + M + Q with These Settings
+                  </Button>
+                  <Button
+                    size="sm"
+                    onClick={() =>
+                      void handleGenerateAudit(scopeHorizon, {
+                        selectedJournalSlugs,
+                        selectedTradeKeys,
+                        includeTabs,
+                        thinkingMode,
+                        reportStyle,
+                        periodOffset,
+                        stopServerAfterQueue: autoStopAfterQueue,
+                        customFocusPrompt,
+                      })
+                    }
+                  >
+                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                    Run / Queue {scopeHorizon} Report
+                  </Button>
+                </div>
               </div>
             </div>
           </DialogContent>
@@ -2567,6 +3507,79 @@ function Progress() {
                   }
                 />
               </Field>
+              <div className="space-y-2 rounded-xl border border-border/60 bg-[#0d0f14] p-3">
+                <div className="font-semibold text-foreground">
+                  Multi-Step Milestones / Checklist (Check off as you work toward this goal)
+                </div>
+                {Array.isArray(editingGoal.steps) && editingGoal.steps.length > 0 && (
+                  <div className="space-y-1">
+                    {editingGoal.steps.map((st, idx) => (
+                      <div
+                        key={st.id || idx}
+                        className="flex items-center justify-between gap-2 rounded bg-[#141722] px-2.5 py-1.5 text-xs"
+                      >
+                        <span className="text-foreground">
+                          {idx + 1}. {st.text}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setEditingGoal((prev) => ({
+                              ...prev,
+                              steps: (prev.steps || []).filter((_, i) => i !== idx),
+                            }))
+                          }
+                          className="text-rose-400 hover:text-rose-300"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="flex items-center gap-2">
+                  <input
+                    className={fieldClass}
+                    value={modalNewStepText}
+                    onChange={(e) => setModalNewStepText(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && modalNewStepText.trim()) {
+                        e.preventDefault();
+                        const clean = modalNewStepText.trim();
+                        setModalNewStepText("");
+                        setEditingGoal((prev) => ({
+                          ...prev,
+                          steps: [
+                            ...(prev.steps || []),
+                            { id: `st_${Date.now()}`, text: clean, done: false },
+                          ],
+                        }));
+                      }
+                    }}
+                    placeholder="Add a concrete step (e.g., Log pre-session bias before 08:00 NY)..."
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const clean = modalNewStepText.trim();
+                      if (!clean) return;
+                      setModalNewStepText("");
+                      setEditingGoal((prev) => ({
+                        ...prev,
+                        steps: [
+                          ...(prev.steps || []),
+                          { id: `st_${Date.now()}`, text: clean, done: false },
+                        ],
+                      }));
+                    }}
+                  >
+                    + Step
+                  </Button>
+                </div>
+              </div>
+
               <Button
                 disabled={!editingGoal.title?.trim()}
                 onClick={() => void handleUpsertGoal(editingGoal)}
@@ -2576,6 +3589,284 @@ function Progress() {
             </div>
           </DialogContent>
         </Dialog>
+
+
+        {/* SIDE-BY-SIDE EVIDENCE INSPECTOR MODAL FOR CLICKED JOURNAL & TRADE LINKS */}
+        <Dialog open={evidenceModalOpen} onOpenChange={setEvidenceModalOpen}>
+          <DialogContent className="max-w-3xl max-h-[88vh] overflow-y-auto">
+            <DialogHeader>
+              <div className="flex flex-wrap items-center justify-between gap-2 pr-6">
+                <DialogTitle className="text-sm font-bold flex items-center gap-2">
+                  <span>
+                    {evidenceData?.evidenceType === "trades" ? "📈 Trade Evidence Inspector" : "📓 Journal Evidence Inspector"}
+                  </span>
+                </DialogTitle>
+                {evidenceData?.href && (
+                  <a
+                    href={evidenceData.href}
+                    className="inline-flex items-center gap-1 rounded-lg border border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 px-2.5 py-1 text-xs font-semibold text-indigo-200 transition"
+                  >
+                    <span>Open Full Page in App &nearr;</span>
+                  </a>
+                )}
+              </div>
+            </DialogHeader>
+
+            {evidenceLoading ? (
+              <div className="py-12 text-center text-xs text-muted-foreground animate-pulse">
+                Loading referenced record from SQLite...
+              </div>
+            ) : evidenceData?.error ? (
+              <div className="rounded-lg border border-rose-500/40 bg-rose-500/10 p-4 text-xs text-rose-300">
+                {evidenceData.error}
+              </div>
+            ) : evidenceData?.evidenceType === "journal" && evidenceData?.journal ? (
+              <div className="space-y-4 text-xs">
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-border/60 bg-[#0d0f14] p-3">
+                  <div>
+                    <span className="rounded bg-indigo-500/20 px-1.5 py-0.5 text-[10px] font-bold uppercase text-indigo-300 mr-2">
+                      {evidenceData.journal.periodType}
+                    </span>
+                    <span className="font-bold text-sm text-foreground">
+                      {evidenceData.journal.title}
+                    </span>
+                    <span className="ml-2 font-mono text-muted-foreground">
+                      ({evidenceData.journal.slug})
+                    </span>
+                  </div>
+                  {evidenceData.journal.rating != null && (
+                    <span className="rounded-full border border-emerald-500/40 bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-bold text-emerald-300">
+                      Process Score: {evidenceData.journal.rating}%
+                    </span>
+                  )}
+                </div>
+
+                {evidenceData.journal.lessonsLearned && (
+                  <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+                    <div className="text-[10px] font-bold uppercase text-amber-300 mb-1">
+                      Key Lesson Learned
+                    </div>
+                    <div className="text-foreground">{evidenceData.journal.lessonsLearned}</div>
+                  </div>
+                )}
+
+                <div className="grid gap-3 md:grid-cols-2">
+                  <div className="rounded-xl border border-border/60 bg-[#0d0f14] p-3 space-y-2 max-h-96 overflow-y-auto">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-indigo-400 border-b border-border/40 pb-1">
+                      Prep / Market Forecast Tab
+                    </div>
+                    <InteractiveCoachMarkdown value={evidenceData.journal.prepMd} />
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-[#0d0f14] p-3 space-y-2 max-h-96 overflow-y-auto">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-emerald-400 border-b border-border/40 pb-1">
+                      End-of-Period Review &amp; Psychology Tab
+                    </div>
+                    <InteractiveCoachMarkdown value={evidenceData.journal.reviewMd} />
+                  </div>
+                </div>
+              </div>
+            ) : evidenceData?.evidenceType === "trades" ? (
+              <div className="space-y-3 text-xs">
+                {(!evidenceData.trades || evidenceData.trades.length === 0) ? (
+                  <div className="py-8 text-center text-muted-foreground">
+                    No matching closed trades found for {evidenceData.symbol} on {evidenceData.fromDate}.
+                  </div>
+                ) : (
+                  evidenceData.trades.map((t: any) => (
+                    <div
+                      key={t.key}
+                      className="rounded-xl border border-border/60 bg-[#0d0f14] p-3.5 space-y-2"
+                    >
+                      <div className="flex flex-wrap items-center justify-between gap-2">
+                        <div className="flex items-center gap-2">
+                          <span className="font-bold text-sm text-foreground">{t.symbol}</span>
+                          <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-bold uppercase">
+                            {t.direction}
+                          </span>
+                          <span className="font-mono text-muted-foreground">
+                            Qty: {t.quantity} · {String(t.openedAt || "").slice(0, 16).replace("T", " ")}
+                          </span>
+                        </div>
+                        <span
+                          className={`font-mono text-sm font-bold ${
+                            Number(t.netPnl) >= 0 ? "text-emerald-400" : "text-rose-400"
+                          }`}
+                        >
+                          {Number(t.netPnl) >= 0
+                            ? `+$${Number(t.netPnl).toFixed(2)}`
+                            : `-$${Math.abs(Number(t.netPnl)).toFixed(2)}`}
+                          {t.realizedR != null ? ` (${t.realizedR}R)` : ""}
+                        </span>
+                      </div>
+                      {t.mistakes?.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          <span className="text-rose-400 font-semibold">Mistakes:</span>
+                          {t.mistakes.map((m: string, i: number) => (
+                            <span
+                              key={i}
+                              className="rounded bg-rose-500/15 border border-rose-500/30 px-1.5 py-0.5 text-[10px] text-rose-300"
+                            >
+                              {m}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {t.notes && (
+                        <div className="rounded border border-border/40 bg-[#141722] p-2.5 text-muted-foreground">
+                          {t.notes}
+                        </div>
+                      )}
+                    </div>
+                  ))
+                )}
+              </div>
+            ) : null}
+          </DialogContent>
+        </Dialog>
+
+
+        {/* SLIDE-OVER SIDE-TAB JOURNAL QUICK EDITOR */}
+        {sideJournalOpen && (
+          <div className="fixed inset-y-0 right-0 z-50 flex w-full max-w-xl flex-col border-l border-border bg-[#11131c] shadow-2xl">
+            <div className="flex items-center justify-between border-b border-border/60 bg-[#161925] px-4 py-3">
+              <div className="flex items-center gap-2">
+                <BookOpen className="h-4 w-4 text-emerald-400" />
+                <div>
+                  <h3 className="text-sm font-bold text-foreground">
+                    Quick Journal Side-Tab Editor
+                  </h3>
+                  <p className="text-[10px] text-muted-foreground">
+                    Add reflections, takeaways, or calibrated process scores without leaving your AI Notebook
+                  </p>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                {sideJournalSlug && (
+                  <a
+                    href={`/journal?slug=${encodeURIComponent(sideJournalSlug)}`}
+                    className="rounded border border-indigo-500/40 bg-indigo-500/15 px-2 py-1 text-[11px] font-semibold text-indigo-200 hover:bg-indigo-500/25"
+                  >
+                    Full Editor &nearr;
+                  </a>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setSideJournalOpen(false)}
+                  className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"
+                >
+                  <X className="h-4 w-4"/>
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 overflow-y-auto p-4 space-y-4 text-xs">
+              <div className="space-y-1">
+                <label className="text-[11px] font-semibold text-muted-foreground">
+                  Select Journal Entry to View / Update
+                </label>
+                <select
+                  value={sideJournalSlug}
+                  onChange={(e) => void handleOpenSideJournalEditor(e.target.value)}
+                  className="h-8 w-full rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none"
+                >
+                  {selectableJournals.map((j) => (
+                    <option key={j.slug} value={j.slug}>
+                      [{j.periodType.toUpperCase()}] {j.title} ({j.slug}){" "}
+                      {!j.hasPrep && !j.hasReview ? "— Empty Template" : !j.hasReview ? "— Missing Review" : "— Reviewed ✓"}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              {sideJournalLoading ? (
+                <div className="py-12 text-center text-muted-foreground animate-pulse">
+                  Loading journal entry...
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-foreground">
+                        Calibrated Process Score (0–100%)
+                      </label>
+                      <input
+                        type="number"
+                        min="0"
+                        max="100"
+                        value={sideJournalRating}
+                        onChange={(e) => setSideJournalRating(e.target.value)}
+                        placeholder="e.g. 55 (Avoid default 80%)"
+                        className="h-8 w-full rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                    <div className="space-y-1">
+                      <label className="text-[11px] font-semibold text-foreground">
+                        Key Takeaway / Lesson Learned
+                      </label>
+                      <input
+                        type="text"
+                        value={sideJournalLessons}
+                        onChange={(e) => setSideJournalLessons(e.target.value)}
+                        placeholder="1-sentence core takeaway from this period..."
+                        className="h-8 w-full rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-emerald-400">
+                      + Append to End-of-Period Review &amp; Psychology Tab
+                    </label>
+                    <textarea
+                      rows={4}
+                      value={sideJournalNewRev}
+                      onChange={(e) => setSideJournalNewRev(e.target.value)}
+                      placeholder="Write your honest post-session or end-of-week reflection here (e.g. Did I follow my rules? Where did emotions leak?)..."
+                      className="w-full rounded-lg border border-border/70 bg-[#0d0f14] p-2.5 text-xs text-foreground outline-none focus:border-emerald-500"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <label className="text-[11px] font-bold text-indigo-400">
+                      + Append to Prep / Forecast Tab
+                    </label>
+                    <textarea
+                      rows={3}
+                      value={sideJournalNewPrep}
+                      onChange={(e) => setSideJournalNewPrep(e.target.value)}
+                      placeholder="Optional pre-session note or thesis adjustment..."
+                      className="w-full rounded-lg border border-border/70 bg-[#0d0f14] p-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                    />
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
+                    <Button
+                      size="sm"
+                      onClick={() => void handleSaveSideJournal()}
+                      disabled={sideJournalLoading}
+                    >
+                      Save to Journal Entry
+                    </Button>
+                  </div>
+
+                  <div className="border-t border-border/50 pt-3 space-y-3">
+                    <div className="text-[11px] font-bold uppercase tracking-wider text-muted-foreground">
+                      Current Recorded Content in {sideJournalSlug}
+                    </div>
+                    <div className="rounded-lg border border-border/50 bg-[#0d0f14] p-3 max-h-48 overflow-y-auto space-y-1">
+                      <div className="text-[10px] font-bold text-emerald-400">Review Tab:</div>
+                      <InteractiveCoachMarkdown value={sideJournalRevMd} />
+                    </div>
+                    <div className="rounded-lg border border-border/50 bg-[#0d0f14] p-3 max-h-48 overflow-y-auto space-y-1">
+                      <div className="text-[10px] font-bold text-indigo-400">Prep Tab:</div>
+                      <InteractiveCoachMarkdown value={sideJournalPrepMd} />
+                    </div>
+                  </div>
+                </>
+              )}
+            </div>
+          </div>
+        )}
 
         {/* ADD DAILY ROUTINE DIALOG */}
         <Dialog open={open} onOpenChange={setOpen}>
