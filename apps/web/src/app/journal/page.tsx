@@ -38,7 +38,7 @@ function getActiveJournalSlugs(): string[] {
       if (norm) templateFingerprints.add(norm);
     }
 
-    const db = new Database(target, { readonly: true });
+    const db = new Database(target);
     try {
       ensureJournalSchema(db);
       const rows = db

@@ -120,12 +120,19 @@ function resolveDbPath(): string {
   return fs.existsSync(dbPath) ? dbPath : altDbPath;
 }
 
+let _journalSchemaInitialized = false;
+
 export function ensureJournalSchema(db: Database.Database) {
   try {
-    db.pragma("journal_mode = WAL");
-    db.pragma("synchronous = NORMAL");
-    db.pragma("busy_timeout = 5000");
+    if (!db.readonly) {
+      db.pragma("journal_mode = WAL");
+      db.pragma("synchronous = NORMAL");
+    }
+    db.pragma("busy_timeout = 10000");
   } catch {}
+
+  if (_journalSchemaInitialized || db.readonly) return;
+
   db.exec(`
     CREATE TABLE IF NOT EXISTS journal_entries (
       slug TEXT PRIMARY KEY,
@@ -151,9 +158,19 @@ export function ensureJournalSchema(db: Database.Database) {
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS journal_entry_revisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      slug TEXT NOT NULL,
+      title TEXT DEFAULT '',
+      content TEXT DEFAULT '',
+      review_content TEXT DEFAULT '',
+      lessons_learned TEXT DEFAULT '',
+      saved_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_journal_revisions_slug_saved
+      ON journal_entry_revisions(slug, saved_at DESC);
   `);
 
-  // Safe migrations for existing journal_entries table
   for (const colDef of [
     "review_content TEXT DEFAULT ''",
     "review_notion_page_id TEXT",
@@ -163,6 +180,8 @@ export function ensureJournalSchema(db: Database.Database) {
       db.exec(`ALTER TABLE journal_entries ADD COLUMN ${colDef}`);
     } catch {}
   }
+
+  _journalSchemaInitialized = true;
 }
 
 export function getJournalConfig(): JournalConfigData {
@@ -480,9 +499,18 @@ export async function getJournalEntryWithTrades(slug: string) {
   }
 }
 
+function stripHtmlTextLen(html: string | null | undefined): number {
+  if (!html) return 0;
+  return html
+    .replace(/<[^>]+>/g, " ")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/\s+/g, " ")
+    .trim().length;
+}
+
 export async function saveJournalEntry(
   slug: string,
-  payload: Partial<JournalEntryRecord>
+  payload: Partial<JournalEntryRecord> & { isAutoSave?: boolean }
 ): Promise<JournalEntryRecord> {
   const finalPath = resolveDbPath();
   const range = parseSlugRange(slug);
@@ -495,12 +523,77 @@ export async function saveJournalEntry(
       .get(slug) as any;
 
     const nowIso = new Date().toISOString();
+
+    let nextContent = payload.content !== undefined ? payload.content : (existing?.content ?? "");
+    let nextReviewContent =
+      payload.reviewContent !== undefined ? payload.reviewContent : (existing?.review_content ?? "");
+
+    if (existing) {
+      const oldPrep = String(existing.content || "");
+      const oldRev = String(existing.review_content || "");
+      const oldPrepLen = stripHtmlTextLen(oldPrep);
+      const oldRevLen = stripHtmlTextLen(oldRev);
+      const newPrepLen = stripHtmlTextLen(nextContent);
+      const newRevLen = stripHtmlTextLen(nextReviewContent);
+
+      // Safeguard: If an automated background save (isAutoSave) tries to wipe a substantive entry
+      // down to empty or default template, preserve the existing column!
+      if (payload.isAutoSave) {
+        const cfg = getJournalConfig();
+        const defPrepLen = stripHtmlTextLen(getDefaultTemplateHtml(range.periodType, "prep", cfg));
+        const defRevLen = stripHtmlTextLen(getDefaultTemplateHtml(range.periodType, "review", cfg));
+        if (oldPrepLen > defPrepLen + 80 && newPrepLen <= defPrepLen + 5) {
+          console.warn(`[Journal Safeguard] Blocked autosave from wiping substantive Prep on ${slug}`);
+          nextContent = oldPrep;
+        }
+        if (oldRevLen > defRevLen + 80 && newRevLen <= defRevLen + 5) {
+          console.warn(`[Journal Safeguard] Blocked autosave from wiping substantive Review on ${slug}`);
+          nextReviewContent = oldRev;
+        }
+      }
+
+      // Archive previous version into journal_entry_revisions whenever content or review_content changes
+      const prepChanged = payload.content !== undefined && nextContent !== oldPrep && oldPrepLen > 0;
+      const revChanged = payload.reviewContent !== undefined && nextReviewContent !== oldRev && oldRevLen > 0;
+
+      if (prepChanged || revChanged) {
+        try {
+          const latestRev = db
+            .prepare(
+              `SELECT content, review_content FROM journal_entry_revisions WHERE slug = ? ORDER BY id DESC LIMIT 1`
+            )
+            .get(slug) as any;
+          if (!latestRev || latestRev.content !== oldPrep || latestRev.review_content !== oldRev) {
+            db.prepare(
+              `INSERT INTO journal_entry_revisions (slug, title, content, review_content, lessons_learned, saved_at)
+               VALUES (?, ?, ?, ?, ?, ?)`
+            ).run(
+              slug,
+              existing.title || range.defaultTitle,
+              oldPrep,
+              oldRev,
+              existing.lessons_learned || "",
+              existing.updated_at || nowIso
+            );
+            db.prepare(
+              `DELETE FROM journal_entry_revisions
+               WHERE slug = ? AND id NOT IN (
+                 SELECT id FROM journal_entry_revisions WHERE slug = ? ORDER BY id DESC LIMIT 50
+               )`
+            ).run(slug, slug);
+          }
+        } catch (revErr) {
+          console.warn("[Journal Revisions] Failed to archive revision:", revErr);
+        }
+      }
+    }
+
     const updated: JournalEntryRecord = {
       slug,
       periodType: range.periodType,
       title: payload.title ?? existing?.title ?? range.defaultTitle,
-      content: payload.content ?? existing?.content ?? "",
-      reviewContent: payload.reviewContent ?? existing?.review_content ?? "",
+      content: nextContent,
+      reviewContent: nextReviewContent,
       marketBias: payload.marketBias ?? existing?.market_bias ?? "",
       dayProfile: payload.dayProfile ?? existing?.day_profile ?? "",
       keyLevels: payload.keyLevels ?? existing?.key_levels ?? "",
@@ -563,6 +656,66 @@ export async function saveJournalEntry(
   }
 }
 
+export function updateNotionIdsOnly(
+  slug: string,
+  isReview: boolean,
+  pageId: string | null,
+  pageUrl: string | null
+) {
+  if (!pageId) return;
+  try {
+    const finalPath = resolveDbPath();
+    if (!fs.existsSync(finalPath)) return;
+    const db = new Database(finalPath);
+    try {
+      ensureJournalSchema(db);
+      if (isReview) {
+        db.prepare(
+          `UPDATE journal_entries SET review_notion_page_id = ?, review_notion_url = ? WHERE slug = ?`
+        ).run(pageId, pageUrl, slug);
+      } else {
+        db.prepare(
+          `UPDATE journal_entries SET notion_page_id = ?, notion_url = ? WHERE slug = ?`
+        ).run(pageId, pageUrl, slug);
+      }
+    } finally {
+      db.close();
+    }
+  } catch {}
+}
+
+export function getJournalEntryRevisions(slug: string) {
+  try {
+    const finalPath = resolveDbPath();
+    if (!fs.existsSync(finalPath)) return [];
+    const db = new Database(finalPath);
+    try {
+      ensureJournalSchema(db);
+      return db
+        .prepare(
+          `SELECT id, slug, title, content, review_content as reviewContent,
+                  lessons_learned as lessonsLearned, saved_at as savedAt
+           FROM journal_entry_revisions
+           WHERE slug = ?
+           ORDER BY id DESC LIMIT 40`
+        )
+        .all(slug) as Array<{
+          id: number;
+          slug: string;
+          title: string;
+          content: string;
+          reviewContent: string;
+          lessonsLearned: string;
+          savedAt: string;
+        }>;
+    } finally {
+      db.close();
+    }
+  } catch {
+    return [];
+  }
+}
+
 function getMondayStr(dateStr: string): string {
   const d = new Date(`${dateStr}T12:00:00Z`);
   const day = d.getUTCDay();
@@ -587,7 +740,7 @@ export async function ensureNotionJournalPageExists(
 
   const targetSlug = isReview ? `${slug}-review` : slug;
   const targetTitle = isReview
-    ? `${ (entry.title || range.defaultTitle).replace("Journal", "Review") }`
+    ? `${(entry.title || range.defaultTitle).replace("Journal", "Review")}`
     : entry.title || range.defaultTitle;
   const categoryLabel = isReview
     ? `${range.periodType.toUpperCase()} REVIEW`
@@ -598,12 +751,7 @@ export async function ensureNotionJournalPageExists(
     if (found.page?.id) {
       const pid = found.page.id;
       const purl = found.page.url;
-      await saveJournalEntry(
-        slug,
-        isReview
-          ? { reviewNotionPageId: pid, reviewNotionUrl: purl }
-          : { notionPageId: pid, notionUrl: purl }
-      );
+      updateNotionIdsOnly(slug, isReview, pid, purl);
       return { pageId: pid, pageUrl: purl };
     }
 
@@ -666,13 +814,7 @@ export async function ensureNotionJournalPageExists(
       }
     }
 
-    await saveJournalEntry(
-      slug,
-      isReview
-        ? { reviewNotionPageId: newPageId, reviewNotionUrl: newPageUrl }
-        : { notionPageId: newPageId, notionUrl: newPageUrl }
-    );
-
+    updateNotionIdsOnly(slug, isReview, newPageId, newPageUrl);
     return { pageId: newPageId, pageUrl: newPageUrl };
   } catch (err) {
     console.warn(`[Notion AutoPopulate] Failed for ${targetSlug}:`, err);

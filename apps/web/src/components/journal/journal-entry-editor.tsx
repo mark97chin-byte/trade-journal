@@ -373,7 +373,7 @@ export function JournalEntryEditor({
         mentalState: parsed.mentalState ?? 4,
       });
     } catch {}
-  }, [initialEntry]);
+  }, [initialEntry.slug]);
 
   const [activeAnchor, setActiveAnchor] = useState<string>(range.anchorDate);
 
@@ -715,92 +715,262 @@ export function JournalEntryEditor({
     title,
   ]);
 
+  const [revisions, setRevisions] = useState<
+    Array<{
+      id: number;
+      slug: string;
+      title: string;
+      content: string;
+      reviewContent: string;
+      lessonsLearned: string;
+      savedAt: string;
+    }>
+  >([]);
+  const [historyModalOpen, setHistoryModalOpen] = useState(false);
+
+  // Live Refs so saves ALWAYS read the exact current values without stale closures
+  const activeTabRef = useRef(activeTab);
+  activeTabRef.current = activeTab;
+  const titleRef = useRef(title);
+  titleRef.current = title;
+  const contentRefState = useRef(content);
+  contentRefState.current = content;
+  const reviewContentRefState = useRef(reviewContent);
+  reviewContentRefState.current = reviewContent;
+  const lessonsRef = useRef(lessonsLearned);
+  lessonsRef.current = lessonsLearned;
+  const checklistRef = useRef(checklist);
+  checklistRef.current = checklist;
+  const scoresRef = useRef(scores);
+  scoresRef.current = scores;
+  const processScoreRef = useRef(processScorePct);
+  processScoreRef.current = processScorePct;
+
+  const lastSavedSnapshotRef = useRef<string>("");
+  const isDirtyRef = useRef<boolean>(false);
+  const saveChainPromiseRef = useRef<Promise<boolean>>(Promise.resolve(true));
+
+  // Read live innerHTML directly from RichEditor's DOM node so 0ms keystrokes are never missed
+  const captureLiveTabHtml = useCallback(() => {
+    const liveDomHtml = noteEditorRef.current?.getHtml?.();
+    let curPrep = contentRefState.current;
+    let curRev = reviewContentRefState.current;
+    if (typeof liveDomHtml === "string" && liveDomHtml.trim().length > 0) {
+      if (activeTabRef.current === "review") {
+        curRev = liveDomHtml;
+        reviewContentRefState.current = liveDomHtml;
+      } else {
+        curPrep = liveDomHtml;
+        contentRefState.current = liveDomHtml;
+      }
+    }
+    return { curPrep, curRev };
+  }, []);
+
+  // On mount / slug change: Always fetch freshest entry & revisions directly from SQLite (bypassing Next.js Router Cache)
+  useEffect(() => {
+    let mounted = true;
+    const initSnap = JSON.stringify({
+      title: initialEntry.title,
+      content: initialEntry.content || "",
+      reviewContent: initialEntry.reviewContent || "",
+      lessonsLearned: initialEntry.lessonsLearned || "",
+      checklistJson: initialEntry.checklistJson || "{}",
+      scoresJson: initialEntry.scoresJson || "{}",
+    });
+    lastSavedSnapshotRef.current = initSnap;
+    isDirtyRef.current = false;
+
+    fetch(`/api/journal/${encodeURIComponent(initialEntry.slug)}?t=${Date.now()}`, {
+      cache: "no-store",
+    })
+      .then((r) => r.json())
+      .then((json) => {
+        if (!mounted) return;
+        const payload = json?.data ?? json;
+        if (Array.isArray(payload?.revisions)) {
+          setRevisions(payload.revisions);
+        }
+        if (!isDirtyRef.current && payload?.entry) {
+          const e = payload.entry;
+          setTitle(e.title);
+          setContent(e.content || "");
+          setReviewContent(e.reviewContent || "");
+          setLessonsLearned(e.lessonsLearned || "");
+          contentRefState.current = e.content || "";
+          reviewContentRefState.current = e.reviewContent || "";
+          try {
+            setChecklist(JSON.parse(e.checklistJson || "{}"));
+          } catch {}
+          try {
+            const p = JSON.parse(e.scoresJson || "{}");
+            setScores({
+              planAdherence: p.planAdherence ?? 4,
+              execution: p.execution ?? 4,
+              riskMgmt: p.riskMgmt ?? 4,
+              mentalState: p.mentalState ?? 4,
+            });
+          } catch {}
+          const freshSnap = JSON.stringify({
+            title: e.title,
+            content: e.content || "",
+            reviewContent: e.reviewContent || "",
+            lessonsLearned: e.lessonsLearned || "",
+            checklistJson: e.checklistJson || "{}",
+            scoresJson: e.scoresJson || "{}",
+          });
+          lastSavedSnapshotRef.current = freshSnap;
+          setEditorKey((k) => k + 1);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      mounted = false;
+    };
+  }, [initialEntry.slug]);
+
+  // Unified, serialized save function for Manual Save, Autosave, Tab Switch, and Unmount
+  const executeSaveRequest = useCallback(
+    async (options?: {
+      syncNotion?: boolean;
+      isAutoSave?: boolean;
+      isBrowserClosing?: boolean;
+       isSpaUnmount?: boolean;
+    }): Promise<boolean> => {
+      const syncNotion = Boolean(options?.syncNotion);
+      const isAutoSave = Boolean(options?.isAutoSave);
+      const isBrowserClosing = Boolean(options?.isBrowserClosing);
+      const isSpaUnmount = Boolean(options?.isSpaUnmount);
+      const isSilentLifecycle = isBrowserClosing || isSpaUnmount;
+
+      const { curPrep, curRev } = captureLiveTabHtml();
+      const curTitle = titleRef.current;
+      const curLessons = lessonsRef.current;
+      const curChecklistJson = JSON.stringify(checklistRef.current);
+      const curScoresJson = JSON.stringify(scoresRef.current);
+      const curRating = processScoreRef.current;
+      const curTab = activeTabRef.current;
+
+      const snapToSave = JSON.stringify({
+        title: curTitle,
+        content: curPrep,
+        reviewContent: curRev,
+        lessonsLearned: curLessons,
+        checklistJson: curChecklistJson,
+        scoresJson: curScoresJson,
+      });
+
+      // Emergency backup in localStorage (viewable in History modal, never auto-overwrites DB on mount)
+      writeLocalJournalDraft(initialEntry.slug, curPrep);
+      writeLocalJournalDraft(`${initialEntry.slug}-review`, curRev);
+
+      const bodyStr = JSON.stringify({
+        title: curTitle,
+        content: curPrep,
+        reviewContent: curRev,
+        lessonsLearned: curLessons,
+        checklistJson: curChecklistJson,
+        scoresJson: curScoresJson,
+        rating: curRating,
+        syncNotion,
+        isAutoSave,
+        activeTab: curTab,
+      });
+
+      // CRITICAL: Only use keepalive:true when the browser tab itself is closing AND body < 55KB!
+      // During SPA navigation (isSpaUnmount), standard fetch() has NO 64KB limit and completes in the background!
+      const byteLen = typeof Blob !== "undefined" ? new Blob([bodyStr]).size : bodyStr.length;
+      const useKeepalive = isBrowserClosing && byteLen < 55_000;
+
+      const runPut = async (): Promise<boolean> => {
+        if (!isSilentLifecycle) {
+          if (syncNotion) setSyncingNotion(true);
+          else setSaving(true);
+        }
+
+        try {
+          const res = await fetch(`/api/journal/${encodeURIComponent(initialEntry.slug)}`, {
+            method: "PUT",
+            headers: { "Content-Type": "application/json" },
+            body: bodyStr,
+            ...(useKeepalive ? { keepalive: true } : {}),
+          });
+
+          if (!res.ok) {
+            if (!isSilentLifecycle) {
+              setSaveStatus(`⚠️ Save error (${res.status}) — retrying...`);
+            }
+            return false;
+          }
+
+          const rawJson = await res.json();
+          const data = rawJson?.data ?? rawJson;
+          if (!data?.entry) {
+            if (!isSilentLifecycle) {
+              setSaveStatus("⚠️ Save response invalid — retrying...");
+            }
+            return false;
+          }
+
+          lastSavedSnapshotRef.current = snapToSave;
+          isDirtyRef.current = false;
+
+          if (!isSilentLifecycle) {
+            if (Array.isArray(data.revisions)) {
+              setRevisions(data.revisions);
+            }
+            if (data.entry.notionUrl) setNotionUrl(data.entry.notionUrl);
+            if (data.entry.reviewNotionUrl) setReviewNotionUrl(data.entry.reviewNotionUrl);
+
+            const timeStr = new Date().toTimeString().slice(0, 8);
+            if (syncNotion) {
+              if (data.notionSynced) {
+                if (curTab === "review") {
+                  setLastNotionSyncedReview(curRev || "");
+                  try {
+                    localStorage.setItem(`tz_notion_synced_${initialEntry.slug}_review`, curRev || "");
+                  } catch {}
+                } else {
+                  setLastNotionSyncedPrep(curPrep || "");
+                  try {
+                    localStorage.setItem(`tz_notion_synced_${initialEntry.slug}_prep`, curPrep || "");
+                  } catch {}
+                }
+                setSaveStatus(`Saved & Synced to Notion (${timeStr})`);
+              } else {
+                setSaveStatus(data.notionError || `Saved locally (${timeStr})`);
+              }
+            } else {
+              setSaveStatus(`✓ Saved (${timeStr})`);
+            }
+          }
+          return true;
+        } catch {
+          if (!isSilentLifecycle) {
+            setSaveStatus("⚠️ Network busy — retrying save...");
+          }
+          return false;
+        } finally {
+          if (!isSilentLifecycle) {
+            setSaving(false);
+            setSyncingNotion(false);
+          }
+        }
+      };
+
+      const nextPromise = saveChainPromiseRef.current.then(() => runPut(), () => runPut());
+      saveChainPromiseRef.current = nextPromise;
+      return nextPromise;
+    },
+    [initialEntry.slug, captureLiveTabHtml]
+  );
+
   const handleSave = useCallback(
     async (syncNotion = false) => {
-      if (syncNotion) setSyncingNotion(true);
-      else setSaving(true);
-      setSaveStatus(null);
-
-      try {
-        const res = await fetch(`/api/journal/${initialEntry.slug}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title,
-            content,
-            reviewContent,
-            lessonsLearned,
-            checklistJson: JSON.stringify(checklist),
-            scoresJson: JSON.stringify(scores),
-            rating: processScorePct,
-            syncNotion,
-            activeTab,
-          }),
-        });
-        const data = await res.json();
-        if (data.entry?.notionUrl) {
-          setNotionUrl(data.entry.notionUrl);
-        }
-        if (data.entry?.reviewNotionUrl) {
-          setReviewNotionUrl(data.entry.reviewNotionUrl);
-        }
-        if (syncNotion) {
-          if (data.notionSynced) {
-            if (activeTab === "review") {
-              setLastNotionSyncedReview(reviewContent || "");
-              try {
-                localStorage.setItem(
-                  `tz_notion_synced_${initialEntry.slug}_review`,
-                  reviewContent || ""
-                );
-              } catch {}
-            } else {
-              setLastNotionSyncedPrep(content || "");
-              try {
-                localStorage.setItem(
-                  `tz_notion_synced_${initialEntry.slug}_prep`,
-                  content || ""
-                );
-              } catch {}
-            }
-            setSaveStatus(
-              `Saved & Synced ${activeTab === "review" ? "Review Page" : "Prep Page"} to Notion!`
-            );
-          } else {
-            setSaveStatus(data.notionError || "Saved locally (Notion sync skipped)");
-          }
-        } else {
-          clearLocalJournalDraft(initialEntry.slug);
-          clearLocalJournalDraft(`${initialEntry.slug}-review`);
-          lastSavedSnapshotRef.current = JSON.stringify({
-            title,
-            content,
-            reviewContent,
-            lessonsLearned,
-            checklistJson: JSON.stringify(checklist),
-            scoresJson: JSON.stringify(scores),
-          });
-          isDirtyRef.current = false;
-          setSaveStatus(`Saved to database (${new Date().toTimeString().slice(0, 8)})`);
-        }
-      } catch {
-        setSaveStatus("Error saving journal");
-      } finally {
-        setSaving(false);
-        setSyncingNotion(false);
-      }
+      await executeSaveRequest({ syncNotion, isAutoSave: false });
     },
-    [
-      initialEntry.slug,
-      title,
-      content,
-      reviewContent,
-      lessonsLearned,
-      checklist,
-      scores,
-      processScorePct,
-      activeTab,
-    ]
+    [executeSaveRequest]
   );
 
   useEffect(() => {
@@ -814,161 +984,7 @@ export function JournalEntryEditor({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
-  // === ZERO-DATA-LOSS AUTOSAVE + LOCALSTORAGE WRITE-AHEAD RECOVERY + ROUTER CACHE BYPASS ===
-  const latestPayloadRef = useRef({
-    slug: initialEntry.slug,
-    title,
-    content,
-    reviewContent,
-    lessonsLearned,
-    checklistJson: JSON.stringify(checklist),
-    scoresJson: JSON.stringify(scores),
-    rating: processScorePct,
-    activeTab,
-  });
-
-  const lastSavedSnapshotRef = useRef<string>("");
-  const isDirtyRef = useRef<boolean>(false);
-
-  // 1. On Mount / Slug Change: Bypass Next.js stale client-side Router Cache by fetching latest SQLite entry
-  //    AND check LocalStorage Write-Ahead Drafts (`tz_wal_...`) so unsaved work is immediately recovered!
-  useEffect(() => {
-    let mounted = true;
-    const serverUpdatedMs = initialEntry.updatedAt ? new Date(initialEntry.updatedAt).getTime() : 0;
-
-    const checkWalAndFreshServer = async () => {
-      let freshestEntry = initialEntry;
-      try {
-        const res = await fetch(`/api/journal/${encodeURIComponent(initialEntry.slug)}`, {
-          cache: "no-store",
-        });
-        const json = await res.json();
-        if (json?.entry) {
-          freshestEntry = json.entry;
-        }
-      } catch {}
-
-      if (!mounted) return;
-
-      const dbUpdatedMs = freshestEntry.updatedAt
-        ? new Date(freshestEntry.updatedAt).getTime()
-        : serverUpdatedMs;
-
-      let nextPrep = freshestEntry.content || "";
-      let nextRev = freshestEntry.reviewContent || "";
-      let recoveredFromWal = false;
-
-      const walPrep = readLocalJournalDraft(initialEntry.slug);
-      if (
-        walPrep &&
-        walPrep.html &&
-        walPrep.html !== nextPrep &&
-        walPrep.updatedAtMs > dbUpdatedMs + 1500
-      ) {
-        nextPrep = walPrep.html;
-        recoveredFromWal = true;
-      }
-
-      const walRev = readLocalJournalDraft(`${initialEntry.slug}-review`);
-      if (
-        walRev &&
-        walRev.html &&
-        walRev.html !== nextRev &&
-        walRev.updatedAtMs > dbUpdatedMs + 1500
-      ) {
-        nextRev = walRev.html;
-        recoveredFromWal = true;
-      }
-
-      setTitle(freshestEntry.title);
-      setContent(nextPrep);
-      setReviewContent(nextRev);
-      setLessonsLearned(freshestEntry.lessonsLearned || "");
-
-      const snap = JSON.stringify({
-        title: freshestEntry.title,
-        content: freshestEntry.content || "",
-        reviewContent: freshestEntry.reviewContent || "",
-        lessonsLearned: freshestEntry.lessonsLearned || "",
-        checklistJson: freshestEntry.checklistJson || "{}",
-        scoresJson: freshestEntry.scoresJson || "{}",
-      });
-      lastSavedSnapshotRef.current = snap;
-
-      if (recoveredFromWal) {
-        setEditorKey((k) => k + 1);
-        isDirtyRef.current = true;
-        setSaveStatus("🛡️ Recovered unsaved local draft — saving to DB...");
-      } else {
-        isDirtyRef.current = false;
-      }
-    };
-
-    void checkWalAndFreshServer();
-    return () => {
-      mounted = false;
-    };
-  }, [initialEntry.slug]);
-
-  // Helper that sends PUT to SQLite without ever hitting the 64KB keepalive browser crash!
-  const performBackgroundSave = useCallback(async (isUnloading = false): Promise<boolean> => {
-    const payload = latestPayloadRef.current;
-    const snapToSave = JSON.stringify({
-      title: payload.title,
-      content: payload.content,
-      reviewContent: payload.reviewContent,
-      lessonsLearned: payload.lessonsLearned,
-      checklistJson: payload.checklistJson,
-      scoresJson: payload.scoresJson,
-    });
-
-    // Always write latest state to localStorage WAL first (0ms, no 64KB limit)
-    writeLocalJournalDraft(payload.slug, payload.content);
-    writeLocalJournalDraft(`${payload.slug}-review`, payload.reviewContent);
-
-    const bodyStr = JSON.stringify({
-      title: payload.title,
-      content: payload.content,
-      reviewContent: payload.reviewContent,
-      lessonsLearned: payload.lessonsLearned,
-      checklistJson: payload.checklistJson,
-      scoresJson: payload.scoresJson,
-      rating: payload.rating,
-      syncNotion: false,
-      activeTab: payload.activeTab,
-    });
-
-    // Browser fetch({ keepalive: true }) throws TypeError if body > 64KB!
-    // Only set keepalive: true when body is safely under 56KB.
-    const byteLen = typeof Blob !== "undefined" ? new Blob([bodyStr]).size : bodyStr.length;
-    const useKeepalive = isUnloading && byteLen < 56_000;
-
-    try {
-      const res = await fetch(`/api/journal/${encodeURIComponent(payload.slug)}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: bodyStr,
-        ...(useKeepalive ? { keepalive: true } : {}),
-      });
-      if (res.ok) {
-        lastSavedSnapshotRef.current = snapToSave;
-        isDirtyRef.current = false;
-        clearLocalJournalDraft(payload.slug);
-        clearLocalJournalDraft(`${payload.slug}-review`);
-        const timeStr = new Date().toTimeString().slice(0, 8);
-        setSaveStatus(`Auto-saved ${timeStr}`);
-        return true;
-      } else {
-        setSaveStatus("⚠️ Save retrying (backed up locally)...");
-        return false;
-      }
-    } catch {
-      setSaveStatus("⚠️ Offline / retrying (backed up locally)...");
-      return false;
-    }
-  }, []);
-
-  // 2. Continuous 1.0s Debounced Autosave + 8s Periodic Heartbeat While Typing
+  // Continuous 1.0s Debounced Autosave
   useEffect(() => {
     const currentSnap = JSON.stringify({
       title,
@@ -979,24 +995,7 @@ export function JournalEntryEditor({
       scoresJson: JSON.stringify(scores),
     });
 
-    latestPayloadRef.current = {
-      slug: initialEntry.slug,
-      title,
-      content,
-      reviewContent,
-      lessonsLearned,
-      checklistJson: JSON.stringify(checklist),
-      scoresJson: JSON.stringify(scores),
-      rating: processScorePct,
-      activeTab,
-    };
-
-    // Keep localStorage WAL updated on every state change
-    writeLocalJournalDraft(initialEntry.slug, content);
-    writeLocalJournalDraft(`${initialEntry.slug}-review`, reviewContent);
-
     if (currentSnap === lastSavedSnapshotRef.current) {
-      isDirtyRef.current = false;
       return;
     }
 
@@ -1005,44 +1004,61 @@ export function JournalEntryEditor({
 
     const debounceTimer = setTimeout(() => {
       if (isDirtyRef.current) {
-        void performBackgroundSave(false);
+        void executeSaveRequest({ syncNotion: false, isAutoSave: true });
       }
     }, 1000);
 
     return () => clearTimeout(debounceTimer);
-  }, [
-    initialEntry.slug,
-    title,
-    content,
-    reviewContent,
-    lessonsLearned,
-    checklist,
-    scores,
-    processScorePct,
-    activeTab,
-    performBackgroundSave,
-  ]);
+  }, [title, content, reviewContent, lessonsLearned, checklist, scores, executeSaveRequest]);
 
-  // 3. Periodic 8-second safety heartbeat: if still dirty (e.g. continuous non-stop typing for 30m), save anyway!
+  // 5-second periodic safety heartbeat while dirty (saves even during 30m of continuous typing)
   useEffect(() => {
     const interval = setInterval(() => {
-      if (isDirtyRef.current) {
-        void performBackgroundSave(false);
+      const { curPrep, curRev } = captureLiveTabHtml();
+      const liveSnap = JSON.stringify({
+        title: titleRef.current,
+        content: curPrep,
+        reviewContent: curRev,
+        lessonsLearned: lessonsRef.current,
+        checklistJson: JSON.stringify(checklistRef.current),
+        scoresJson: JSON.stringify(scoresRef.current),
+      });
+      if (isDirtyRef.current || liveSnap !== lastSavedSnapshotRef.current) {
+        isDirtyRef.current = true;
+        void executeSaveRequest({ syncNotion: false, isAutoSave: true });
       }
-    }, 8000);
+    }, 5000);
     return () => clearInterval(interval);
-  }, [performBackgroundSave]);
+  }, [captureLiveTabHtml, executeSaveRequest]);
 
-  const flushUnsavedImmediately = useCallback(() => {
-    if (!isDirtyRef.current) return;
-    void performBackgroundSave(true);
-  }, [performBackgroundSave]);
+  const flushUnsavedImmediately = useCallback(
+    (isBrowserClosing = false) => {
+      const { curPrep, curRev } = captureLiveTabHtml();
+      const liveSnap = JSON.stringify({
+        title: titleRef.current,
+        content: curPrep,
+        reviewContent: curRev,
+        lessonsLearned: lessonsRef.current,
+        checklistJson: JSON.stringify(checklistRef.current),
+        scoresJson: JSON.stringify(scoresRef.current),
+      });
+      if (isDirtyRef.current || liveSnap !== lastSavedSnapshotRef.current) {
+        void executeSaveRequest({
+          syncNotion: false,
+          isAutoSave: true,
+          isBrowserClosing,
+          isSpaUnmount: !isBrowserClosing,
+        });
+      }
+    },
+    [captureLiveTabHtml, executeSaveRequest]
+  );
 
   useEffect(() => {
-    const onBeforeUnload = () => flushUnsavedImmediately();
+    const onBeforeUnload = () => flushUnsavedImmediately(true);
     const onVisibilityChange = () => {
       if (document.visibilityState === "hidden") {
-        flushUnsavedImmediately();
+        flushUnsavedImmediately(true);
       }
     };
     window.addEventListener("beforeunload", onBeforeUnload);
@@ -1050,7 +1066,8 @@ export function JournalEntryEditor({
     return () => {
       window.removeEventListener("beforeunload", onBeforeUnload);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      flushUnsavedImmediately();
+      // On SPA route change unmount, use standard fetch (isBrowserClosing = false) so >64KB saves never abort!
+      flushUnsavedImmediately(false);
     };
   }, [flushUnsavedImmediately]);
 
@@ -1080,7 +1097,7 @@ export function JournalEntryEditor({
             onClick={async (e) => {
               if (isDirtyRef.current) {
                 e.preventDefault();
-                await performBackgroundSave(false);
+                await executeSaveRequest({ syncNotion: false, isAutoSave: false });
                 router.push("/journal");
               }
             }}
@@ -1092,7 +1109,7 @@ export function JournalEntryEditor({
 
           <div className="flex items-center rounded-lg border border-border/60 bg-secondary/50 p-0.5">
             <button
-              onClick={async () => { if (isDirtyRef.current) await performBackgroundSave(false); router.push(adjacentSlugs.prev); }}
+              onClick={async () => { if (isDirtyRef.current) await executeSaveRequest({ syncNotion: false, isAutoSave: false }); router.push(adjacentSlugs.prev); }}
               title="Previous Period"
               className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
             >
@@ -1102,7 +1119,7 @@ export function JournalEntryEditor({
               {range.periodType}
             </span>
             <button
-              onClick={async () => { if (isDirtyRef.current) await performBackgroundSave(false); router.push(adjacentSlugs.next); }}
+              onClick={async () => { if (isDirtyRef.current) await executeSaveRequest({ syncNotion: false, isAutoSave: false }); router.push(adjacentSlugs.next); }}
               title="Next Period"
               className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
             >
@@ -1221,6 +1238,15 @@ export function JournalEntryEditor({
           >
             <CloudUpload className="w-3.5 h-3.5" />
             <span>{syncingNotion ? "Syncing Notion..." : "Sync to Notion"}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setHistoryModalOpen(true)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/20 px-3 py-1.5 text-xs font-semibold text-amber-200 transition"
+            title="View & restore prior saved versions from SQLite or local browser backup"
+          >
+            <span>🕒 History ({revisions.length})</span>
           </button>
 
           <button
@@ -1489,7 +1515,7 @@ export function JournalEntryEditor({
               <div className="flex items-center gap-1.5 rounded-xl bg-[#0d0f14] p-1 border border-border/60">
                 <button
                   type="button"
-                  onClick={() => { void performBackgroundSave(false); setActiveTab("prep"); }}
+                  onClick={() => { const { curRev } = captureLiveTabHtml(); setReviewContent(curRev); void executeSaveRequest({ syncNotion: false, isAutoSave: false }); setActiveTab("prep"); }}
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     activeTab === "prep"
                       ? "bg-secondary text-foreground border border-border shadow"
@@ -1501,7 +1527,7 @@ export function JournalEntryEditor({
                 </button>
                 <button
                   type="button"
-                  onClick={() => { void performBackgroundSave(false); setActiveTab("review"); }}
+                  onClick={() => { const { curPrep } = captureLiveTabHtml(); setContent(curPrep); void executeSaveRequest({ syncNotion: false, isAutoSave: false }); setActiveTab("review"); }}
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     activeTab === "review"
                       ? "bg-secondary text-foreground border border-border shadow"
@@ -2275,6 +2301,155 @@ export function JournalEntryEditor({
           </div>
         )}
       </div>
+
+      {/* REVISION HISTORY & LOCAL DRAFT RECOVERY MODAL */}
+      {historyModalOpen && (
+        <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/75 p-4 backdrop-blur-xs">
+          <div className="w-full max-w-2xl max-h-[85vh] overflow-y-auto rounded-xl border border-border bg-[#12141d] p-5 space-y-4 shadow-2xl text-xs">
+            <div className="flex items-center justify-between border-b border-border/50 pb-3">
+              <div>
+                <h3 className="text-sm font-bold text-foreground">
+                  🕒 Version History &amp; Recovery ({initialEntry.slug})
+                </h3>
+                <p className="text-[11px] text-muted-foreground">
+                  Every time a journal entry changes, the previous version is automatically archived in SQLite.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setHistoryModalOpen(false)}
+                className="rounded-lg border border-border/60 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground"
+              >
+                Close ✕
+              </button>
+            </div>
+
+            {(() => {
+              const walPrep = readLocalJournalDraft(initialEntry.slug);
+              const walRev = readLocalJournalDraft(`${initialEntry.slug}-review`);
+              return (walPrep || walRev) ? (
+                <div className="rounded-lg border border-indigo-500/40 bg-indigo-500/10 p-3 space-y-2">
+                  <div className="font-semibold text-indigo-300">
+                    Local Browser Backup (Write-Ahead Cache)
+                  </div>
+                  {walPrep && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground truncate">
+                        Prep Backup ({new Date(walPrep.updatedAtMs).toLocaleTimeString()} • {walPrep.html.replace(/<[^>]+>/g, " ").trim().slice(0, 90)}...)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setContent(walPrep.html);
+                          contentRefState.current = walPrep.html;
+                          setActiveTab("prep");
+                          setEditorKey((k) => k + 1);
+                          isDirtyRef.current = true;
+                          setHistoryModalOpen(false);
+                          void handleSave(false);
+                        }}
+                        className="shrink-0 rounded bg-indigo-600 hover:bg-indigo-500 px-2.5 py-1 font-semibold text-white"
+                      >
+                        Restore Prep Backup
+                      </button>
+                    </div>
+                  )}
+                  {walRev && (
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-muted-foreground truncate">
+                        Review Backup ({new Date(walRev.updatedAtMs).toLocaleTimeString()} • {walRev.html.replace(/<[^>]+>/g, " ").trim().slice(0, 90)}...)
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setReviewContent(walRev.html);
+                          reviewContentRefState.current = walRev.html;
+                          setActiveTab("review");
+                          setEditorKey((k) => k + 1);
+                          isDirtyRef.current = true;
+                          setHistoryModalOpen(false);
+                          void handleSave(false);
+                        }}
+                        className="shrink-0 rounded bg-indigo-600 hover:bg-indigo-500 px-2.5 py-1 font-semibold text-white"
+                      >
+                        Restore Review Backup
+                      </button>
+                    </div>
+                  )}
+                </div>
+              ) : null;
+            })()}
+
+            <div className="space-y-2">
+              <div className="font-semibold text-muted-foreground uppercase tracking-wider text-[10px]">
+                SQLite Archived Versions ({revisions.length})
+              </div>
+              {revisions.length === 0 ? (
+                <div className="py-6 text-center text-muted-foreground border border-dashed border-border/50 rounded-lg">
+                  No prior overwritten versions recorded yet for this entry.
+                </div>
+              ) : (
+                revisions.map((rev) => {
+                  const prepPreview = (rev.content || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+                  const revPreview = (rev.reviewContent || "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+                  return (
+                    <div
+                      key={rev.id}
+                      className="rounded-lg border border-border/50 bg-[#0d0f14] p-3 space-y-2"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-foreground">
+                          Snapshot #{rev.id} • {rev.savedAt.slice(0, 19).replace("T", " ")}
+                        </span>
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setContent(rev.content || "");
+                              contentRefState.current = rev.content || "";
+                              setActiveTab("prep");
+                              setEditorKey((k) => k + 1);
+                              isDirtyRef.current = true;
+                              setHistoryModalOpen(false);
+                              void handleSave(false);
+                            }}
+                            className="rounded border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-2.5 py-1 text-[11px] font-semibold text-emerald-300"
+                          >
+                            Restore Prep ({prepPreview.length} chars)
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setReviewContent(rev.reviewContent || "");
+                              reviewContentRefState.current = rev.reviewContent || "";
+                              setActiveTab("review");
+                              setEditorKey((k) => k + 1);
+                              isDirtyRef.current = true;
+                              setHistoryModalOpen(false);
+                              void handleSave(false);
+                            }}
+                            className="rounded border border-amber-500/40 bg-amber-500/15 hover:bg-amber-500/25 px-2.5 py-1 text-[11px] font-semibold text-amber-300"
+                          >
+                            Restore Review ({revPreview.length} chars)
+                          </button>
+                        </div>
+                      </div>
+                      <div className="text-[11px] text-muted-foreground line-clamp-2">
+                        <strong>Prep:</strong> {prepPreview.slice(0, 180) || "(Empty)"}
+                      </div>
+                      {revPreview && (
+                        <div className="text-[11px] text-muted-foreground line-clamp-2">
+                          <strong>Review:</strong> {revPreview.slice(0, 180)}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

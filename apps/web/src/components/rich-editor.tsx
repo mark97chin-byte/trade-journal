@@ -90,6 +90,7 @@ export function clearLocalJournalDraft(draftKey: string | undefined) {
 
 export interface RichEditorHandle {
   focus: () => void;
+  getHtml?: () => string;
   insertText?: (text: string) => void;
   insertHtml?: (html: string) => void;
 }
@@ -1310,10 +1311,16 @@ export function RichEditor({
 
   useImperativeHandle(editorRef, () => ({
     focus: () => restoreSelection(),
+    getHtml: () => {
+      if (didInitializeRef.current && contentRef.current) {
+        return contentRef.current.innerHTML;
+      }
+      return lastEmittedRef.current ?? value ?? "";
+    },
     insertText: (text: string) => {
       restoreSelection();
       document.execCommand("insertText", false, text);
-      emitChange();
+      emitChange(true);
     },
     insertHtml: (html: string) => insertHtmlAtCursor(html),
   }));
@@ -4344,7 +4351,7 @@ export function RichEditor({
           }}
           onMouseUp={rememberSelection}
           onKeyUp={rememberSelection}
-          onBlur={() => { rememberSelection(); emitChange(); }}
+          onBlur={() => { rememberSelection(); emitChange(true); }}
           onClick={(e) => {
             setBlockMenuOpen(false);
             handleEditorClick(e);

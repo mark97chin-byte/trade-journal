@@ -8,6 +8,8 @@ import { queryTrades } from "@/server/trades-query";
 import {
   getJournalEntryWithTrades,
   saveJournalEntry,
+  getJournalEntryRevisions,
+  parseSlugRange,
   ensureNotionJournalPageExists,
   autoPopulateUpcomingJournals,
 } from "@/server/journal-service";
@@ -69,10 +71,12 @@ export const GET = handler(async (request: Request, { params }: Params) => {
     legacyCurve = intradayCurve(dayTrades, times, slug, timeZone);
   }
 
+  const revisions = getJournalEntryRevisions(slug);
   return ok({
     date: slug,
     slug,
     entry,
+    revisions,
     range,
     journalTrades: periodTrades,
     metrics: legacyMetrics,
@@ -89,6 +93,13 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const body = await req.json();
     const activeTab: "prep" | "review" = body.activeTab === "review" ? "review" : "prep";
     const isReview = activeTab === "review";
+
+    // FAST PATH FOR LOCAL SAVE & AUTOSAVE (Single SQLite transaction, 0 overhead!)
+    if (!body.pullFromNotion && !body.syncNotion) {
+      const entry = await saveJournalEntry(slug, body);
+      const revisions = getJournalEntryRevisions(slug);
+      return NextResponse.json({ ok: true, entry, revisions, notionSynced: false });
+    }
 
     const { entry: existingEntry, trades, range } = await getJournalEntryWithTrades(slug);
     const { token, databaseId } = getNotionConfig(range.periodType);
