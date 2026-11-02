@@ -3,7 +3,7 @@ import { DatePicker } from "@/components/ui/date-picker";
 import { OptionSelect } from "@/components/ui/option-select";
 import { Checkbox } from "@/components/ui/checkbox";
 import { HoverHint } from "@/components/ui/tooltip";
-import React, { Suspense, useState, useEffect, useCallback, useMemo } from "react";
+import React, { Suspense, useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { FilterBar } from "@/components/filter-bar";
 import { Field, fieldClass } from "@/components/filter-fields";
 import { Card, CardHeader, CardTitle, CardContent } from "@/components/ui/card";
@@ -608,6 +608,11 @@ function Progress() {
 
   const [chatInput, setChatInput] = useState("");
 
+  const selectedReportIdRef = useRef<string | null>(null);
+  selectedReportIdRef.current = selectedReportId;
+  const latestKnownReportIdRef = useRef<string | null>(null);
+  latestKnownReportIdRef.current = latestKnownReportId;
+
   const fetchCoachData = useCallback(
     async (overrideSessionId?: string) => {
       try {
@@ -632,7 +637,9 @@ function Progress() {
           }
           if (json.reports?.length > 0) {
             const newestId = json.reports[0].id;
-            if (!selectedReportId || (latestKnownReportId && newestId !== latestKnownReportId)) {
+            const curSel = selectedReportIdRef.current;
+            const prevLatest = latestKnownReportIdRef.current;
+            if (!curSel || (prevLatest && newestId !== prevLatest)) {
               setSelectedReportId(newestId);
               setActiveDocType("report");
             }
@@ -641,7 +648,7 @@ function Progress() {
         }
       } catch {}
     },
-    [selectedSessionId, selectedReportId]
+    [selectedSessionId]
   );
 
   useEffect(() => {
@@ -658,11 +665,56 @@ function Progress() {
   );
   const runningChatJob = activeJobs.find((j) => j.jobType === "chat");
 
+  // Lightweight 2.5s poll (?poll=1) that ONLY fetches activeJobs (~1KB) from RAM
+  // and triggers a full fetchCoachData() ONLY when a job finishes or starts a new report!
   useEffect(() => {
     if (!isAnyJobRunning) return;
-    const timer = setInterval(() => {
-      void fetchCoachData();
-    }, 2000);
+    let prevJobSignature = activeJobs.map((j) => `${j.id}:${j.status}`).join(",");
+
+    const timer = setInterval(async () => {
+      try {
+        const res = await fetch("/api/ai/coach?poll=1");
+        const json = await res.json();
+        if (!json.ok) return;
+
+        const nextJobs: ActiveJob[] = json.activeJobs || [];
+        const nextSignature = nextJobs.map((j) => `${j.id}:${j.status}`).join(",");
+
+        if (typeof json.autoStopAfterQueue === "boolean") {
+          setAutoStopAfterQueue(json.autoStopAfterQueue);
+        }
+
+        // Update live stream text in memory without re-fetching all 50 reports & 90 journals
+        setCoachData((prev) => {
+          if (!prev) return prev;
+          const runningRep = nextJobs.find((j) => j.status === "running" && (j as any).reportId);
+          const updatedReports =
+            runningRep && runningRep.partialText
+              ? prev.reports.map((r) =>
+                  r.id === (runningRep as any).reportId
+                    ? {
+                        ...r,
+                        summaryMd: runningRep.partialText || r.summaryMd,
+                        reasoningTrace: runningRep.partialReasoning || r.reasoningTrace,
+                      }
+                    : r
+                )
+              : prev.reports;
+          return {
+            ...prev,
+            activeJobs: nextJobs,
+            reports: updatedReports,
+          };
+        });
+
+        // If a job completed or transitioned in the queue, perform ONE full sync to load final data
+        if (nextSignature !== prevJobSignature) {
+          prevJobSignature = nextSignature;
+          await fetchCoachData();
+        }
+      } catch {}
+    }, 2500);
+
     return () => clearInterval(timer);
   }, [isAnyJobRunning, fetchCoachData]);
 

@@ -48,13 +48,85 @@ export interface ReportActionItem {
   done: boolean;
 }
 
+// === HIGH-PERFORMANCE SINGLETON WAL DB & IN-MEMORY CACHES ===
+let singletonDb: Database.Database | null = null;
+let tablesInitialized = false;
+
+// Cache parsed HTML digests per journal (slug -> { updatedAt, prepEval, revEval, prepDigest, revDigest })
+const journalDigestCache = new Map<string, any>();
+
+// Cache computed default monthly telemetry keyed by SQLite PRAGMA data_version (0% stale across all tabs!)
+let cachedDefaultTelemetry: { dbVersionKey: string; ts: number; data: any } | null = null;
+
+function getSqliteStateSignature(db: Database.Database): string {
+  try {
+    const dv = db.pragma("data_version", { simple: true });
+    const jMax = (
+      db.prepare(`SELECT MAX(updated_at) as m, COUNT(*) as c FROM journal_entries`).get() as any
+    );
+    const gMax = (
+      db.prepare(`SELECT MAX(updated_at) as m, COUNT(*) as c FROM trader_goals`).get() as any
+    );
+    return `${dv}:${jMax?.c || 0}:${jMax?.m || ""}:${gMax?.c || 0}:${gMax?.m || ""}`;
+  } catch {
+    return String(Date.now());
+  }
+}
+
+// Cache KoboldCpp status probe for 10s so busy GPU never blocks GET requests
+let cachedKoboldProbe: { ts: number; baseUrl: string; status: any } | null = null;
+
+// Live in-memory stream state so 2s polling reads from RAM (0 disk I/O!)
+const liveStreamMemory = new Map<
+  string,
+  { reportId?: string; sessionId?: string; title?: string; partialText: string; partialReasoning: string; lastDbWriteMs: number }
+>();
+
+function invalidateCoachCaches() {
+  cachedDefaultTelemetry = null;
+}
+
+async function probeKoboldStatusCached(baseUrl: string, force = false) {
+  const now = Date.now();
+  if (!force && cachedKoboldProbe && cachedKoboldProbe.baseUrl === baseUrl && now - cachedKoboldProbe.ts < 10_000) {
+    return cachedKoboldProbe.status;
+  }
+  // If a background generation job is actively streaming right now, we already know KoboldCpp is online!
+  if (!force && activeJobControllers.size > 0 && cachedKoboldProbe) {
+    return { ...cachedKoboldProbe.status, online: true };
+  }
+  const status = await probeKoboldStatus(baseUrl);
+  cachedKoboldProbe = { ts: now, baseUrl, status };
+  return status;
+}
+
 function resolveDbPath(): string {
   const p1 = path.resolve(process.cwd(), "data", "journal.db");
   const p2 = path.resolve(process.cwd(), "apps", "web", "data", "journal.db");
   return fs.existsSync(p1) ? p1 : p2;
 }
 
+function getCoachDb(): Database.Database {
+  if (singletonDb) return singletonDb;
+  const dbPath = resolveDbPath();
+  const db = new Database(dbPath);
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    db.pragma("busy_timeout = 5000");
+    db.pragma("temp_store = MEMORY");
+    db.pragma("cache_size = -32000");
+  } catch {}
+  // Stub .close() as a no-op so legacy finally { db.close() } blocks never close the shared singleton connection
+  (db as any).close = () => {};
+  singletonDb = db;
+  ensureCoachTables(db);
+  return db;
+}
+
 function ensureCoachTables(db: Database.Database) {
+  if (tablesInitialized) return;
+  tablesInitialized = true;
   db.exec(`
     CREATE TABLE IF NOT EXISTS ai_coach_reports (
       id TEXT PRIMARY KEY,
@@ -117,6 +189,110 @@ function ensureCoachTables(db: Database.Database) {
   } catch {}
   try {
     db.exec(`ALTER TABLE trader_goals ADD COLUMN steps_json TEXT DEFAULT '[]'`);
+  } catch {}
+  try {
+    db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_ai_reports_created ON ai_coach_reports(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ai_reports_horizon_created ON ai_coach_reports(horizon, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ai_reports_period_key ON ai_coach_reports(period_key);
+      CREATE INDEX IF NOT EXISTS idx_ai_jobs_status_started ON ai_background_jobs(status, started_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_ai_sessions_report_id ON ai_chat_sessions(report_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ai_messages_session_created ON ai_chat_messages(session_id, created_at ASC);
+      CREATE INDEX IF NOT EXISTS idx_trader_goals_status_updated ON trader_goals(status, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_journal_entries_period_slug ON journal_entries(period_type, slug DESC);
+      CREATE INDEX IF NOT EXISTS idx_journal_entries_updated ON journal_entries(updated_at DESC);
+    `);
+  } catch {}
+
+  // Also index core trade/routine tables on the tablet DB if present (wrapped in individual try/catch)
+  for (const idxSql of [
+    `CREATE INDEX IF NOT EXISTS idx_trades_opened_at ON trades(opened_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_trades_symbol_opened ON trades(symbol, opened_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_missed_trades_observed ON missed_trades(observed_at DESC)`,
+    `CREATE INDEX IF NOT EXISTS idx_routine_checks_date ON routine_checks(date DESC, rule_id)`,
+  ]) {
+    try {
+      db.exec(idxSql);
+    } catch {}
+  }
+
+  // One-time automatic repair of existing reports on the Tablet's live SQLite DB:
+  // 1) Strips any unclosed ```json blocks from summary_md
+  // 2) Removes accidentally scraped diagnostic bullets ending in ',' or starting with '*'
+  // 3) Recomputes periodComparisonBuckets on older reports so Monthly Audit #2 shows exact Calendar Months!
+  try {
+    const existingReps = db
+      .prepare(`SELECT id, horizon, summary_md, action_items_json, telemetry_json FROM ai_coach_reports`)
+      .all() as any[];
+    const builtMonthly = buildCalendarPeriodBuckets(
+      (queryTrades({}).trades || []).map((t: any) => ({
+        ...t,
+        opened_at: t.openedAt || "",
+        closed_at: t.closedAt || t.openedAt || "",
+        net_pnl: Number(t.netPnl || 0),
+        quantity: Number(t.quantity || 1),
+        realized_r: t.realizedR ?? null,
+      })),
+      "monthly",
+      new Date(),
+      Number(loadLocalAiSettings().baselineRiskPct || 1.0)
+    );
+
+    for (const r of existingReps) {
+      let needsUpdate = false;
+      let cleanMd = String(r.summary_md || "");
+      const strippedMd = stripTrailingJsonBlock(cleanMd);
+      if (strippedMd !== cleanMd) {
+        cleanMd = strippedMd;
+        needsUpdate = true;
+      }
+
+      let acts: any[] = [];
+      try {
+        acts = JSON.parse(r.action_items_json || "[]");
+      } catch {}
+      const filteredActs = acts.filter((it: any) => {
+        const txt = String(it?.text || "").trim();
+        return (
+          txt.length > 15 &&
+          !txt.endsWith(",") &&
+          !txt.startsWith("*") &&
+          !/^(win rate collapsed|oversized trades appeared|a \d+-trade same-day|the journal's own language|the infrastructure exists)/i.test(txt)
+        );
+      });
+      if (filteredActs.length !== acts.length) {
+        acts = filteredActs;
+        needsUpdate = true;
+      }
+
+      let telObj: any = {};
+      try {
+        telObj = JSON.parse(r.telemetry_json || "{}");
+      } catch {}
+      // Strip heavy prompt-only markdown strings from stored telemetry_json to shrink DB payload by 75%
+      if (telObj.verifiedTradesLedgerMd || telObj.verifiedPeriodTableMd || telObj.journalCompletionMatrixMd) {
+        delete telObj.verifiedTradesLedgerMd;
+        delete telObj.verifiedPeriodTableMd;
+        delete telObj.verifiedPlaybookTableMd;
+        delete telObj.journalCompletionMatrixMd;
+        needsUpdate = true;
+      }
+      // If an older monthly report had rolling 30-day buckets ("Target Monthly (Current)"), upgrade it to exact calendar months
+      if (
+        r.horizon === "monthly" &&
+        Array.isArray(telObj.periodComparisonBuckets) &&
+        telObj.periodComparisonBuckets[0]?.periodLabel?.includes("Target Monthly")
+      ) {
+        telObj.periodComparisonBuckets = builtMonthly;
+        needsUpdate = true;
+      }
+
+      if (needsUpdate) {
+        db.prepare(
+          `UPDATE ai_coach_reports SET summary_md = ?, action_items_json = ?, telemetry_json = ? WHERE id = ?`
+        ).run(cleanMd, JSON.stringify(acts), JSON.stringify(telObj), r.id);
+      }
+    }
   } catch {}
 }
 
@@ -849,12 +1025,12 @@ function buildBehavioralTelemetryAndJournals(
     missedOpportunityPnl += Number(m.theoretical_pnl || 0);
   }
 
-  let journals: any[] = [];
+  // Fetch lightweight journal metadata first (skips reading 90 heavy HTML blobs from tablet flash storage!)
+  let journalsMeta: any[] = [];
   try {
-    journals = db
+    journalsMeta = db
       .prepare(
-        `SELECT slug, period_type, title, content, review_content, lessons_learned,
-                checklist_json, scores_json, rating, updated_at
+        `SELECT slug, period_type, title, lessons_learned, scores_json, rating, updated_at
          FROM journal_entries
          ORDER BY slug DESC LIMIT 90`
       )
@@ -862,20 +1038,42 @@ function buildBehavioralTelemetryAndJournals(
   } catch {}
 
   const includeTabs = customScope?.includeTabs || "both";
+  const fetchHtmlStmt = db.prepare(
+    `SELECT content, review_content FROM journal_entries WHERE slug = ?`
+  );
 
-  const allParsedJournals = journals
+  const allParsedJournals = journalsMeta
     .map((j) => {
-      const prepDigest =
-        includeTabs === "review_only"
-          ? { qaReflections: [], cleanText: "" }
-          : htmlToStructuredDigest(j.content || "");
-      const revDigest =
-        includeTabs === "prep_only"
-          ? { qaReflections: [], cleanText: "" }
-          : htmlToStructuredDigest(j.review_content || "");
+      const slotKey = `${j.slug}:${includeTabs}`;
+      const stamp = j.updated_at || "";
+      let cachedJ = journalDigestCache.get(slotKey);
 
-      const prepEval = evaluateSubstantiveJournalHtml(j.content || "");
-      const revEval = evaluateSubstantiveJournalHtml(j.review_content || "");
+      // Only read content & review_content from SQLite disk if this journal was never parsed or its updated_at changed!
+      if (!cachedJ || cachedJ.stamp !== stamp) {
+        const htmlRow = (fetchHtmlStmt.get(j.slug) as { content?: string; review_content?: string }) || {};
+        const rawContent = htmlRow.content || "";
+        const rawReview = htmlRow.review_content || "";
+
+        const prepDigest =
+          includeTabs === "review_only"
+            ? { qaReflections: [], cleanText: "" }
+            : htmlToStructuredDigest(rawContent);
+        const revDigest =
+          includeTabs === "prep_only"
+            ? { qaReflections: [], cleanText: "" }
+            : htmlToStructuredDigest(rawReview);
+        const prepEval = evaluateSubstantiveJournalHtml(rawContent);
+        const revEval = evaluateSubstantiveJournalHtml(rawReview);
+
+        cachedJ = { stamp, prepDigest, revDigest, prepEval, revEval };
+        // Bound cache size on tablet RAM
+        if (journalDigestCache.size > 200) {
+          const oldestKey = journalDigestCache.keys().next().value;
+          if (oldestKey) journalDigestCache.delete(oldestKey);
+        }
+        journalDigestCache.set(slotKey, cachedJ);
+      }
+      const { prepDigest, revDigest, prepEval, revEval } = cachedJ;
       const cleanLesson = (j.lessons_learned || "")
         .replace(/Summarize system adherence.*$/i, "")
         .replace(/n\/a/gi, "")
@@ -1409,7 +1607,7 @@ async function executeAuditJobInBackground(
   precreatedReportId?: string
 ) {
   const dbPath = resolveDbPath();
-  const db = new Database(dbPath);
+  const db = getCoachDb();
   const reportId = precreatedReportId || `rep_${Date.now()}`;
   let reportTitle = `${horizon.toUpperCase()} Audit`;
   let periodKey: string = horizon;
@@ -1657,39 +1855,53 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
       onPartial: (partial) => {
         latestStreamedText = stripTrailingJsonBlock(partial.text || "") || latestStreamedText;
         latestStreamedReasoning = partial.reasoning || latestStreamedReasoning;
-        try {
-          const dbStream = new Database(dbPath);
-          const nowStr = new Date().toISOString();
-          // Save partial text directly into ai_coach_reports so the report page updates live and is NEVER lost!
-          if (latestStreamedText.trim() || latestStreamedReasoning.trim()) {
+        const nowMs = Date.now();
+        const prevMem = liveStreamMemory.get(jobId);
+        const lastWrite = prevMem?.lastDbWriteMs || 0;
+
+        // Always update RAM immediately (0ms cost) so ?poll=1 reads live text without touching disk
+        liveStreamMemory.set(jobId, {
+          reportId,
+          title: reportTitle,
+          partialText: latestStreamedText,
+          partialReasoning: latestStreamedReasoning,
+          lastDbWriteMs: nowMs - lastWrite > 4000 ? nowMs : lastWrite,
+        });
+
+        // Only checkpoint to SQLite disk every 4 seconds to eliminate I/O contention
+        if (nowMs - lastWrite > 4000) {
+          try {
+            const dbStream = getCoachDb();
+            const nowStr = new Date(nowMs).toISOString();
+            if (latestStreamedText.trim() || latestStreamedReasoning.trim()) {
+              dbStream
+                .prepare(`UPDATE ai_coach_reports SET summary_md = ?, reasoning_trace = ? WHERE id = ?`)
+                .run(
+                  latestStreamedText.trim() ||
+                    `*(🧠 AI is currently reasoning in <think>... Expand Reasoning Trace above to watch live)*`,
+                  latestStreamedReasoning,
+                  reportId
+                );
+            }
             dbStream
-              .prepare(`UPDATE ai_coach_reports SET summary_md = ?, reasoning_trace = ? WHERE id = ?`)
+              .prepare(`UPDATE ai_background_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
               .run(
-                latestStreamedText.trim() ||
-                  `*(🧠 AI is currently reasoning in <think>... Expand Reasoning Trace above to watch live)*`,
-                latestStreamedReasoning,
-                reportId
+                JSON.stringify({
+                  streaming: true,
+                  reportId,
+                  title: reportTitle,
+                  partialText: latestStreamedText,
+                  partialReasoning: latestStreamedReasoning,
+                }),
+                nowStr,
+                jobId
               );
-          }
-          dbStream
-            .prepare(`UPDATE ai_background_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
-            .run(
-              JSON.stringify({
-                streaming: true,
-                reportId,
-                title: reportTitle,
-                partialText: latestStreamedText,
-                partialReasoning: latestStreamedReasoning,
-              }),
-              nowStr,
-              jobId
-            );
-          dbStream.close();
-        } catch {}
+          } catch {}
+        }
       },
     });
 
-    const db2 = new Database(dbPath);
+    const db2 = getCoachDb();
     try {
       let rawMarkdown = aiRes.text || latestStreamedText;
       let suggestedGoals: any[] = [];
@@ -1786,7 +1998,13 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
       `).run(
         rawMarkdown,
         aiRes.reasoning || latestStreamedReasoning || "",
-        JSON.stringify(telemetry),
+        JSON.stringify({
+          ...telemetry,
+          verifiedPeriodTableMd: undefined,
+          verifiedTradesLedgerMd: undefined,
+          verifiedPlaybookTableMd: undefined,
+          journalCompletionMatrixMd: undefined,
+        }),
         JSON.stringify(suggestedGoals),
         JSON.stringify(goalAudits),
         JSON.stringify(actionItems),
@@ -1805,10 +2023,21 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
       db2.close();
     }
   } catch (err: any) {
-    const dbErr = new Database(dbPath);
+    const dbErr = getCoachDb();
     try {
       const isAborted = controller.signal.aborted || err?.name === "AbortError" || /Aborted/i.test(err?.message || "");
-      // Even if interrupted/aborted, keep the pre-created report row with whatever was generated so far!
+      // Flush any un-checkpointed tokens from liveStreamMemory to ai_coach_reports immediately on Stop/Abort!
+      const memFlush = liveStreamMemory.get(jobId);
+      if (memFlush && (memFlush.partialText?.trim() || memFlush.partialReasoning?.trim())) {
+        dbErr
+          .prepare(`UPDATE ai_coach_reports SET summary_md = ?, reasoning_trace = ? WHERE id = ?`)
+          .run(
+            memFlush.partialText.trim() ||
+              `*(⚠️ Paused during <think> reasoning trace)*`,
+            memFlush.partialReasoning || "",
+            reportId
+          );
+      }
       const curRep = dbErr.prepare(`SELECT summary_md FROM ai_coach_reports WHERE id = ?`).get(reportId) as any;
       if (curRep && curRep.summary_md?.startsWith("*(⏳ Generating")) {
         dbErr.prepare(`UPDATE ai_coach_reports SET summary_md = ? WHERE id = ?`).run(
@@ -1835,6 +2064,8 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
     }
   } finally {
     activeJobControllers.delete(jobId);
+    liveStreamMemory.delete(jobId);
+    invalidateCoachCaches();
   }
 }
 
@@ -1844,7 +2075,7 @@ async function processAuditQueue() {
   try {
     while (true) {
       const dbPath = resolveDbPath();
-      const db = new Database(dbPath);
+      const db = getCoachDb();
       let nextJob: any = null;
       try {
         ensureCoachTables(db);
@@ -1908,7 +2139,7 @@ async function executeContinueReportJobInBackground(
   controller: AbortController
 ) {
   const dbPath = resolveDbPath();
-  const db = new Database(dbPath);
+  const db = getCoachDb();
   try {
     ensureCoachTables(db);
     const rep = db.prepare(`SELECT * FROM ai_coach_reports WHERE id = ?`).get(reportId) as any;
@@ -1945,25 +2176,40 @@ And append a closing \`\`\`json block with "actionItems" and "suggestedGoals".`;
       temperature: 0.6,
       abortSignal: controller.signal,
       onPartial: (partial) => {
-        try {
-          const dbStream = new Database(dbPath);
-          dbStream
-            .prepare(`UPDATE ai_background_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
-            .run(
-              JSON.stringify({
-                streaming: true,
-                title: `Completing: ${rep.title}`,
-                partialText: `${mainBody.trimEnd()} ${partial.text.trimStart()}`,
-              }),
-              new Date().toISOString(),
-              jobId
-            );
-          dbStream.close();
-        } catch {}
+        const mergedLive = `${mainBody.trimEnd()} ${stripTrailingJsonBlock(partial.text || "").trimStart()}`;
+        const nowMs = Date.now();
+        const lastWrite = liveStreamMemory.get(jobId)?.lastDbWriteMs || 0;
+        liveStreamMemory.set(jobId, {
+          reportId,
+          title: `Completing: ${rep.title}`,
+          partialText: mergedLive,
+          partialReasoning: partial.reasoning || "",
+          lastDbWriteMs: nowMs - lastWrite > 4000 ? nowMs : lastWrite,
+        });
+        if (nowMs - lastWrite > 4000) {
+          try {
+            const dbStream = getCoachDb();
+            dbStream
+              .prepare(`UPDATE ai_coach_reports SET summary_md = ? WHERE id = ?`)
+              .run(mergedLive, reportId);
+            dbStream
+              .prepare(`UPDATE ai_background_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
+              .run(
+                JSON.stringify({
+                  streaming: true,
+                  reportId,
+                  title: `Completing: ${rep.title}`,
+                  partialText: mergedLive,
+                }),
+                new Date(nowMs).toISOString(),
+                jobId
+              );
+          } catch {}
+        }
       },
     });
 
-    const db2 = new Database(dbPath);
+    const db2 = getCoachDb();
     try {
       let contMd = aiRes.text;
       let existingActions: ReportActionItem[] = [];
@@ -2016,7 +2262,7 @@ And append a closing \`\`\`json block with "actionItems" and "suggestedGoals".`;
       db2.close();
     }
   } catch (err: any) {
-    const dbErr = new Database(dbPath);
+    const dbErr = getCoachDb();
     try {
       dbErr
         .prepare(`UPDATE ai_background_jobs SET status = 'failed', error_text = ?, updated_at = ? WHERE id = ?`)
@@ -2026,6 +2272,8 @@ And append a closing \`\`\`json block with "actionItems" and "suggestedGoals".`;
     }
   } finally {
     activeJobControllers.delete(jobId);
+    liveStreamMemory.delete(jobId);
+    invalidateCoachCaches();
   }
 }
 
@@ -2038,7 +2286,7 @@ async function executeChatJobInBackground(
   linkedReportId?: string
 ) {
   const dbPath = resolveDbPath();
-  const db = new Database(dbPath);
+  const db = getCoachDb();
   try {
     ensureCoachTables(db);
     const { telemetry, parsedJournals, recentTradesSample } = buildBehavioralTelemetryAndJournals(
@@ -2095,27 +2343,37 @@ Respond directly, candidly, and empathetically as a peer accountability partner 
       temperature: 0.6,
       abortSignal: controller.signal,
       onPartial: (partial) => {
-        try {
-          const dbStream = new Database(dbPath);
-          dbStream
-            .prepare(`UPDATE ai_background_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
-            .run(
-              JSON.stringify({
-                streaming: true,
-                sessionId,
-                reportId: linkedReportId || "",
-                partialText: partial.text,
-                partialReasoning: partial.reasoning,
-              }),
-              new Date().toISOString(),
-              jobId
-            );
-          dbStream.close();
-        } catch {}
+        const nowMs = Date.now();
+        const lastWrite = liveStreamMemory.get(jobId)?.lastDbWriteMs || 0;
+        liveStreamMemory.set(jobId, {
+          sessionId,
+          reportId: linkedReportId || "",
+          partialText: partial.text || "",
+          partialReasoning: partial.reasoning || "",
+          lastDbWriteMs: nowMs - lastWrite > 4000 ? nowMs : lastWrite,
+        });
+        if (nowMs - lastWrite > 4000) {
+          try {
+            const dbStream = getCoachDb();
+            dbStream
+              .prepare(`UPDATE ai_background_jobs SET result_json = ?, updated_at = ? WHERE id = ? AND status = 'running'`)
+              .run(
+                JSON.stringify({
+                  streaming: true,
+                  sessionId,
+                  reportId: linkedReportId || "",
+                  partialText: partial.text,
+                  partialReasoning: partial.reasoning,
+                }),
+                new Date(nowMs).toISOString(),
+                jobId
+              );
+          } catch {}
+        }
       },
     });
 
-    const db2 = new Database(dbPath);
+    const db2 = getCoachDb();
     try {
       const jobRow = db2.prepare(`SELECT status FROM ai_background_jobs WHERE id = ?`).get(jobId) as any;
       if (jobRow?.status === "cancelled") return;
@@ -2141,7 +2399,7 @@ Respond directly, candidly, and empathetically as a peer accountability partner 
       db2.close();
     }
   } catch (err: any) {
-    const dbErr = new Database(dbPath);
+    const dbErr = getCoachDb();
     try {
       const isAborted = controller.signal.aborted || err?.name === "AbortError";
       dbErr.prepare(`
@@ -2161,48 +2419,62 @@ Respond directly, candidly, and empathetically as a peer accountability partner 
     }
   } finally {
     activeJobControllers.delete(jobId);
+    liveStreamMemory.delete(jobId);
+    invalidateCoachCaches();
   }
 }
 
 export async function GET(req: NextRequest) {
-  const dbPath = resolveDbPath();
-  const db = new Database(dbPath);
+  const db = getCoachDb();
   try {
     ensureCoachTables(db);
-    const localSettings = loadLocalAiSettings();
-    const status = await probeKoboldStatus(localSettings.baseUrl);
-    const auditDue = computeAuditDueStatus(db);
-
-    // Never kill an actively attached background job regardless of how many hours it runs!
-    // Only clean up orphaned jobs older than 24 hours after a server restart.
-    const staleCutoff = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
-    db.prepare(`
-      UPDATE ai_background_jobs
-      SET status = 'failed', error_text = 'Orphaned after server restart'
-      WHERE status = 'running' AND started_at < ?
-    `).run(staleCutoff);
+    const isPollOnly = req.nextUrl.searchParams.get("poll") === "1";
 
     const activeJobsRaw = db
       .prepare(`SELECT id, job_type as jobType, target_id as targetId, label, status, result_json as resultJson, started_at as startedAt FROM ai_background_jobs WHERE status IN ('running', 'queued') ORDER BY CASE WHEN status = 'running' THEN 0 ELSE 1 END, started_at ASC`)
       .all() as any[];
 
     const activeJobs = activeJobsRaw.map((j) => {
+      const mem = liveStreamMemory.get(j.id);
       let streamData: any = {};
-      try {
-        streamData = JSON.parse(j.resultJson || "{}");
-      } catch {}
+      if (!mem) {
+        try {
+          streamData = JSON.parse(j.resultJson || "{}");
+        } catch {}
+      }
       return {
         id: j.id,
         jobType: j.jobType,
         targetId: j.targetId,
-        reportId: streamData.reportId || "",
-        label: j.label,
+        reportId: mem?.reportId || streamData.reportId || "",
+        label: mem?.title || j.label,
         status: j.status,
         startedAt: j.startedAt,
-        partialText: streamData.partialText || "",
-        partialReasoning: streamData.partialReasoning || "",
+        partialText: mem ? mem.partialText : streamData.partialText || "",
+        partialReasoning: mem ? mem.partialReasoning : streamData.partialReasoning || "",
       };
     });
+
+    // ULTRA-FAST POLL PATH (<0.5ms CPU, 0 HTML parses, 0 trade scans, 0 network pings!)
+    if (isPollOnly) {
+      return NextResponse.json({
+        ok: true,
+        pollOnly: true,
+        autoStopAfterQueue: autoStopServerWhenQueueEmpty,
+        activeJobs,
+      });
+    }
+
+    const localSettings = loadLocalAiSettings();
+    const status = await probeKoboldStatusCached(localSettings.baseUrl);
+    const auditDue = computeAuditDueStatus(db);
+
+    const staleCutoff = new Date(Date.now() - 24 * 60 * 60_000).toISOString();
+    db.prepare(`
+      UPDATE ai_background_jobs
+      SET status = 'failed', error_text = 'Orphaned after server restart'
+      WHERE status = 'running' AND started_at < ?
+    `).run(staleCutoff);
 
     // Separate general standalone Coach Chats (report_id = '') from Report-embedded Q&A threads
     const allChatSessions = db
@@ -2224,22 +2496,23 @@ export async function GET(req: NextRequest) {
           .all(reqSessionId) as any[])
       : [];
 
-    // Also fetch embedded Q&A messages for the requested reportId (or all report threads)
+    // Single JOIN query for all report-bound Q&A messages (eliminates N+1 query loop!)
     const reportCommentsMap: Record<string, any[]> = {};
-    const reportLinkedSessions = allChatSessions.filter((s) => Boolean(s.reportId));
-    for (const rs of reportLinkedSessions) {
-      const msgs = db
-        .prepare(
-          `SELECT id, session_id as sessionId, role, content as text, reasoning, model_used as modelUsed, created_at as createdAt
-           FROM ai_chat_messages
-           WHERE session_id = ?
-           ORDER BY created_at ASC`
-        )
-        .all(rs.id) as any[];
-      reportCommentsMap[rs.reportId] = [
-        ...(reportCommentsMap[rs.reportId] || []),
-        ...msgs,
-      ];
+    const joinedReportMsgs = db
+      .prepare(
+        `SELECT m.id, m.session_id as sessionId, s.report_id as reportId, m.role, m.content as text,
+                m.reasoning, m.model_used as modelUsed, m.created_at as createdAt
+         FROM ai_chat_messages m
+         INNER JOIN ai_chat_sessions s ON s.id = m.session_id
+         WHERE s.report_id != ''
+         ORDER BY m.created_at ASC`
+      )
+      .all() as any[];
+
+    for (const msg of joinedReportMsgs) {
+      const rId = msg.reportId;
+      if (!reportCommentsMap[rId]) reportCommentsMap[rId] = [];
+      reportCommentsMap[rId]!.push(msg);
     }
 
     const goals = db
@@ -2250,8 +2523,20 @@ export async function GET(req: NextRequest) {
       .prepare(`SELECT * FROM ai_coach_reports ORDER BY created_at DESC LIMIT 50`)
       .all() as any[];
 
-    const { telemetry, selectableJournals, selectableTrades } =
-      buildBehavioralTelemetryAndJournals(db, "monthly");
+    const nowMs = Date.now();
+    const currentDbSig = getSqliteStateSignature(db);
+    if (
+      !cachedDefaultTelemetry ||
+      cachedDefaultTelemetry.dbVersionKey !== currentDbSig ||
+      nowMs - cachedDefaultTelemetry.ts > 60_000
+    ) {
+      cachedDefaultTelemetry = {
+        dbVersionKey: currentDbSig,
+        ts: nowMs,
+        data: buildBehavioralTelemetryAndJournals(db, "monthly"),
+      };
+    }
+    const { telemetry, selectableJournals, selectableTrades } = cachedDefaultTelemetry.data;
 
     return NextResponse.json({
       ok: true,
@@ -2317,11 +2602,14 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   const dbPath = resolveDbPath();
-  const db = new Database(dbPath);
+  const db = getCoachDb();
   try {
     ensureCoachTables(db);
     const body = await req.json().catch(() => ({}));
     const action = body.action || "generate_report";
+    if (action !== "inspect_evidence" && action !== "scan_models" && action !== "daemon_status") {
+      invalidateCoachCaches();
+    }
 
     if (action === "scan_models" || action === "daemon_status") {
       const settings = loadLocalAiSettings();
