@@ -32,7 +32,6 @@ import {
   type RichEditorHandle,
   writeLocalJournalDraft,
   readLocalJournalDraft,
-  clearLocalJournalDraft,
 } from "@/components/rich-editor";
 import { VoiceNote } from "@/components/voice-note";
 import { ReviewExport } from "@/components/review-export";
@@ -728,7 +727,23 @@ export function JournalEntryEditor({
   >([]);
   const [historyModalOpen, setHistoryModalOpen] = useState(false);
 
-  // Live Refs so saves ALWAYS read the exact current values without stale closures
+  // Re-attach existing Base64 images when restoring a text-only revision snapshot
+  const reattachImagesOnRestore = useCallback((revisionHtml: string, currentFullHtml: string) => {
+    if (!revisionHtml) return "";
+    const currentImgs = Array.from(
+      currentFullHtml.matchAll(/src="(data:image\/[^"]+)"/gi)
+    ).map((m) => m[1]);
+    if (currentImgs.length === 0) return revisionHtml;
+    return revisionHtml.replace(
+      /src=""\s*data-preserved-img-idx="(\d+)"/gi,
+      (full, idxStr) => {
+        const idx = parseInt(idxStr, 10);
+        const found = currentImgs[idx] || currentImgs[0];
+        return found ? `src="${found}"` : full;
+      }
+    );
+  }, []);
+
   const activeTabRef = useRef(activeTab);
   activeTabRef.current = activeTab;
   const titleRef = useRef(title);
@@ -750,7 +765,6 @@ export function JournalEntryEditor({
   const isDirtyRef = useRef<boolean>(false);
   const saveChainPromiseRef = useRef<Promise<boolean>>(Promise.resolve(true));
 
-  // Read live innerHTML directly from RichEditor's DOM node so 0ms keystrokes are never missed
   const captureLiveTabHtml = useCallback(() => {
     const liveDomHtml = noteEditorRef.current?.getHtml?.();
     let curPrep = contentRefState.current;
@@ -767,7 +781,6 @@ export function JournalEntryEditor({
     return { curPrep, curRev };
   }, []);
 
-  // On mount / slug change: Always fetch freshest entry & revisions directly from SQLite (bypassing Next.js Router Cache)
   useEffect(() => {
     let mounted = true;
     const initSnap = JSON.stringify({
@@ -830,13 +843,12 @@ export function JournalEntryEditor({
     };
   }, [initialEntry.slug]);
 
-  // Unified, serialized save function for Manual Save, Autosave, Tab Switch, and Unmount
   const executeSaveRequest = useCallback(
     async (options?: {
       syncNotion?: boolean;
       isAutoSave?: boolean;
       isBrowserClosing?: boolean;
-       isSpaUnmount?: boolean;
+      isSpaUnmount?: boolean;
     }): Promise<boolean> => {
       const syncNotion = Boolean(options?.syncNotion);
       const isAutoSave = Boolean(options?.isAutoSave);
@@ -861,7 +873,6 @@ export function JournalEntryEditor({
         scoresJson: curScoresJson,
       });
 
-      // Emergency backup in localStorage (viewable in History modal, never auto-overwrites DB on mount)
       writeLocalJournalDraft(initialEntry.slug, curPrep);
       writeLocalJournalDraft(`${initialEntry.slug}-review`, curRev);
 
@@ -878,8 +889,6 @@ export function JournalEntryEditor({
         activeTab: curTab,
       });
 
-      // CRITICAL: Only use keepalive:true when the browser tab itself is closing AND body < 55KB!
-      // During SPA navigation (isSpaUnmount), standard fetch() has NO 64KB limit and completes in the background!
       const byteLen = typeof Blob !== "undefined" ? new Blob([bodyStr]).size : bodyStr.length;
       const useKeepalive = isBrowserClosing && byteLen < 55_000;
 
@@ -984,7 +993,6 @@ export function JournalEntryEditor({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
-  // Continuous 1.0s Debounced Autosave
   useEffect(() => {
     const currentSnap = JSON.stringify({
       title,
@@ -1011,7 +1019,6 @@ export function JournalEntryEditor({
     return () => clearTimeout(debounceTimer);
   }, [title, content, reviewContent, lessonsLearned, checklist, scores, executeSaveRequest]);
 
-  // 5-second periodic safety heartbeat while dirty (saves even during 30m of continuous typing)
   useEffect(() => {
     const interval = setInterval(() => {
       const { curPrep, curRev } = captureLiveTabHtml();
@@ -1066,7 +1073,6 @@ export function JournalEntryEditor({
     return () => {
       window.removeEventListener("beforeunload", onBeforeUnload);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      // On SPA route change unmount, use standard fetch (isBrowserClosing = false) so >64KB saves never abort!
       flushUnsavedImmediately(false);
     };
   }, [flushUnsavedImmediately]);
@@ -2405,8 +2411,9 @@ export function JournalEntryEditor({
                           <button
                             type="button"
                             onClick={() => {
-                              setContent(rev.content || "");
-                              contentRefState.current = rev.content || "";
+                              const restored = reattachImagesOnRestore(rev.content || "", contentRefState.current);
+                              setContent(restored);
+                              contentRefState.current = restored;
                               setActiveTab("prep");
                               setEditorKey((k) => k + 1);
                               isDirtyRef.current = true;
@@ -2420,8 +2427,9 @@ export function JournalEntryEditor({
                           <button
                             type="button"
                             onClick={() => {
-                              setReviewContent(rev.reviewContent || "");
-                              reviewContentRefState.current = rev.reviewContent || "";
+                              const restored = reattachImagesOnRestore(rev.reviewContent || "", reviewContentRefState.current);
+                              setReviewContent(restored);
+                              reviewContentRefState.current = restored;
                               setActiveTab("review");
                               setEditorKey((k) => k + 1);
                               isDirtyRef.current = true;

@@ -508,6 +508,16 @@ function stripHtmlTextLen(html: string | null | undefined): number {
     .trim().length;
 }
 
+// Strip heavy data:image/...;base64 blobs from revision snapshots so each backup is ~3KB instead of ~800KB!
+function stripBase64ImagesForRevision(html: string): string {
+  if (!html) return "";
+  let idx = 0;
+  return html.replace(
+    /src="data:image\/[^"]+"/gi,
+    () => `src="" data-preserved-img-idx="${idx++}"`
+  );
+}
+
 export async function saveJournalEntry(
   slug: string,
   payload: Partial<JournalEntryRecord> & { isAutoSave?: boolean }
@@ -536,8 +546,7 @@ export async function saveJournalEntry(
       const newPrepLen = stripHtmlTextLen(nextContent);
       const newRevLen = stripHtmlTextLen(nextReviewContent);
 
-      // Safeguard: If an automated background save (isAutoSave) tries to wipe a substantive entry
-      // down to empty or default template, preserve the existing column!
+      // Safeguard: Block automated background saves from wiping a substantive entry back to an empty/default template
       if (payload.isAutoSave) {
         const cfg = getJournalConfig();
         const defPrepLen = stripHtmlTextLen(getDefaultTemplateHtml(range.periodType, "prep", cfg));
@@ -552,35 +561,65 @@ export async function saveJournalEntry(
         }
       }
 
-      // Archive previous version into journal_entry_revisions whenever content or review_content changes
-      const prepChanged = payload.content !== undefined && nextContent !== oldPrep && oldPrepLen > 0;
-      const revChanged = payload.reviewContent !== undefined && nextReviewContent !== oldRev && oldRevLen > 0;
+      // Smart Zero-Bloat Revision Trigger:
+      // Archive previous version ONLY if:
+      //  (a) Content shrunk by >= 15 chars (protects against any accidental deletion or overwrite), OR
+      //  (b) No snapshot exists yet for this entry, OR
+      //  (c) At least 10 minutes have passed since the last snapshot for this entry.
+      const prepShrunk = payload.content !== undefined && oldPrepLen - newPrepLen >= 15;
+      const revShrunk = payload.reviewContent !== undefined && oldRevLen - newRevLen >= 15;
+      const anyTextChanged =
+        (payload.content !== undefined && nextContent !== oldPrep && oldPrepLen > 20) ||
+        (payload.reviewContent !== undefined && nextReviewContent !== oldRev && oldRevLen > 20);
 
-      if (prepChanged || revChanged) {
+      if (anyTextChanged) {
         try {
           const latestRev = db
             .prepare(
-              `SELECT content, review_content FROM journal_entry_revisions WHERE slug = ? ORDER BY id DESC LIMIT 1`
+              `SELECT content, review_content, saved_at FROM journal_entry_revisions WHERE slug = ? ORDER BY id DESC LIMIT 1`
             )
-            .get(slug) as any;
-          if (!latestRev || latestRev.content !== oldPrep || latestRev.review_content !== oldRev) {
-            db.prepare(
-              `INSERT INTO journal_entry_revisions (slug, title, content, review_content, lessons_learned, saved_at)
-               VALUES (?, ?, ?, ?, ?, ?)`
-            ).run(
-              slug,
-              existing.title || range.defaultTitle,
-              oldPrep,
-              oldRev,
-              existing.lessons_learned || "",
-              existing.updated_at || nowIso
-            );
-            db.prepare(
-              `DELETE FROM journal_entry_revisions
-               WHERE slug = ? AND id NOT IN (
-                 SELECT id FROM journal_entry_revisions WHERE slug = ? ORDER BY id DESC LIMIT 50
-               )`
-            ).run(slug, slug);
+            .get(slug) as { content: string; review_content: string; saved_at: string } | undefined;
+
+          const minsSinceLastRev = latestRev?.saved_at
+            ? (Date.now() - new Date(latestRev.saved_at).getTime()) / 60_000
+            : 999;
+
+          const shouldSnapshot =
+            prepShrunk || revShrunk || !latestRev || minsSinceLastRev >= 10;
+
+          if (shouldSnapshot) {
+            const slimOldPrep = stripBase64ImagesForRevision(oldPrep);
+            const slimOldRev = stripBase64ImagesForRevision(oldRev);
+
+            if (!latestRev || latestRev.content !== slimOldPrep || latestRev.review_content !== slimOldRev) {
+              db.prepare(
+                `INSERT INTO journal_entry_revisions (slug, title, content, review_content, lessons_learned, saved_at)
+                 VALUES (?, ?, ?, ?, ?, ?)`
+              ).run(
+                slug,
+                existing.title || range.defaultTitle,
+                slimOldPrep,
+                slimOldRev,
+                existing.lessons_learned || "",
+                existing.updated_at || nowIso
+              );
+
+              // 1) Rolling limit: Max 5 snapshots per journal slug
+              db.prepare(
+                `DELETE FROM journal_entry_revisions
+                 WHERE slug = ? AND id NOT IN (
+                   SELECT id FROM journal_entry_revisions WHERE slug = ? ORDER BY id DESC LIMIT 5
+                 )`
+              ).run(slug, slug);
+
+              // 2) Global rolling limit: Max 30 snapshots across the ENTIRE database (~150KB total max!)
+              db.prepare(
+                `DELETE FROM journal_entry_revisions
+                 WHERE id NOT IN (
+                   SELECT id FROM journal_entry_revisions ORDER BY id DESC LIMIT 30
+                 )`
+              ).run();
+            }
           }
         } catch (revErr) {
           console.warn("[Journal Revisions] Failed to archive revision:", revErr);
@@ -697,7 +736,7 @@ export function getJournalEntryRevisions(slug: string) {
                   lessons_learned as lessonsLearned, saved_at as savedAt
            FROM journal_entry_revisions
            WHERE slug = ?
-           ORDER BY id DESC LIMIT 40`
+           ORDER BY id DESC LIMIT 5`
         )
         .all(slug) as Array<{
           id: number;

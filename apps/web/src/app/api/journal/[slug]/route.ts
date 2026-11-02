@@ -9,7 +9,6 @@ import {
   getJournalEntryWithTrades,
   saveJournalEntry,
   getJournalEntryRevisions,
-  parseSlugRange,
   ensureNotionJournalPageExists,
   autoPopulateUpcomingJournals,
 } from "@/server/journal-service";
