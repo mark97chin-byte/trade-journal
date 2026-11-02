@@ -27,7 +27,13 @@ import {
   PanelRightClose,
   PanelRightOpen,
 } from "lucide-react";
-import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
+import {
+  RichEditor,
+  type RichEditorHandle,
+  writeLocalJournalDraft,
+  readLocalJournalDraft,
+  clearLocalJournalDraft,
+} from "@/components/rich-editor";
 import { VoiceNote } from "@/components/voice-note";
 import { ReviewExport } from "@/components/review-export";
 import { EconomicCalendarCard } from "@/components/journal/economic-calendar-card";
@@ -764,7 +770,18 @@ export function JournalEntryEditor({
             setSaveStatus(data.notionError || "Saved locally (Notion sync skipped)");
           }
         } else {
-          setSaveStatus("Saved to database");
+          clearLocalJournalDraft(initialEntry.slug);
+          clearLocalJournalDraft(`${initialEntry.slug}-review`);
+          lastSavedSnapshotRef.current = JSON.stringify({
+            title,
+            content,
+            reviewContent,
+            lessonsLearned,
+            checklistJson: JSON.stringify(checklist),
+            scoresJson: JSON.stringify(scores),
+          });
+          isDirtyRef.current = false;
+          setSaveStatus(`Saved to database (${new Date().toTimeString().slice(0, 8)})`);
         }
       } catch {
         setSaveStatus("Error saving journal");
@@ -797,7 +814,7 @@ export function JournalEntryEditor({
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [handleSave]);
 
-  // Zero-lag background autosave (1.5s debounce) + immediate keepalive flush on page leave/unmount
+  // === ZERO-DATA-LOSS AUTOSAVE + LOCALSTORAGE WRITE-AHEAD RECOVERY + ROUTER CACHE BYPASS ===
   const latestPayloadRef = useRef({
     slug: initialEntry.slug,
     title,
@@ -813,19 +830,145 @@ export function JournalEntryEditor({
   const lastSavedSnapshotRef = useRef<string>("");
   const isDirtyRef = useRef<boolean>(false);
 
+  // 1. On Mount / Slug Change: Bypass Next.js stale client-side Router Cache by fetching latest SQLite entry
+  //    AND check LocalStorage Write-Ahead Drafts (`tz_wal_...`) so unsaved work is immediately recovered!
   useEffect(() => {
-    const initialSnap = JSON.stringify({
-      title: initialEntry.title,
-      content: initialEntry.content,
-      reviewContent: initialEntry.reviewContent || "",
-      lessonsLearned: initialEntry.lessonsLearned || "",
-      checklistJson: initialEntry.checklistJson || "{}",
-      scoresJson: initialEntry.scoresJson || "{}",
-    });
-    lastSavedSnapshotRef.current = initialSnap;
-    isDirtyRef.current = false;
-  }, [initialEntry]);
+    let mounted = true;
+    const serverUpdatedMs = initialEntry.updatedAt ? new Date(initialEntry.updatedAt).getTime() : 0;
 
+    const checkWalAndFreshServer = async () => {
+      let freshestEntry = initialEntry;
+      try {
+        const res = await fetch(`/api/journal/${encodeURIComponent(initialEntry.slug)}`, {
+          cache: "no-store",
+        });
+        const json = await res.json();
+        if (json?.entry) {
+          freshestEntry = json.entry;
+        }
+      } catch {}
+
+      if (!mounted) return;
+
+      const dbUpdatedMs = freshestEntry.updatedAt
+        ? new Date(freshestEntry.updatedAt).getTime()
+        : serverUpdatedMs;
+
+      let nextPrep = freshestEntry.content || "";
+      let nextRev = freshestEntry.reviewContent || "";
+      let recoveredFromWal = false;
+
+      const walPrep = readLocalJournalDraft(initialEntry.slug);
+      if (
+        walPrep &&
+        walPrep.html &&
+        walPrep.html !== nextPrep &&
+        walPrep.updatedAtMs > dbUpdatedMs + 1500
+      ) {
+        nextPrep = walPrep.html;
+        recoveredFromWal = true;
+      }
+
+      const walRev = readLocalJournalDraft(`${initialEntry.slug}-review`);
+      if (
+        walRev &&
+        walRev.html &&
+        walRev.html !== nextRev &&
+        walRev.updatedAtMs > dbUpdatedMs + 1500
+      ) {
+        nextRev = walRev.html;
+        recoveredFromWal = true;
+      }
+
+      setTitle(freshestEntry.title);
+      setContent(nextPrep);
+      setReviewContent(nextRev);
+      setLessonsLearned(freshestEntry.lessonsLearned || "");
+
+      const snap = JSON.stringify({
+        title: freshestEntry.title,
+        content: freshestEntry.content || "",
+        reviewContent: freshestEntry.reviewContent || "",
+        lessonsLearned: freshestEntry.lessonsLearned || "",
+        checklistJson: freshestEntry.checklistJson || "{}",
+        scoresJson: freshestEntry.scoresJson || "{}",
+      });
+      lastSavedSnapshotRef.current = snap;
+
+      if (recoveredFromWal) {
+        setEditorKey((k) => k + 1);
+        isDirtyRef.current = true;
+        setSaveStatus("🛡️ Recovered unsaved local draft — saving to DB...");
+      } else {
+        isDirtyRef.current = false;
+      }
+    };
+
+    void checkWalAndFreshServer();
+    return () => {
+      mounted = false;
+    };
+  }, [initialEntry.slug]);
+
+  // Helper that sends PUT to SQLite without ever hitting the 64KB keepalive browser crash!
+  const performBackgroundSave = useCallback(async (isUnloading = false): Promise<boolean> => {
+    const payload = latestPayloadRef.current;
+    const snapToSave = JSON.stringify({
+      title: payload.title,
+      content: payload.content,
+      reviewContent: payload.reviewContent,
+      lessonsLearned: payload.lessonsLearned,
+      checklistJson: payload.checklistJson,
+      scoresJson: payload.scoresJson,
+    });
+
+    // Always write latest state to localStorage WAL first (0ms, no 64KB limit)
+    writeLocalJournalDraft(payload.slug, payload.content);
+    writeLocalJournalDraft(`${payload.slug}-review`, payload.reviewContent);
+
+    const bodyStr = JSON.stringify({
+      title: payload.title,
+      content: payload.content,
+      reviewContent: payload.reviewContent,
+      lessonsLearned: payload.lessonsLearned,
+      checklistJson: payload.checklistJson,
+      scoresJson: payload.scoresJson,
+      rating: payload.rating,
+      syncNotion: false,
+      activeTab: payload.activeTab,
+    });
+
+    // Browser fetch({ keepalive: true }) throws TypeError if body > 64KB!
+    // Only set keepalive: true when body is safely under 56KB.
+    const byteLen = typeof Blob !== "undefined" ? new Blob([bodyStr]).size : bodyStr.length;
+    const useKeepalive = isUnloading && byteLen < 56_000;
+
+    try {
+      const res = await fetch(`/api/journal/${encodeURIComponent(payload.slug)}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: bodyStr,
+        ...(useKeepalive ? { keepalive: true } : {}),
+      });
+      if (res.ok) {
+        lastSavedSnapshotRef.current = snapToSave;
+        isDirtyRef.current = false;
+        clearLocalJournalDraft(payload.slug);
+        clearLocalJournalDraft(`${payload.slug}-review`);
+        const timeStr = new Date().toTimeString().slice(0, 8);
+        setSaveStatus(`Auto-saved ${timeStr}`);
+        return true;
+      } else {
+        setSaveStatus("⚠️ Save retrying (backed up locally)...");
+        return false;
+      }
+    } catch {
+      setSaveStatus("⚠️ Offline / retrying (backed up locally)...");
+      return false;
+    }
+  }, []);
+
+  // 2. Continuous 1.0s Debounced Autosave + 8s Periodic Heartbeat While Typing
   useEffect(() => {
     const currentSnap = JSON.stringify({
       title,
@@ -848,40 +991,25 @@ export function JournalEntryEditor({
       activeTab,
     };
 
+    // Keep localStorage WAL updated on every state change
+    writeLocalJournalDraft(initialEntry.slug, content);
+    writeLocalJournalDraft(`${initialEntry.slug}-review`, reviewContent);
+
     if (currentSnap === lastSavedSnapshotRef.current) {
       isDirtyRef.current = false;
       return;
     }
 
     isDirtyRef.current = true;
-    const timer = setTimeout(async () => {
-      if (!isDirtyRef.current) return;
-      const payload = latestPayloadRef.current;
-      try {
-        const res = await fetch(`/api/journal/${payload.slug}`, {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            title: payload.title,
-            content: payload.content,
-            reviewContent: payload.reviewContent,
-            lessonsLearned: payload.lessonsLearned,
-            checklistJson: payload.checklistJson,
-            scoresJson: payload.scoresJson,
-            rating: payload.rating,
-            syncNotion: false,
-            activeTab: payload.activeTab,
-          }),
-        });
-        if (res.ok) {
-          lastSavedSnapshotRef.current = currentSnap;
-          isDirtyRef.current = false;
-          setSaveStatus("Auto-saved");
-        }
-      } catch {}
-    }, 1500);
+    setSaveStatus("Unsaved edits...");
 
-    return () => clearTimeout(timer);
+    const debounceTimer = setTimeout(() => {
+      if (isDirtyRef.current) {
+        void performBackgroundSave(false);
+      }
+    }, 1000);
+
+    return () => clearTimeout(debounceTimer);
   }, [
     initialEntry.slug,
     title,
@@ -892,31 +1020,23 @@ export function JournalEntryEditor({
     scores,
     processScorePct,
     activeTab,
+    performBackgroundSave,
   ]);
+
+  // 3. Periodic 8-second safety heartbeat: if still dirty (e.g. continuous non-stop typing for 30m), save anyway!
+  useEffect(() => {
+    const interval = setInterval(() => {
+      if (isDirtyRef.current) {
+        void performBackgroundSave(false);
+      }
+    }, 8000);
+    return () => clearInterval(interval);
+  }, [performBackgroundSave]);
 
   const flushUnsavedImmediately = useCallback(() => {
     if (!isDirtyRef.current) return;
-    const payload = latestPayloadRef.current;
-    isDirtyRef.current = false;
-    try {
-      void fetch(`/api/journal/${payload.slug}`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          title: payload.title,
-          content: payload.content,
-          reviewContent: payload.reviewContent,
-          lessonsLearned: payload.lessonsLearned,
-          checklistJson: payload.checklistJson,
-          scoresJson: payload.scoresJson,
-          rating: payload.rating,
-          syncNotion: false,
-          activeTab: payload.activeTab,
-        }),
-        keepalive: true,
-      });
-    } catch {}
-  }, []);
+    void performBackgroundSave(true);
+  }, [performBackgroundSave]);
 
   useEffect(() => {
     const onBeforeUnload = () => flushUnsavedImmediately();
@@ -957,6 +1077,13 @@ export function JournalEntryEditor({
         <div className="flex flex-wrap items-center gap-2.5">
           <Link
             href="/journal"
+            onClick={async (e) => {
+              if (isDirtyRef.current) {
+                e.preventDefault();
+                await performBackgroundSave(false);
+                router.push("/journal");
+              }
+            }}
             className="inline-flex items-center gap-1.5 rounded-lg border border-border/60 bg-secondary/50 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground transition"
           >
             <ArrowLeft className="w-3.5 h-3.5" />
@@ -965,7 +1092,7 @@ export function JournalEntryEditor({
 
           <div className="flex items-center rounded-lg border border-border/60 bg-secondary/50 p-0.5">
             <button
-              onClick={() => router.push(adjacentSlugs.prev)}
+              onClick={async () => { if (isDirtyRef.current) await performBackgroundSave(false); router.push(adjacentSlugs.prev); }}
               title="Previous Period"
               className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
             >
@@ -975,7 +1102,7 @@ export function JournalEntryEditor({
               {range.periodType}
             </span>
             <button
-              onClick={() => router.push(adjacentSlugs.next)}
+              onClick={async () => { if (isDirtyRef.current) await performBackgroundSave(false); router.push(adjacentSlugs.next); }}
               title="Next Period"
               className="p-1 rounded hover:bg-muted text-muted-foreground hover:text-foreground"
             >
@@ -1362,7 +1489,7 @@ export function JournalEntryEditor({
               <div className="flex items-center gap-1.5 rounded-xl bg-[#0d0f14] p-1 border border-border/60">
                 <button
                   type="button"
-                  onClick={() => setActiveTab("prep")}
+                  onClick={() => { void performBackgroundSave(false); setActiveTab("prep"); }}
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     activeTab === "prep"
                       ? "bg-secondary text-foreground border border-border shadow"
@@ -1374,7 +1501,7 @@ export function JournalEntryEditor({
                 </button>
                 <button
                   type="button"
-                  onClick={() => setActiveTab("review")}
+                  onClick={() => { void performBackgroundSave(false); setActiveTab("review"); }}
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold transition ${
                     activeTab === "review"
                       ? "bg-secondary text-foreground border border-border shadow"
@@ -1427,9 +1554,17 @@ export function JournalEntryEditor({
                     currentPrepContent={content}
                     currentReviewContent={reviewContent}
                     onSyncCurrentEntryEdit={(tab, nextHtml) => {
-                      if (tab === "review") setReviewContent(nextHtml);
-                      else setContent(nextHtml);
-                      setEditorKey((k) => k + 1);
+                      if (tab === "review") {
+                        setReviewContent(nextHtml);
+                        writeLocalJournalDraft(`${initialEntry.slug}-review`, nextHtml);
+                      } else {
+                        setContent(nextHtml);
+                        writeLocalJournalDraft(initialEntry.slug, nextHtml);
+                      }
+                      // Only remount main editor if the companion edited the CURRENTLY visible tab
+                      if (tab === activeTab) {
+                        setEditorKey((k) => k + 1);
+                      }
                     }}
                     trades={trades}
                     missedTrades={periodMissedTrades}

@@ -121,6 +121,11 @@ function resolveDbPath(): string {
 }
 
 export function ensureJournalSchema(db: Database.Database) {
+  try {
+    db.pragma("journal_mode = WAL");
+    db.pragma("synchronous = NORMAL");
+    db.pragma("busy_timeout = 5000");
+  } catch {}
   db.exec(`
     CREATE TABLE IF NOT EXISTS journal_entries (
       slug TEXT PRIMARY KEY,

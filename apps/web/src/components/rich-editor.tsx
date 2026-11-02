@@ -53,6 +53,41 @@ import {
   type NotionColor,
 } from "@/lib/notion-blocks";
 
+// Synchronous Write-Ahead LocalStorage Backup Helper (0ms protection against any unmount/crash)
+export function writeLocalJournalDraft(draftKey: string | undefined, html: string) {
+  if (!draftKey || typeof window === "undefined") return;
+  try {
+    if (html && html.trim().length > 0) {
+      window.localStorage.setItem(
+        `tz_wal_${draftKey}`,
+        JSON.stringify({ html, updatedAtMs: Date.now() })
+      );
+    }
+  } catch {}
+}
+
+export function readLocalJournalDraft(
+  draftKey: string | undefined
+): { html: string; updatedAtMs: number } | null {
+  if (!draftKey || typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(`tz_wal_${draftKey}`);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed.html === "string" && typeof parsed.updatedAtMs === "number") {
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
+export function clearLocalJournalDraft(draftKey: string | undefined) {
+  if (!draftKey || typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(`tz_wal_${draftKey}`);
+  } catch {}
+}
+
 export interface RichEditorHandle {
   focus: () => void;
   insertText?: (text: string) => void;
@@ -1181,28 +1216,58 @@ export function RichEditor({
     return true;
   }, []);
 
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
   const emitChange = useCallback((immediate = false) => {
     const editor = contentRef.current;
     if (!editor || readOnly) return;
     setIsEditorEmpty(checkEditorIsEmpty(editor));
+
+    // Immediately write to localStorage Write-Ahead Log on every keystroke (0ms, cannot be lost!)
+    const currentHtmlNow = editor.innerHTML;
+    if (currentHtmlNow !== undefined && ownerId && ownerId !== "inline-note") {
+      writeLocalJournalDraft(ownerId, currentHtmlNow);
+    }
 
     const flushHtml = () => {
       const html = contentRef.current?.innerHTML;
       if (html === undefined || readOnly) return;
       if (html !== lastEmittedRef.current) {
         lastEmittedRef.current = html;
-        onChange(html);
+        onChangeRef.current(html);
       }
     };
 
     if (immediate) {
-      if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
+      if (emitTimerRef.current) {
+        clearTimeout(emitTimerRef.current);
+        emitTimerRef.current = null;
+      }
       flushHtml();
     } else {
       if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
-      emitTimerRef.current = setTimeout(flushHtml, 90);
+      emitTimerRef.current = setTimeout(flushHtml, 50);
     }
-  }, [onChange, readOnly, checkEditorIsEmpty]);
+  }, [readOnly, checkEditorIsEmpty, ownerId]);
+
+  // Flush any pending keystrokes if RichEditor unmounts for any reason
+  useEffect(() => {
+    return () => {
+      if (emitTimerRef.current) {
+        clearTimeout(emitTimerRef.current);
+        emitTimerRef.current = null;
+      }
+      const finalHtml = contentRef.current?.innerHTML;
+      if (finalHtml !== undefined && !readOnly && finalHtml !== lastEmittedRef.current) {
+        lastEmittedRef.current = finalHtml;
+        if (ownerId && ownerId !== "inline-note") {
+          writeLocalJournalDraft(ownerId, finalHtml);
+        }
+        onChangeRef.current(finalHtml);
+      }
+    };
+  }, [readOnly, ownerId]);
 
   const insertHtmlAtCursor = (html: string) => {
     if (readOnly || !contentRef.current) return;
@@ -3433,6 +3498,7 @@ export function RichEditor({
                 <button
                   type="button"
                   onClick={() => {
+                    emitChange(true);
                     if (!fullscreen) {
                       setFullscreen(true);
                       setFullscreenCompanionOpen(true);
@@ -3453,7 +3519,10 @@ export function RichEditor({
               )}
               <button
                 type="button"
-                onClick={() => setFullscreen(!fullscreen)}
+                onClick={() => {
+                  emitChange(true);
+                  setFullscreen((prev) => !prev);
+                }}
                 className="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:bg-secondary/50 hover:text-foreground"
                 title={fullscreen ? "Exit fullscreen" : "Fullscreen"}
               >
