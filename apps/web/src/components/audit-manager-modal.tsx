@@ -279,9 +279,9 @@ export function AuditManagerModal({
 
   return (
     <div className="fixed inset-0 z-[9999] flex items-center justify-center bg-black/80 p-3 sm:p-5 backdrop-blur-xs">
-      <div className="w-full max-w-4xl max-h-[92vh] flex flex-col rounded-2xl border border-border bg-[#11131c] shadow-2xl overflow-hidden text-xs">
+      <div className="w-full max-w-4xl max-h-[92vh] flex flex-col rounded-2xl border border-border bg-card dark:bg-[#11131c] shadow-2xl overflow-hidden text-xs">
         {/* TOP HEADER */}
-        <div className="flex items-center justify-between border-b border-border/60 bg-[#161925] px-5 py-3.5">
+        <div className="flex items-center justify-between border-b border-border/60 bg-muted/40 dark:bg-[#161925] px-5 py-3.5">
           <div className="flex items-center gap-2.5">
             <Sparkles className="w-4 h-4 text-indigo-400" />
             <div>
@@ -305,14 +305,14 @@ export function AuditManagerModal({
         {/* BODY SCROLL AREA */}
         <div className="flex-1 overflow-y-auto p-5 space-y-5">
           {/* 1. PRIMARY AUDIT MODE SWITCHER */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded-xl bg-[#0b0d13] p-1.5 border border-border/60">
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded-xl bg-muted/50 dark:bg-background dark:bg-[#0b0d13] p-1.5 border border-border/70">
             <button
               type="button"
               onClick={() => setModeTab("period")}
               className={`flex items-center justify-center gap-2 rounded-lg py-2 px-3 font-semibold transition ${
                 modeTab === "period"
                   ? "bg-indigo-600 text-white shadow"
-                  : "text-muted-foreground hover:text-foreground"
+                  : "text-foreground/80 dark:text-muted-foreground hover:text-foreground hover:bg-card/60"
               }`}
             >
               <Calendar className="w-3.5 h-3.5" />
@@ -325,7 +325,7 @@ export function AuditManagerModal({
               className={`flex items-center justify-center gap-2 rounded-lg py-2 px-3 font-semibold transition ${
                 modeTab === "intra"
                   ? "bg-indigo-600 text-white shadow"
-                  : "text-muted-foreground hover:text-foreground"
+                  : "text-foreground/80 dark:text-muted-foreground hover:text-foreground hover:bg-card/60"
               }`}
             >
               <Layers className="w-3.5 h-3.5" />
@@ -338,7 +338,7 @@ export function AuditManagerModal({
               className={`flex items-center justify-center gap-2 rounded-lg py-2 px-3 font-semibold transition ${
                 modeTab === "scoped"
                   ? "bg-indigo-600 text-white shadow"
-                  : "text-muted-foreground hover:text-foreground"
+                  : "text-foreground/80 dark:text-muted-foreground hover:text-foreground hover:bg-card/60"
               }`}
             >
               <Sliders className="w-3.5 h-3.5" />
@@ -350,12 +350,12 @@ export function AuditManagerModal({
           {/* TAB 1: END-OF-PERIOD REVIEW (WEEK / MONTH / QUARTER / YEAR)       */}
           {/* ================================================================= */}
           {modeTab === "period" && (
-            <div className="rounded-xl border border-border/60 bg-[#161925]/70 p-4 space-y-4">
+            <div className="rounded-xl border border-border/70 bg-card dark:bg-[#161925]/70 p-4 space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <span className="font-bold text-foreground">
                   Step 1: Select Horizon &amp; Exact Target Period (Automatically Looks Back 3 Prior Periods)
                 </span>
-                <div className="flex items-center gap-1 rounded-lg bg-[#0b0d13] p-1 border border-border/60">
+                <div className="flex items-center gap-1 rounded-lg bg-background dark:bg-[#0b0d13] p-1 border border-border/60">
                   {(["weekly", "monthly", "quarterly", "yearly"] as GoalHorizon[]).map((hz) => (
                     <button
                       key={hz}
@@ -383,7 +383,7 @@ export function AuditManagerModal({
                     <select
                       value={selectedWeekAnchor}
                       onChange={(e) => setSelectedWeekAnchor(e.target.value)}
-                      className="h-9 flex-1 min-w-[280px] rounded-lg border border-border/70 bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
+                      className="h-9 flex-1 min-w-[280px] rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
                     >
                       {(periods.weeks || []).map((w: any) => (
                         <option key={w.anchorValue} value={w.anchorValue}>
@@ -399,7 +399,7 @@ export function AuditManagerModal({
                         onChange={(e) => {
                           if (e.target.value) setSelectedWeekAnchor(e.target.value);
                         }}
-                        className="h-9 rounded-lg border border-border/70 bg-[#0b0d13] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
+                        className="h-9 rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-2.5 text-xs text-foreground outline-none focus:border-indigo-500"
                       />
                     </div>
                   </div>
@@ -414,7 +414,7 @@ export function AuditManagerModal({
                   <select
                     value={selectedMonthAnchor}
                     onChange={(e) => setSelectedMonthAnchor(e.target.value)}
-                    className="h-9 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
+                    className="h-9 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
                   >
                     {(periods.months || []).map((m: any) => (
                       <option key={m.anchorValue} value={m.anchorValue}>
@@ -433,7 +433,7 @@ export function AuditManagerModal({
                   <select
                     value={selectedQuarterAnchor}
                     onChange={(e) => setSelectedQuarterAnchor(e.target.value)}
-                    className="h-9 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
+                    className="h-9 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
                   >
                     {(periods.quarters || []).map((q: any) => (
                       <option key={q.anchorValue} value={q.anchorValue}>
@@ -452,7 +452,7 @@ export function AuditManagerModal({
                   <select
                     value={selectedYearAnchor}
                     onChange={(e) => setSelectedYearAnchor(e.target.value)}
-                    className="h-9 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
+                    className="h-9 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
                   >
                     {(periods.years || []).map((y: any) => (
                       <option key={y.anchorValue} value={y.anchorValue}>
@@ -469,7 +469,7 @@ export function AuditManagerModal({
           {/* TAB 2: INTRA-PERIOD CHECK-IN (PICK A DAY ON THE CALENDAR)         */}
           {/* ================================================================= */}
           {modeTab === "intra" && (
-            <div className="rounded-xl border border-border/60 bg-[#161925]/70 p-4 space-y-4">
+            <div className="rounded-xl border border-border/70 bg-card dark:bg-[#161925]/70 p-4 space-y-4">
               <div className="font-bold text-foreground">
                 Pick Any Day on the Calendar for an Intra-Week, Intra-Month, Intra-Quarter, or Single-Day Check-In
               </div>
@@ -482,7 +482,7 @@ export function AuditManagerModal({
                     type="date"
                     value={calendarDay}
                     onChange={(e) => setCalendarDay(e.target.value)}
-                    className="h-9 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
+                    className="h-9 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"
                   />
                 </div>
 
@@ -505,8 +505,8 @@ export function AuditManagerModal({
                         onClick={() => setIntraType(opt.id)}
                         className={`rounded-lg border px-2.5 py-2 text-[11px] font-semibold transition ${
                           intraType === opt.id
-                            ? "border-indigo-500 bg-indigo-600/25 text-indigo-200"
-                            : "border-border/60 bg-[#0b0d13] text-muted-foreground hover:text-foreground"
+                            ? "border-indigo-600 dark:border-indigo-500 bg-indigo-100 dark:bg-indigo-600/25 text-indigo-950 dark:text-indigo-200 font-bold shadow-xs"
+                            : "border-border/70 bg-card dark:bg-background dark:bg-[#0b0d13] text-muted-foreground hover:text-foreground"
                         }`}
                       >
                         {opt.label}
@@ -522,7 +522,7 @@ export function AuditManagerModal({
           {/* TAB 3: SCOPED AUDIT & COMPARATOR (PERIODS / TRADES / EVENTS)      */}
           {/* ================================================================= */}
           {modeTab === "scoped" && (
-            <div className="rounded-xl border border-border/60 bg-[#161925]/70 p-4 space-y-4">
+            <div className="rounded-xl border border-border/70 bg-card dark:bg-[#161925]/70 p-4 space-y-4">
               <div className="flex flex-wrap items-center gap-2 border-b border-border/40 pb-3">
                 <button
                   type="button"
@@ -530,7 +530,7 @@ export function AuditManagerModal({
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold transition ${
                     scopeSubMode === "compare_periods"
                       ? "bg-indigo-600 text-white"
-                      : "bg-[#0b0d13] text-muted-foreground hover:text-foreground border border-border/60"
+                      : "bg-background dark:bg-[#0b0d13] text-muted-foreground hover:text-foreground border border-border/60"
                   }`}
                 >
                   <ArrowLeftRight className="w-3.5 h-3.5" />
@@ -543,7 +543,7 @@ export function AuditManagerModal({
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold transition ${
                     scopeSubMode === "trade_lookback"
                       ? "bg-indigo-600 text-white"
-                      : "bg-[#0b0d13] text-muted-foreground hover:text-foreground border border-border/60"
+                      : "bg-background dark:bg-[#0b0d13] text-muted-foreground hover:text-foreground border border-border/60"
                   }`}
                 >
                   <TrendingUp className="w-3.5 h-3.5" />
@@ -556,7 +556,7 @@ export function AuditManagerModal({
                   className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 font-semibold transition ${
                     scopeSubMode === "custom_event"
                       ? "bg-indigo-600 text-white"
-                      : "bg-[#0b0d13] text-muted-foreground hover:text-foreground border border-border/60"
+                      : "bg-background dark:bg-[#0b0d13] text-muted-foreground hover:text-foreground border border-border/60"
                   }`}
                 >
                   <FileText className="w-3.5 h-3.5" />
@@ -574,7 +574,7 @@ export function AuditManagerModal({
                     <select
                       value={comparePeriodA}
                       onChange={(e) => setComparePeriodA(e.target.value)}
-                      className="h-9 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-3 text-xs text-foreground"
+                      className="h-9 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs text-foreground"
                     >
                       {allComparisonPeriodOptions.map((opt) => (
                         <option key={`pa-${opt.value}`} value={opt.value}>
@@ -591,7 +591,7 @@ export function AuditManagerModal({
                     <select
                       value={comparePeriodB}
                       onChange={(e) => setComparePeriodB(e.target.value)}
-                      className="h-9 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-3 text-xs text-foreground"
+                      className="h-9 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs text-foreground"
                     >
                       {allComparisonPeriodOptions.map((opt) => (
                         <option key={`pb-${opt.value}`} value={opt.value}>
@@ -640,7 +640,7 @@ export function AuditManagerModal({
                         <select
                           value={tradeLookbackCount}
                           onChange={(e) => setTradeLookbackCount(Number(e.target.value))}
-                          className="h-8 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-2.5 text-xs text-foreground"
+                          className="h-8 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-2.5 text-xs text-foreground"
                         >
                           {[3, 5, 7, 10, 15, 20, 30, 50].map((n) => (
                             <option key={n} value={n}>
@@ -657,7 +657,7 @@ export function AuditManagerModal({
                         <select
                           value={tradeFilterSymbol}
                           onChange={(e) => setTradeFilterSymbol(e.target.value)}
-                          className="h-8 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-2.5 text-xs text-foreground"
+                          className="h-8 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-2.5 text-xs text-foreground"
                         >
                           <option value="ALL">All Symbols</option>
                           {uniqueSymbols.map((sym) => (
@@ -675,7 +675,7 @@ export function AuditManagerModal({
                         <select
                           value={tradeFilterOutcome}
                           onChange={(e) => setTradeFilterOutcome(e.target.value as any)}
-                          className="h-8 w-full rounded-lg border border-border/70 bg-[#0b0d13] px-2.5 text-xs text-foreground"
+                          className="h-8 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-2.5 text-xs text-foreground"
                         >
                           <option value="all">All Outcomes (Wins &amp; Losses)</option>
                           <option value="losses">Losing Trades Only</option>
@@ -684,7 +684,7 @@ export function AuditManagerModal({
                       </div>
                     </div>
                   ) : (
-                    <div className="max-h-48 overflow-y-auto rounded-lg border border-border/60 bg-[#0b0d13] p-2 space-y-1">
+                    <div className="max-h-48 overflow-y-auto rounded-lg border border-border/60 bg-background dark:bg-[#0b0d13] p-2 space-y-1">
                       {selectableTrades.map((t: any) => {
                         const checked = selectedTradeKeys.includes(t.key);
                         return (
@@ -740,7 +740,7 @@ export function AuditManagerModal({
                           className={`px-2 py-0.5 rounded text-[10px] uppercase font-bold ${
                             journalPeriodFilter === pf
                               ? "bg-indigo-600 text-white"
-                              : "bg-[#0b0d13] text-muted-foreground"
+                              : "bg-background dark:bg-[#0b0d13] text-muted-foreground"
                           }`}
                         >
                           {pf}
@@ -748,7 +748,7 @@ export function AuditManagerModal({
                       ))}
                     </div>
                   </div>
-                  <div className="max-h-44 overflow-y-auto rounded-lg border border-border/60 bg-[#0b0d13] p-2 space-y-1">
+                  <div className="max-h-44 overflow-y-auto rounded-lg border border-border/60 bg-background dark:bg-[#0b0d13] p-2 space-y-1">
                     {selectableJournals
                       .filter(
                         (j: any) =>
@@ -803,7 +803,7 @@ export function AuditManagerModal({
           {/* ================================================================= */}
           {/* LIVE SERVER-VERIFIED 4-PERIOD LOOKBACK PREVIEW TABLE              */}
           {/* ================================================================= */}
-          <div className="rounded-xl border border-indigo-500/30 bg-[#0b0d13] p-4 space-y-2.5">
+          <div className="rounded-xl border border-indigo-500/30 bg-muted/30 dark:bg-background dark:bg-[#0b0d13] p-4 space-y-2.5">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <div className="flex items-center gap-2">
                 <CheckCircle2 className="w-4 h-4 text-emerald-400" />
@@ -839,7 +839,7 @@ export function AuditManagerModal({
                       <tr
                         key={b.periodKey + i}
                         className={`border-b border-border/20 ${
-                          i === 0 ? "bg-indigo-500/10 font-semibold text-foreground" : "text-muted-foreground"
+                          i === 0 ? "bg-indigo-100/70 dark:bg-indigo-500/15 font-bold text-indigo-950 dark:text-foreground" : "text-muted-foreground"
                         }`}
                       >
                         <td className="py-1.5 px-2">{b.periodLabel}</td>
@@ -889,11 +889,11 @@ export function AuditManagerModal({
                 value={customFocusPrompt}
                 onChange={(e) => setCustomFocusPrompt(e.target.value)}
                 placeholder="e.g., Focus on my Oct 5 Gold 3-trade cluster vs Oct 8, or compare my pre-Korea vs post-Korea execution..."
-                className="w-full rounded-lg border border-border/70 bg-[#0b0d13] px-3 py-2 text-xs text-foreground outline-none focus:border-indigo-500"
+                className="w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 py-2 text-xs text-foreground outline-none focus:border-indigo-500"
               />
             </div>
 
-            <div className="lg:col-span-5 space-y-2.5 rounded-xl border border-border/60 bg-[#161925]/60 p-3">
+            <div className="lg:col-span-5 space-y-2.5 rounded-xl border border-border/70 bg-card dark:bg-[#161925]/60 p-3">
               <div className="flex items-center justify-between">
                 <span className="text-[11px] font-semibold text-muted-foreground">
                   Reasoning Depth:
@@ -907,7 +907,7 @@ export function AuditManagerModal({
                       className={`px-2.5 py-1 rounded text-[11px] font-semibold capitalize ${
                         thinkingMode === tm
                           ? "bg-indigo-600 text-white"
-                          : "bg-[#0b0d13] text-muted-foreground"
+                          : "bg-background dark:bg-[#0b0d13] text-muted-foreground"
                       }`}
                     >
                       {tm}
@@ -917,8 +917,8 @@ export function AuditManagerModal({
               </div>
 
               <label className="flex items-center justify-between gap-2 cursor-pointer pt-1 border-t border-border/40">
-                <span className="flex items-center gap-1.5 text-[11px] text-amber-200 font-medium">
-                  <Power className="w-3.5 h-3.5 text-amber-400" />
+                <span className="flex items-center gap-1.5 text-[11px] text-amber-950 dark:text-amber-200 font-semibold">
+                  <Power className="w-3.5 h-3.5 text-amber-600 dark:text-amber-400" />
                   <span>Auto-stop Desktop GPU Server when queue finishes</span>
                 </span>
                 <input
@@ -932,7 +932,7 @@ export function AuditManagerModal({
         </div>
 
         {/* FOOTER ACTIONS */}
-        <div className="flex items-center justify-between border-t border-border/60 bg-[#161925] px-5 py-3">
+        <div className="flex items-center justify-between border-t border-border/60 bg-muted/40 dark:bg-[#161925] px-5 py-3">
           <button
             type="button"
             onClick={onClose}
