@@ -11,6 +11,7 @@ import {
   abortKoboldGeneration,
 } from "@/server/ai";
 import { queryTrades } from "@/server/trades-query";
+import { getJournalConfig } from "@/server/journal-service";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,14 @@ export type GoalHorizon = "weekly" | "monthly" | "quarterly" | "yearly";
 export type GoalStatus = "on_track" | "slipping" | "breached" | "completed";
 
 export interface CustomAuditScope {
+  targetAnchorDate?: string;
+  intraMode?: "none" | "intraweek" | "intramonth" | "intraquarter" | "single_day";
+  scopeMode?: "standard" | "compare_periods" | "trade_lookback" | "custom_event";
+  comparePeriodA?: string;
+  comparePeriodB?: string;
+  tradeLookbackCount?: number;
+  tradeFilterSymbol?: string;
+  tradeFilterOutcome?: "all" | "wins" | "losses";
   selectedJournalSlugs?: string[];
   selectedTradeKeys?: string[];
   includeTabs?: "both" | "review_only" | "prep_only";
@@ -409,12 +418,166 @@ async function stopKoboldServerAfterQueue() {
 }
 
 function getIsoWeekKey(d: Date): string {
-  const date = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const date = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
   const dayNum = date.getUTCDay() || 7;
   date.setUTCDate(date.getUTCDate() + 4 - dayNum);
   const yearStart = new Date(Date.UTC(date.getUTCFullYear(), 0, 1));
   const weekNo = Math.ceil((((date.getTime() - yearStart.getTime()) / 86400000) + 1) / 7);
   return `${date.getUTCFullYear()}-W${String(weekNo).padStart(2, "0")}`;
+}
+
+function getMondayUtc(dateStrOrDate: string | Date): Date {
+  const d =
+    typeof dateStrOrDate === "string"
+      ? new Date(`${dateStrOrDate.slice(0, 10)}T12:00:00Z`)
+      : new Date(Date.UTC(dateStrOrDate.getUTCFullYear(), dateStrOrDate.getUTCMonth(), dateStrOrDate.getUTCDate(), 12, 0, 0));
+  const day = d.getUTCDay() || 7;
+  d.setUTCDate(d.getUTCDate() - day + 1);
+  return d;
+}
+
+function formatHumanDateShort(isoDate: string): string {
+  const d = new Date(`${isoDate.slice(0, 10)}T12:00:00Z`);
+  return d.toLocaleDateString("en-US", { month: "short", day: "2-digit", timeZone: "UTC" });
+}
+
+function formatWeekHumanLabel(mondayIso: string, sundayIso?: string): string {
+  const mon = new Date(`${mondayIso.slice(0, 10)}T12:00:00Z`);
+  const sun = sundayIso
+    ? new Date(`${sundayIso.slice(0, 10)}T12:00:00Z`)
+    : new Date(mon.getTime() + 6 * 86_400_000);
+  const sunIso = sun.toISOString().slice(0, 10);
+  const wkCode = getIsoWeekKey(mon).split("-")[1] || "";
+  const m1 = formatHumanDateShort(mondayIso);
+  const m2 = formatHumanDateShort(sunIso);
+  const yr = sun.getUTCFullYear();
+  return `${m1} – ${m2}, ${yr} (${wkCode})`;
+}
+
+function parseJournalSlugRange(slug: string): {
+  periodType: "day" | "week" | "month" | "quarter" | "year";
+  startDate: string;
+  endDate: string;
+  humanLabel: string;
+} {
+  const clean = String(slug || "").trim();
+  if (clean.startsWith("week-")) {
+    const monStr = clean.replace(/^week-/, "").replace(/-review$/, "").slice(0, 10);
+    const mon = new Date(`${monStr}T12:00:00Z`);
+    const sun = new Date(mon.getTime() + 6 * 86_400_000);
+    const sunStr = Number.isFinite(sun.getTime()) ? sun.toISOString().slice(0, 10) : monStr;
+    return {
+      periodType: "week",
+      startDate: monStr,
+      endDate: sunStr,
+      humanLabel: `Week ${formatWeekHumanLabel(monStr, sunStr)}`,
+    };
+  }
+  if (clean.startsWith("month-")) {
+    const mKey = clean.replace(/^month-/, "").replace(/-review$/, "").slice(0, 7);
+    const [yr, mo] = mKey.split("-").map(Number);
+    const lastDay = new Date(Date.UTC(yr || 2026, mo || 1, 0)).getUTCDate();
+    const startStr = `${mKey}-01`;
+    const endStr = `${mKey}-${String(lastDay).padStart(2, "0")}`;
+    const dt = new Date(`${startStr}T12:00:00Z`);
+    const mLabel = dt.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+    return {
+      periodType: "month",
+      startDate: startStr,
+      endDate: endStr,
+      humanLabel: `Month ${mLabel} (${startStr} to ${endStr})`,
+    };
+  }
+  if (clean.startsWith("quarter-")) {
+    const qKey = clean.replace(/^quarter-/, "").replace(/-review$/, "");
+    const [yrStr, qPart] = qKey.split("-");
+    const yr = parseInt(yrStr || "2026", 10);
+    const qNum = parseInt((qPart || "Q1").replace("Q", ""), 10);
+    const startMo = (qNum - 1) * 3 + 1;
+    const endMo = startMo + 2;
+    const lastDay = new Date(Date.UTC(yr, endMo, 0)).getUTCDate();
+    const startStr = `${yr}-${String(startMo).padStart(2, "0")}-01`;
+    const endStr = `${yr}-${String(endMo).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    return {
+      periodType: "quarter",
+      startDate: startStr,
+      endDate: endStr,
+      humanLabel: `Quarter ${yr} Q${qNum} (${startStr} to ${endStr})`,
+    };
+  }
+  if (clean.startsWith("year-")) {
+    const yr = clean.replace(/^year-/, "").replace(/-review$/, "").slice(0, 4);
+    return {
+      periodType: "year",
+      startDate: `${yr}-01-01`,
+      endDate: `${yr}-12-31`,
+      humanLabel: `Year ${yr} (${yr}-01-01 to ${yr}-12-31)`,
+    };
+  }
+  const dStr = clean.replace(/^day-/, "").replace(/-review$/, "").slice(0, 10);
+  return {
+    periodType: "day",
+    startDate: dStr,
+    endDate: dStr,
+    humanLabel: `Day ${dStr}`,
+  };
+}
+
+function resolveArbitraryPeriodSpec(spec: string, roleLabel: string): {
+  periodKey: string;
+  periodLabel: string;
+  startIso: string;
+  endIso: string;
+} {
+  const s = String(spec || "").trim();
+  if (/^\d{4}-Q[1-4]$/i.test(s)) {
+    const [yStr, qPart] = s.toUpperCase().split("-");
+    const y = Number(yStr);
+    const q = Number(qPart!.replace("Q", ""));
+    const startMonth = (q - 1) * 3 + 1;
+    const endMonth = q * 3;
+    const lastDay = new Date(Date.UTC(y, endMonth, 0)).getUTCDate();
+    const startIso = `${y}-${String(startMonth).padStart(2, "0")}-01`;
+    const endIso = `${y}-${String(endMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    return {
+      periodKey: `${y}-Q${q}`,
+      periodLabel: `${y} Q${q} (${startIso} to ${endIso}) [${roleLabel}]`,
+      startIso,
+      endIso,
+    };
+  }
+  if (/^\d{4}-\d{2}$/.test(s)) {
+    const [y, m] = s.split("-").map(Number);
+    const d = new Date(Date.UTC(y!, m! - 1, 1));
+    const mName = d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+    const lastDay = new Date(Date.UTC(y!, m!, 0)).getUTCDate();
+    const startIso = `${s}-01`;
+    const endIso = `${s}-${String(lastDay).padStart(2, "0")}`;
+    return {
+      periodKey: s,
+      periodLabel: `${mName} (${startIso} to ${endIso}) [${roleLabel}]`,
+      startIso,
+      endIso,
+    };
+  }
+  if (/^\d{4}$/.test(s)) {
+    return {
+      periodKey: s,
+      periodLabel: `Year ${s} (${s}-01-01 to ${s}-12-31) [${roleLabel}]`,
+      startIso: `${s}-01-01`,
+      endIso: `${s}-12-31`,
+    };
+  }
+  const mon = getMondayUtc(s || new Date());
+  const sun = new Date(mon.getTime() + 6 * 86_400_000);
+  const startIso = mon.toISOString().slice(0, 10);
+  const endIso = sun.toISOString().slice(0, 10);
+  return {
+    periodKey: `${startIso}`,
+    periodLabel: `${formatWeekHumanLabel(startIso, endIso)} [${roleLabel}]`,
+    startIso,
+    endIso,
+  };
 }
 
 function getPeriodTimingContext(
@@ -428,66 +591,83 @@ function getPeriodTimingContext(
   basePeriodKey: string;
   timingInstruction: string;
 } {
-  const style = customScope?.reportStyle || "auto";
-  const offset = Number(customScope?.periodOffset || 0);
-  const dayOfWeek = now.getDay(); // 0=Sun, 1=Mon ... 6=Sat
-  const dayOfMonth = now.getDate();
-  const daysInMonth = new Date(now.getFullYear(), now.getMonth() + 1, 0).getDate();
-  const monthInQuarter = now.getMonth() % 3;
-
+  const intra = customScope?.intraMode || "none";
+  const scopeMode = customScope?.scopeMode || "standard";
   const bucketKey = targetBucket?.periodKey || "";
+  const bucketLabel = targetBucket?.periodLabel || bucketKey;
   const bucketRange = targetBucket?.dateRange || "";
 
+  if (scopeMode === "compare_periods") {
+    return {
+      isMidPeriod: false,
+      timingTag: "Period-vs-Period Comparison Audit",
+      basePeriodKey: `${customScope?.comparePeriodA || "P1"}-vs-${customScope?.comparePeriodB || "P2"}`,
+      timingInstruction: `This is a HEAD-TO-HEAD PERIOD COMPARISON AUDIT comparing ${customScope?.comparePeriodA} against ${customScope?.comparePeriodB}. Contrast execution discipline, risk sizing, and journaling completeness directly between these two periods.`,
+    };
+  }
+
+  if (scopeMode === "trade_lookback") {
+    const cnt = customScope?.tradeLookbackCount || 10;
+    return {
+      isMidPeriod: false,
+      timingTag: `Last ${cnt} Trades Lookback Audit`,
+      basePeriodKey: `Last-${cnt}-Trades`,
+      timingInstruction: `This is a SCOPED TRADE LOOKBACK AUDIT evaluating the trader's selected ${cnt}-trade sample (${bucketRange}). Diagnose execution patterns, sizing shifts, and post-loss behavior across this exact trade sequence.`,
+    };
+  }
+
+  if (intra !== "none") {
+    const dayStr = customScope?.targetAnchorDate || now.toISOString().slice(0, 10);
+    const labelMap: Record<string, string> = {
+      intraweek: "Intra-Week Check-In",
+      intramonth: "Intra-Month Check-In",
+      intraquarter: "Intra-Quarter Check-In",
+      single_day: "Single-Day Session Audit",
+    };
+    const tag = labelMap[intra] || "Intra-Period Check-In";
+    return {
+      isMidPeriod: true,
+      timingTag: tag,
+      basePeriodKey: `${dayStr}-${intra}`,
+      timingInstruction: `This is an ${tag.toUpperCase()} anchored at ${dayStr} (${bucketLabel}: ${bucketRange}). Evaluate period-to-date execution up to ${dayStr} against the prior 3 completed periods, call out early behavioral tells, and provide tactical adjustments for the remainder of the period.`,
+    };
+  }
+
+  const style = customScope?.reportStyle || "auto";
+  const isEnd = style !== "mid_period";
+
   if (horizon === "weekly") {
-    const autoIsEnd =
-      offset > 0 || dayOfWeek === 0 || dayOfWeek === 6 || dayOfWeek === 5 || (dayOfWeek <= 2 && targetBucket?.isPreviousPeriodAutoAnchored);
-    const isEnd = style === "end_of_period" ? true : style === "mid_period" ? false : autoIsEnd;
-    const wkKey = bucketKey || getIsoWeekKey(now);
     return {
       isMidPeriod: !isEnd,
       timingTag: isEnd ? "End-of-Week Audit" : "Mid-Week Check-In",
-      basePeriodKey: wkKey,
-      timingInstruction: isEnd
-        ? `This is an END-OF-WEEK FINAL AUDIT for ${wkKey} (${bucketRange}). Evaluate the completed week's execution and self-reflection completeness against the prior 3 weeks (W-1, W-2, W-3) and set concrete rules for the upcoming week.`
-        : `This is a MID-WEEK PROGRESS CHECK-IN for ${wkKey} (${bucketRange}). Evaluate week-to-date execution and mindset against the prior 3 weeks, call out early behavioral tells or hesitation, and provide immediate tactical adjustments for the remaining sessions of this week.`,
+      basePeriodKey: bucketKey || now.toISOString().slice(0, 10),
+      timingInstruction: `This is a WEEKLY AUDIT for ${bucketLabel} (${bucketRange}). Compare the Target Week (${bucketRange}) against the prior 3 weeks (Wk -1, Wk -2, Wk -3) using ONLY the exact dates and trades in the Server-Verified Weekly Comparison Table.`,
     };
   }
 
   if (horizon === "monthly") {
-    const autoIsEnd =
-      offset > 0 || dayOfMonth >= daysInMonth - 3 || dayOfMonth <= 5;
-    const isEnd = style === "end_of_period" ? true : style === "mid_period" ? false : autoIsEnd;
-    const mKey = bucketKey || now.toISOString().slice(0, 7);
     return {
       isMidPeriod: !isEnd,
-      timingTag: isEnd ? "End-of-Month Audit" : `Mid-Month Check-In`,
-      basePeriodKey: mKey,
-      timingInstruction: isEnd
-        ? `This is an END-OF-MONTH FINAL AUDIT for ${mKey} (${bucketRange}). Compare the target month against the prior 3 calendar months (M-1, M-2, M-3), audit habit consolidation, and establish next month's behavioral protocol.`
-        : `This is a MID-MONTH PROGRESS CHECK-IN for ${mKey} (${bucketRange}). Evaluate month-to-date trajectory against the prior 3 months and provide mid-course corrections for the remainder of the month.`,
+      timingTag: isEnd ? "End-of-Month Audit" : "Mid-Month Check-In",
+      basePeriodKey: bucketKey || now.toISOString().slice(0, 7),
+      timingInstruction: `This is a MONTHLY AUDIT for ${bucketLabel} (${bucketRange}). Compare the Target Month (${bucketRange}) against the prior 3 calendar months (M-1, M-2, M-3) using ONLY the exact Monthly rows in the Server-Verified Calendar Period Comparison Table. NEVER substitute weekly buckets for a monthly audit!`,
     };
   }
 
   if (horizon === "quarterly") {
-    const autoIsEnd = offset > 0 || (monthInQuarter === 2 && dayOfMonth >= daysInMonth - 5);
-    const isEnd = style === "end_of_period" ? true : style === "mid_period" ? false : autoIsEnd;
-    const qNum = Math.floor(now.getMonth() / 3) + 1;
-    const qKey = bucketKey || `${now.getFullYear()}-Q${qNum}`;
     return {
       isMidPeriod: !isEnd,
       timingTag: isEnd ? "End-of-Quarter Audit" : "Mid-Quarter Progress Pulse",
-      basePeriodKey: qKey,
-      timingInstruction: `This is a ${isEnd ? "END-OF-QUARTER FINAL SYNTHESIS" : "MID-QUARTER PROGRESS PULSE"} for ${qKey} (${bucketRange}). Compare ${qKey} against the prior 3 quarters, synthesizing long-term psychological evolution, drawdown discipline, and accountability infrastructure.`,
+      basePeriodKey: bucketKey || `${now.getUTCFullYear()}-Q${Math.floor(now.getUTCMonth() / 3) + 1}`,
+      timingInstruction: `This is a QUARTERLY AUDIT for ${bucketLabel} (${bucketRange}). Compare the Target Quarter against the prior 3 quarters (Q-1, Q-2, Q-3) using ONLY the Server-Verified Quarterly Comparison Table.`,
     };
   }
 
-  const yKey = bucketKey || `${now.getFullYear()}`;
-  const isEndYear = style === "end_of_period" || offset > 0;
   return {
-    isMidPeriod: !isEndYear,
-    timingTag: isEndYear ? "End-of-Year Audit" : "Annual Evolution Check-In",
-    basePeriodKey: yKey,
-    timingInstruction: `This is an ${isEndYear ? "END-OF-YEAR FINAL AUDIT" : "ANNUAL EVOLUTION CHECK-IN"} for ${yKey} (${bucketRange}). Compare ${yKey} against prior years and synthesize macro edge maturity.`,
+    isMidPeriod: !isEnd,
+    timingTag: isEnd ? "End-of-Year Audit" : "Annual Evolution Check-In",
+    basePeriodKey: bucketKey || `${now.getUTCFullYear()}`,
+    timingInstruction: `This is an ANNUAL AUDIT for ${bucketLabel} (${bucketRange}). Compare the Target Year against prior years using ONLY the Server-Verified Annual Comparison Table.`,
   };
 }
 
@@ -498,10 +678,6 @@ function computeMedian(values: number[]): number {
   return sorted.length % 2 !== 0 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
-// Compute Implied Capital Risked ($) on a trade:
-// 1. If realized_r is present, Risk $ = |net_pnl / realized_r|
-// 2. If losing trade (net_pnl < 0), Risk $ = |net_pnl|
-// 3. If winning trade without realized_r, use symbol's calibrated risk-per-lot * quantity (so winners are NEVER dropped from risk tiers!)
 function estimateTradeCapitalRiskedUsd(
   t: any,
   symbolRiskPerUnitMap?: Record<string, number>,
@@ -563,7 +739,6 @@ function summarizeBucketMetrics(bucketTrades: any[], targetRiskPct: number) {
     const rPct = Number(t.accountRiskPct ?? targetRiskPct);
     riskPcts.push(rPct);
 
-    // Every single trade is classified into exactly ONE tier so Half + Standard + Oversized === Total Trades!
     if (rPct < targetRiskPct * 0.72) {
       halfRiskTradesCount += 1;
     } else if (rPct > targetRiskPct * 1.30) {
@@ -654,7 +829,110 @@ function computeAuditDueStatus(db: Database.Database) {
   };
 }
 
-// Build True Calendar Period Buckets (Supports Period Offset + Smart Monday/Early-Month Rollback!)
+function buildSelectablePeriodsCatalog(allTrades: any[], now: Date, targetRiskPct: number) {
+  const weeks: Array<any> = [];
+  const curMon = getMondayUtc(now);
+  for (let w = 0; w < 16; w++) {
+    const mon = new Date(curMon.getTime() - w * 7 * 86_400_000);
+    const sun = new Date(mon.getTime() + 6 * 86_400_000);
+    const startIso = mon.toISOString().slice(0, 10);
+    const endIso = sun.toISOString().slice(0, 10);
+    const bTrades = allTrades.filter((t) => {
+      const d = String(t.opened_at).slice(0, 10);
+      return d >= startIso && d <= endIso;
+    });
+    const metrics = summarizeBucketMetrics(bTrades, targetRiskPct);
+    const humanRange = formatWeekHumanLabel(startIso, endIso);
+    weeks.push({
+      anchorValue: startIso,
+      label: w === 0 ? `${humanRange} · Current Week` : w === 1 ? `${humanRange} · Last Completed Week` : humanRange,
+      shortLabel: humanRange,
+      startDate: startIso,
+      endDate: endIso,
+      trades: metrics.trades,
+      wins: metrics.wins,
+      losses: metrics.losses,
+      netPnl: metrics.netPnl,
+    });
+  }
+
+  const months: Array<any> = [];
+  for (let m = 0; m < 12; m++) {
+    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - m, 1));
+    const ym = d.toISOString().slice(0, 7);
+    const monthName = d.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+    const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
+    const startIso = `${ym}-01`;
+    const endIso = `${ym}-${String(lastDay).padStart(2, "0")}`;
+    const bTrades = allTrades.filter((t) => String(t.opened_at).slice(0, 7) === ym);
+    const metrics = summarizeBucketMetrics(bTrades, targetRiskPct);
+    months.push({
+      anchorValue: ym,
+      label: `${monthName} (${startIso} to ${endIso})`,
+      shortLabel: `${monthName} (${ym})`,
+      startDate: startIso,
+      endDate: endIso,
+      trades: metrics.trades,
+      wins: metrics.wins,
+      losses: metrics.losses,
+      netPnl: metrics.netPnl,
+    });
+  }
+
+  const quarters: Array<any> = [];
+  const curQ = Math.floor(now.getUTCMonth() / 3);
+  const curY = now.getUTCFullYear();
+  for (let p = 0; p < 6; p++) {
+    const totalQ = curY * 4 + curQ - p;
+    const y = Math.floor(totalQ / 4);
+    const q = ((totalQ % 4) + 4) % 4 + 1;
+    const startMonth = (q - 1) * 3 + 1;
+    const endMonth = q * 3;
+    const lastDay = new Date(Date.UTC(y, endMonth, 0)).getUTCDate();
+    const startIso = `${y}-${String(startMonth).padStart(2, "0")}-01`;
+    const endIso = `${y}-${String(endMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+    const qKey = `${y}-Q${q}`;
+    const bTrades = allTrades.filter((t) => {
+      const d = String(t.opened_at).slice(0, 10);
+      return d >= startIso && d <= endIso;
+    });
+    const metrics = summarizeBucketMetrics(bTrades, targetRiskPct);
+    quarters.push({
+      anchorValue: qKey,
+      label: `Q${q} ${y} (${startIso} to ${endIso})`,
+      shortLabel: `Q${q} ${y}`,
+      startDate: startIso,
+      endDate: endIso,
+      trades: metrics.trades,
+      wins: metrics.wins,
+      losses: metrics.losses,
+      netPnl: metrics.netPnl,
+    });
+  }
+
+  const years: Array<any> = [];
+  for (let p = 0; p < 3; p++) {
+    const y = curY - p;
+    const startIso = `${y}-01-01`;
+    const endIso = `${y}-12-31`;
+    const bTrades = allTrades.filter((t) => String(t.opened_at).startsWith(`${y}-`));
+    const metrics = summarizeBucketMetrics(bTrades, targetRiskPct);
+    years.push({
+      anchorValue: `${y}`,
+      label: `Year ${y} (${startIso} to ${endIso})`,
+      shortLabel: `Year ${y}`,
+      startDate: startIso,
+      endDate: endIso,
+      trades: metrics.trades,
+      wins: metrics.wins,
+      losses: metrics.losses,
+      netPnl: metrics.netPnl,
+    });
+  }
+
+  return { weeks, months, quarters, years };
+}
+
 function buildCalendarPeriodBuckets(
   allTrades: any[],
   horizon: GoalHorizon,
@@ -663,61 +941,145 @@ function buildCalendarPeriodBuckets(
   customScope?: CustomAuditScope
 ) {
   const buckets: Array<any> = [];
+  const intra = customScope?.intraMode || "none";
+  const scopeMode = customScope?.scopeMode || "standard";
+  const anchorStr = String(customScope?.targetAnchorDate || "").trim();
   const explicitOffset =
     customScope?.periodOffset !== undefined && customScope?.periodOffset !== null
       ? Math.max(0, Number(customScope.periodOffset))
       : null;
   const style = customScope?.reportStyle || "auto";
 
-  if (horizon === "monthly") {
-    const curMonthPrefix = now.toISOString().slice(0, 7);
-    const curMonthHasTrades = allTrades.some((t) => String(t.opened_at).startsWith(curMonthPrefix));
-    const autoOffset =
-      style !== "mid_period" && !curMonthHasTrades && now.getDate() <= 7 ? 1 : 0;
-    const anchorOffset = explicitOffset !== null ? explicitOffset : autoOffset;
+  if (scopeMode === "compare_periods" && customScope?.comparePeriodA && customScope?.comparePeriodB) {
+    const specA = resolveArbitraryPeriodSpec(customScope.comparePeriodA, "Period A (Target)");
+    const specB = resolveArbitraryPeriodSpec(customScope.comparePeriodB, "Period B (Comparison)");
+    for (const sp of [specA, specB]) {
+      const bTrades = allTrades.filter((t) => {
+        const d = String(t.opened_at).slice(0, 10);
+        return d >= sp.startIso && d <= sp.endIso;
+      });
+      buckets.push({
+        periodKey: sp.periodKey,
+        periodLabel: sp.periodLabel,
+        dateRange: `${sp.startIso} to ${sp.endIso}`,
+        isPreviousPeriodAutoAnchored: false,
+        ...summarizeBucketMetrics(bTrades, targetRiskPct),
+      });
+    }
+    return buckets;
+  }
+
+  if (intra === "single_day" && /^\d{4}-\d{2}-\d{2}$/.test(anchorStr)) {
+    const baseDate = new Date(`${anchorStr}T12:00:00Z`);
+    for (let p = 0; p < 4; p++) {
+      const d = new Date(baseDate.getTime() - p * 86_400_000);
+      const dIso = d.toISOString().slice(0, 10);
+      const bTrades = allTrades.filter((t) => String(t.opened_at).slice(0, 10) === dIso);
+      buckets.push({
+        periodKey: dIso,
+        periodLabel: p === 0 ? `${dIso} (Target Day)` : `${dIso} (D-${p})`,
+        dateRange: `${dIso} to ${dIso}`,
+        isPreviousPeriodAutoAnchored: false,
+        ...summarizeBucketMetrics(bTrades, targetRiskPct),
+      });
+    }
+    return buckets;
+  }
+
+  if (horizon === "monthly" || intra === "intramonth") {
+    let baseYear = now.getUTCFullYear();
+    let baseMonthIdx = now.getUTCMonth();
+    let intraEndDayIso: string | null = null;
+
+    if (intra === "intramonth" && /^\d{4}-\d{2}-\d{2}$/.test(anchorStr)) {
+      const [y, m] = anchorStr.split("-").map(Number);
+      baseYear = y!;
+      baseMonthIdx = m! - 1;
+      intraEndDayIso = anchorStr;
+    } else if (/^\d{4}-\d{2}/.test(anchorStr)) {
+      const [y, m] = anchorStr.slice(0, 7).split("-").map(Number);
+      baseYear = y!;
+      baseMonthIdx = m! - 1;
+    } else {
+      const curMonthPrefix = now.toISOString().slice(0, 7);
+      const curMonthHasTrades = allTrades.some((t) => String(t.opened_at).startsWith(curMonthPrefix));
+      const autoOffset = style !== "mid_period" && !curMonthHasTrades && now.getUTCDate() <= 7 ? 1 : 0;
+      const anchorOffset = explicitOffset !== null ? explicitOffset : autoOffset;
+      baseMonthIdx -= anchorOffset;
+    }
 
     for (let p = 0; p < 4; p++) {
-      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - anchorOffset - p, 1));
+      const d = new Date(Date.UTC(baseYear, baseMonthIdx - p, 1));
       const ym = d.toISOString().slice(0, 7);
       const monthName = d.toLocaleString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
       const lastDay = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
       const startIso = `${ym}-01`;
-      const endIso = `${ym}-${String(lastDay).padStart(2, "0")}`;
+      const endIso = p === 0 && intraEndDayIso ? intraEndDayIso : `${ym}-${String(lastDay).padStart(2, "0")}`;
 
-      const bucketTrades = allTrades.filter((t) => String(t.opened_at).slice(0, 7) === ym);
+      const bucketTrades = allTrades.filter((t) => {
+        const tDate = String(t.opened_at).slice(0, 10);
+        return tDate >= startIso && tDate <= endIso;
+      });
       buckets.push({
         periodKey: ym,
-        periodLabel: p === 0 ? `${monthName} (Target)` : `${monthName} (M-${p})`,
+        periodLabel:
+          p === 0
+            ? intraEndDayIso
+              ? `${monthName} MTD (${startIso} to ${endIso}) [Target]`
+              : `${monthName} (${startIso} to ${endIso}) [Target]`
+            : `${monthName} (${startIso} to ${endIso}) [M-${p}]`,
         dateRange: `${startIso} to ${endIso}`,
-        isPreviousPeriodAutoAnchored: anchorOffset > 0,
+        isPreviousPeriodAutoAnchored: false,
         ...summarizeBucketMetrics(bucketTrades, targetRiskPct),
       });
     }
     return buckets;
   }
 
-  if (horizon === "quarterly") {
-    const curQ = Math.floor(now.getUTCMonth() / 3);
-    const curYear = now.getUTCFullYear();
-    const anchorOffset = explicitOffset !== null ? explicitOffset : 0;
+  if (horizon === "quarterly" || intra === "intraquarter") {
+    let baseYear = now.getUTCFullYear();
+    let baseQ = Math.floor(now.getUTCMonth() / 3);
+    let intraEndDayIso: string | null = null;
+
+    if (intra === "intraquarter" && /^\d{4}-\d{2}-\d{2}$/.test(anchorStr)) {
+      const [y, m] = anchorStr.split("-").map(Number);
+      baseYear = y!;
+      baseQ = Math.floor((m! - 1) / 3);
+      intraEndDayIso = anchorStr;
+    } else if (/^\d{4}-Q[1-4]$/i.test(anchorStr)) {
+      const [yStr, qPart] = anchorStr.toUpperCase().split("-");
+      baseYear = Number(yStr);
+      baseQ = Number(qPart!.replace("Q", "")) - 1;
+    } else if (explicitOffset !== null) {
+      baseQ -= explicitOffset;
+    }
+
     for (let p = 0; p < 4; p++) {
-      const totalQ = curYear * 4 + curQ - anchorOffset - p;
+      const totalQ = baseYear * 4 + baseQ - p;
       const y = Math.floor(totalQ / 4);
       const q = ((totalQ % 4) + 4) % 4 + 1;
       const startMonth = (q - 1) * 3 + 1;
       const endMonth = q * 3;
       const lastDay = new Date(Date.UTC(y, endMonth, 0)).getUTCDate();
       const startIso = `${y}-${String(startMonth).padStart(2, "0")}-01`;
-      const endIso = `${y}-${String(endMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
+      const endIso =
+        p === 0 && intraEndDayIso
+          ? intraEndDayIso
+          : `${y}-${String(endMonth).padStart(2, "0")}-${String(lastDay).padStart(2, "0")}`;
       const bucketTrades = allTrades.filter((t) => {
         const dStr = String(t.opened_at).slice(0, 10);
         return dStr >= startIso && dStr <= endIso;
       });
       buckets.push({
         periodKey: `${y}-Q${q}`,
-        periodLabel: p === 0 ? `${y} Q${q} (Target)` : `${y} Q${q} (Q-${p})`,
+        periodLabel:
+          p === 0
+            ? intraEndDayIso
+              ? `${y} Q${q} QTD (${startIso} to ${endIso}) [Target]`
+              : `${y} Q${q} (${startIso} to ${endIso}) [Target]`
+            : `${y} Q${q} (${startIso} to ${endIso}) [Q-${p}]`,
         dateRange: `${startIso} to ${endIso}`,
-        isPreviousPeriodAutoAnchored: anchorOffset > 0,
+        isPreviousPeriodAutoAnchored: false,
         ...summarizeBucketMetrics(bucketTrades, targetRiskPct),
       });
     }
@@ -725,59 +1087,72 @@ function buildCalendarPeriodBuckets(
   }
 
   if (horizon === "yearly") {
-    const curYear = now.getUTCFullYear();
-    const anchorOffset = explicitOffset !== null ? explicitOffset : 0;
+    let baseYear = now.getUTCFullYear();
+    if (/^\d{4}$/.test(anchorStr)) {
+      baseYear = Number(anchorStr);
+    } else if (explicitOffset !== null) {
+      baseYear -= explicitOffset;
+    }
     for (let p = 0; p < 3; p++) {
-      const y = curYear - anchorOffset - p;
+      const y = baseYear - p;
       const startIso = `${y}-01-01`;
       const endIso = `${y}-12-31`;
       const bucketTrades = allTrades.filter((t) => String(t.opened_at).startsWith(`${y}-`));
       buckets.push({
         periodKey: `${y}`,
-        periodLabel: p === 0 ? `${y} (Target Year)` : `${y} (Y-${p})`,
+        periodLabel: p === 0 ? `${y} (${startIso} to ${endIso}) [Target Year]` : `${y} (${startIso} to ${endIso}) [Y-${p}]`,
         dateRange: `${startIso} to ${endIso}`,
-        isPreviousPeriodAutoAnchored: anchorOffset > 0,
+        isPreviousPeriodAutoAnchored: false,
         ...summarizeBucketMetrics(bucketTrades, targetRiskPct),
       });
     }
     return buckets;
   }
 
-  // Weekly: Exact Monday-to-Sunday ISO Weeks
-  // If user clicks on Monday or Tuesday (dayOfWeek <= 2) and current week has 0 trades (or if style === "end_of_period" early in week),
-  // automatically shift Target Week (p=0) to Last Completed Week (offset = 1) so missed Sunday reviews work seamlessly on Monday!
-  const dayOfWeek = now.getUTCDay() || 7; // 1=Mon ... 7=Sun
-  const currentMonday = new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - dayOfWeek + 1)
-  );
-  const curMonIso = currentMonday.toISOString().slice(0, 10);
-  const curWeekHasTrades = allTrades.some((t) => String(t.opened_at).slice(0, 10) >= curMonIso);
+  let targetMonday = getMondayUtc(now);
+  let intraEndDayIso: string | null = null;
 
-  const autoWeekOffset =
-    style === "mid_period"
-      ? 0
-      : style === "end_of_period" && dayOfWeek <= 4 && !curWeekHasTrades
-      ? 1
-      : !curWeekHasTrades && dayOfWeek <= 2
-      ? 1
-      : 0;
-  const weekOffset = explicitOffset !== null ? explicitOffset : autoWeekOffset;
+  if (intra === "intraweek" && /^\d{4}-\d{2}-\d{2}$/.test(anchorStr)) {
+    targetMonday = getMondayUtc(anchorStr);
+    intraEndDayIso = anchorStr;
+  } else if (/^\d{4}-\d{2}-\d{2}$/.test(anchorStr)) {
+    targetMonday = getMondayUtc(anchorStr);
+  } else {
+    const dayOfWeek = now.getUTCDay() || 7;
+    const curMonIso = targetMonday.toISOString().slice(0, 10);
+    const curWeekHasTrades = allTrades.some((t) => String(t.opened_at).slice(0, 10) >= curMonIso);
+    const autoWeekOffset =
+      style === "mid_period"
+        ? 0
+        : style === "end_of_period" && dayOfWeek <= 4 && !curWeekHasTrades
+        ? 1
+        : !curWeekHasTrades && dayOfWeek <= 2
+        ? 1
+        : 0;
+    const weekOffset = explicitOffset !== null ? explicitOffset : autoWeekOffset;
+    targetMonday = new Date(targetMonday.getTime() - weekOffset * 7 * 86_400_000);
+  }
 
   for (let p = 0; p < 4; p++) {
-    const mon = new Date(currentMonday.getTime() - (p + weekOffset) * 7 * 86_400_000);
+    const mon = new Date(targetMonday.getTime() - p * 7 * 86_400_000);
     const sun = new Date(mon.getTime() + 6 * 86_400_000);
     const startIso = mon.toISOString().slice(0, 10);
-    const endIso = sun.toISOString().slice(0, 10);
-    const wkKey = getIsoWeekKey(mon);
+    const endIso = p === 0 && intraEndDayIso ? intraEndDayIso : sun.toISOString().slice(0, 10);
+    const humanLabel = formatWeekHumanLabel(startIso, endIso);
     const bucketTrades = allTrades.filter((t) => {
       const d = String(t.opened_at).slice(0, 10);
       return d >= startIso && d <= endIso;
     });
     buckets.push({
-      periodKey: wkKey,
-      periodLabel: p === 0 ? `${wkKey} (Target Week)` : `${wkKey} (W-${p})`,
+      periodKey: `${startIso}_to_${endIso}`,
+      periodLabel:
+        p === 0
+          ? intraEndDayIso
+            ? `${humanLabel} WTD [Target]`
+            : `${humanLabel} [Target Week]`
+          : `${humanLabel} [Wk -${p}]`,
       dateRange: `${startIso} to ${endIso}`,
-      isPreviousPeriodAutoAnchored: weekOffset > 0,
+      isPreviousPeriodAutoAnchored: false,
       ...summarizeBucketMetrics(bucketTrades, targetRiskPct),
     });
   }
@@ -874,29 +1249,50 @@ function buildBehavioralTelemetryAndJournals(
     runningEquity += Number(t.net_pnl || 0);
   }
 
-  // Build Exact Calendar Comparison Buckets (e.g. Oct 2026, Sep 2026, Aug 2026, Jul 2026)
+  // Build Selectable Periods Catalog + Exact Calendar Comparison Buckets
+  const availablePeriods = buildSelectablePeriodsCatalog(allTrades, now, targetRiskPct);
   const periodComparisonBuckets = buildCalendarPeriodBuckets(allTrades, horizon, now, targetRiskPct, customScope);
   const targetBucket = periodComparisonBuckets[0];
   const oldestBucket = periodComparisonBuckets[periodComparisonBuckets.length - 1];
   const cutoffIso = oldestBucket?.dateRange?.slice(0, 10) || "2026-01-01";
-
-  // Target Period Trades (e.g. strictly Oct 2026's 7 trades for Monthly Audit!) vs 4-Period Window Trades
-  const windowTrades =
-    customScope?.selectedTradeKeys && customScope.selectedTradeKeys.length > 0
-      ? allTrades.filter((t) => customScope.selectedTradeKeys!.includes(t.key))
-      : allTrades.filter((t) => String(t.opened_at).slice(0, 10) >= cutoffIso);
-
   const targetPeriodStart = targetBucket?.dateRange?.slice(0, 10) || cutoffIso;
-  const targetPeriodEnd = targetBucket?.dateRange?.slice(-10) || "2099-12-31";
-  const targetPeriodTrades =
-    customScope?.selectedTradeKeys && customScope.selectedTradeKeys.length > 0
-      ? windowTrades
-      : allTrades.filter((t) => {
-          const d = String(t.opened_at).slice(0, 10);
-          return d >= targetPeriodStart && d <= targetPeriodEnd;
-        });
+  const targetPeriodEnd = targetBucket?.dateRange?.slice(-10) || now.toISOString().slice(0, 10);
 
-  // Use windowTrades for multi-period pattern detection, but clearly separate Target Period stats from 4-Period Window stats!
+  let windowTrades: any[] = [];
+  let targetPeriodTrades: any[] = [];
+
+  if (customScope?.scopeMode === "trade_lookback") {
+    let filtered = [...allTrades];
+    if (customScope.tradeFilterSymbol && customScope.tradeFilterSymbol !== "ALL") {
+      filtered = filtered.filter((t) => t.symbol === customScope.tradeFilterSymbol);
+    }
+    if (customScope.tradeFilterOutcome === "wins") {
+      filtered = filtered.filter((t) => Number(t.net_pnl || 0) > 0);
+    } else if (customScope.tradeFilterOutcome === "losses") {
+      filtered = filtered.filter((t) => Number(t.net_pnl || 0) < 0);
+    }
+    if (customScope.selectedTradeKeys && customScope.selectedTradeKeys.length > 0) {
+      filtered = allTrades.filter((t) => customScope.selectedTradeKeys!.includes(t.key));
+    } else {
+      const lookbackN = Math.max(1, Number(customScope.tradeLookbackCount || 10));
+      filtered = filtered.slice(-lookbackN);
+    }
+    windowTrades = filtered;
+    targetPeriodTrades = filtered;
+  } else if (customScope?.selectedTradeKeys && customScope.selectedTradeKeys.length > 0) {
+    windowTrades = allTrades.filter((t) => customScope.selectedTradeKeys!.includes(t.key));
+    targetPeriodTrades = windowTrades;
+  } else {
+    windowTrades = allTrades.filter((t) => {
+      const d = String(t.opened_at).slice(0, 10);
+      return d >= cutoffIso && d <= targetPeriodEnd;
+    });
+    targetPeriodTrades = allTrades.filter((t) => {
+      const d = String(t.opened_at).slice(0, 10);
+      return d >= targetPeriodStart && d <= targetPeriodEnd;
+    });
+  }
+
   const trades = windowTrades;
 
   let revengeCount = 0;
@@ -1025,14 +1421,37 @@ function buildBehavioralTelemetryAndJournals(
     missedOpportunityPnl += Number(m.theoretical_pnl || 0);
   }
 
-  // Fetch lightweight journal metadata first (skips reading 90 heavy HTML blobs from tablet flash storage!)
+  // Build Template Fingerprints from user's saved templates so untouched templates are ignored
+  const templateFingerprints = new Set<string>();
+  const templateQuoteFingerprints = new Set<string>();
+  const normFingerprint = (rawHtml: string) =>
+    (rawHtml || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/\s+/g, " ")
+      .trim()
+      .toLowerCase();
+
+  try {
+    const jCfg = getJournalConfig();
+    for (const tpl of (jCfg.templates || []) as any[]) {
+      const raw = tpl.content || tpl.html || tpl.template || "";
+      const nf = normFingerprint(raw);
+      if (nf) templateFingerprints.add(nf);
+      const tplDigest = htmlToStructuredDigest(raw);
+      for (const q of tplDigest.qaReflections) {
+        if (q.answer) templateQuoteFingerprints.add(q.answer.toLowerCase().trim());
+      }
+    }
+  } catch {}
+
   let journalsMeta: any[] = [];
   try {
     journalsMeta = db
       .prepare(
         `SELECT slug, period_type, title, lessons_learned, scores_json, rating, updated_at
-         FROM journal_entries
-         ORDER BY slug DESC LIMIT 90`
+         FROM journal_entries`
       )
       .all() as any[];
   } catch {}
@@ -1041,33 +1460,43 @@ function buildBehavioralTelemetryAndJournals(
   const fetchHtmlStmt = db.prepare(
     `SELECT content, review_content FROM journal_entries WHERE slug = ?`
   );
+  const todayIso = now.toISOString().slice(0, 10);
 
   const allParsedJournals = journalsMeta
     .map((j) => {
+      const rangeInfo = parseJournalSlugRange(j.slug);
       const slotKey = `${j.slug}:${includeTabs}`;
       const stamp = j.updated_at || "";
       let cachedJ = journalDigestCache.get(slotKey);
 
-      // Only read content & review_content from SQLite disk if this journal was never parsed or its updated_at changed!
       if (!cachedJ || cachedJ.stamp !== stamp) {
         const htmlRow = (fetchHtmlStmt.get(j.slug) as { content?: string; review_content?: string }) || {};
         const rawContent = htmlRow.content || "";
         const rawReview = htmlRow.review_content || "";
 
+        const normPrep = normFingerprint(rawContent);
+        const normRev = normFingerprint(rawReview);
+        const isPrepExactTemplate = Boolean(normPrep && templateFingerprints.has(normPrep));
+        const isRevExactTemplate = Boolean(normRev && templateFingerprints.has(normRev));
+
         const prepDigest =
-          includeTabs === "review_only"
+          includeTabs === "review_only" || isPrepExactTemplate
             ? { qaReflections: [], cleanText: "" }
             : htmlToStructuredDigest(rawContent);
         const revDigest =
-          includeTabs === "prep_only"
+          includeTabs === "prep_only" || isRevExactTemplate
             ? { qaReflections: [], cleanText: "" }
             : htmlToStructuredDigest(rawReview);
-        const prepEval = evaluateSubstantiveJournalHtml(rawContent);
-        const revEval = evaluateSubstantiveJournalHtml(rawReview);
+
+        const prepEval = isPrepExactTemplate
+          ? { isSubstantive: false, userCharCount: 0 }
+          : evaluateSubstantiveJournalHtml(rawContent);
+        const revEval = isRevExactTemplate
+          ? { isSubstantive: false, userCharCount: 0 }
+          : evaluateSubstantiveJournalHtml(rawReview);
 
         cachedJ = { stamp, prepDigest, revDigest, prepEval, revEval };
-        // Bound cache size on tablet RAM
-        if (journalDigestCache.size > 200) {
+        if (journalDigestCache.size > 250) {
           const oldestKey = journalDigestCache.keys().next().value;
           if (oldestKey) journalDigestCache.delete(oldestKey);
         }
@@ -1076,7 +1505,7 @@ function buildBehavioralTelemetryAndJournals(
       const { prepDigest, revDigest, prepEval, revEval } = cachedJ;
       const cleanLesson = (j.lessons_learned || "")
         .replace(/Summarize system adherence.*$/i, "")
-        .replace(/n\/a/gi, "")
+        .replace(/ n\/a /gi, "")
         .trim();
 
       const rawPrepLen = prepEval.userCharCount;
@@ -1092,32 +1521,46 @@ function buildBehavioralTelemetryAndJournals(
         revEval.isSubstantive ||
         cleanLesson.length >= 10;
 
+      const filteredReflections = [...prepDigest.qaReflections, ...revDigest.qaReflections].filter(
+        (q) => q.answer && !templateQuoteFingerprints.has(q.answer.toLowerCase().trim())
+      );
+
       return {
         slug: j.slug,
-        periodType: j.period_type || "day",
-        title: j.title || j.slug,
-        journalUrl: `/journal?slug=${encodeURIComponent(j.slug)}`,
+        periodType: rangeInfo.periodType,
+        startDate: rangeInfo.startDate,
+        endDate: rangeInfo.endDate,
+        humanLabel: rangeInfo.humanLabel,
+        title: j.title || rangeInfo.humanLabel,
+        journalUrl: `/journal/${encodeURIComponent(j.slug)}`,
         hasPrep: prepEval.isSubstantive,
         hasReview: revEval.isSubstantive,
         isTemplateOnly: !hasSubstantiveText,
         prepCharLen: rawPrepLen,
         reviewCharLen: rawRevLen,
-        scores,
-        processRating: j.rating,
-        lessonsLearned: j.lessons_learned || "",
-        qaReflections: [...prepDigest.qaReflections, ...revDigest.qaReflections],
-        prepSummary: prepDigest.cleanText.slice(0, 1200),
-        reviewSummary: revDigest.cleanText.slice(0, 1800),
+        scores: hasSubstantiveText ? scores : {},
+        processRating: hasSubstantiveText ? j.rating : null,
+        lessonsLearned: hasSubstantiveText ? (j.lessons_learned || "") : "",
+        qaReflections: filteredReflections,
+        prepSummary: hasSubstantiveText ? prepDigest.cleanText.slice(0, 1100) : "",
+        reviewSummary: hasSubstantiveText ? revDigest.cleanText.slice(0, 1500) : "",
         updatedAt: j.updated_at || "",
       };
     })
-    .filter(Boolean) as any[];
+    .filter((j) => !j.isTemplateOnly || j.startDate <= todayIso)
+    .sort((a, b) => b.startDate.localeCompare(a.startDate) || b.slug.localeCompare(a.slug));
 
-  const substantiveJournals = allParsedJournals.filter((j) => !j.isTemplateOnly);
+  const windowJournals = allParsedJournals.filter(
+    (j) => j.endDate >= cutoffIso && j.startDate <= targetPeriodEnd
+  );
+  const substantiveWindowJournals = windowJournals.filter((j) => !j.isTemplateOnly);
+
   const selectedJournals =
     customScope?.selectedJournalSlugs && customScope.selectedJournalSlugs.length > 0
       ? allParsedJournals.filter((j) => customScope.selectedJournalSlugs!.includes(j.slug))
-      : substantiveJournals.slice(0, 12);
+      : substantiveWindowJournals.length > 0
+      ? substantiveWindowJournals.slice(0, 12)
+      : allParsedJournals.filter((j) => !j.isTemplateOnly && j.startDate <= targetPeriodEnd).slice(0, 10);
 
   const fourPeriodNetPnl = trades.reduce((acc, t) => acc + Number(t.net_pnl || 0), 0);
   const fourPeriodWins = trades.filter((t) => Number(t.net_pnl || 0) > 0).length;
@@ -1212,16 +1655,38 @@ function buildBehavioralTelemetryAndJournals(
     ),
   ].join("\n");
 
-  const verifiedTradesLedgerMd = [
-    `| Exact Date | Trade Link | Qty (Lots) | Net P&L ($) | Acct P&L % | Acct Risk % | Risk Tier |`,
-    `|---|---|---|---|---|---|---|`,
-    ...trades.map(
-      (t: any) =>
-        `| **${String(t.opened_at).slice(0, 10)}** | [${t.symbol} ${t.direction}](${t.tradeUrl}) | ${t.quantity} | **$${Number(t.net_pnl).toFixed(2)}** | ${t.accountPnlPct}% | ${t.accountRiskPct}% | ${t.riskTier} |`
-    ),
-  ].join("\n");
+  const targetTradeDates = Array.from(
+    new Set(targetPeriodTrades.map((t: any) => String(t.opened_at).slice(0, 10)))
+  ).sort();
+
+  const targetPeriodTradesMd =
+    targetPeriodTrades.length > 0
+      ? [
+          `| Exact Date | Trade Link | Side | Qty (Lots) | Net P&L ($) | Acct P&L % | Acct Risk % | Risk Tier |`,
+          `|---|---|---|---|---|---|---|---|`,
+          ...targetPeriodTrades.map(
+            (t: any) =>
+              `| **${String(t.opened_at).slice(0, 10)}** | [${t.symbol} ${t.direction}](${t.tradeUrl}) | ${String(t.direction).toUpperCase()} | ${t.quantity} | **$${Number(t.net_pnl).toFixed(2)}** | ${t.accountPnlPct}% | ${t.accountRiskPct}% | ${t.riskTier} |`
+          ),
+        ].join(String.fromCharCode(10))
+      : `*(ZERO trades were executed during Target Period ${targetBucket?.periodLabel || horizon}: ${targetPeriodStart} to ${targetPeriodEnd})*`;
+
+  const verifiedTradesLedgerMd =
+    trades.length > 0
+      ? [
+          `| Exact Date | Trade Link | Qty (Lots) | Net P&L ($) | Acct P&L % | Acct Risk % | Risk Tier |`,
+          `|---|---|---|---|---|---|---|`,
+          ...trades.map(
+            (t: any) =>
+              `| **${String(t.opened_at).slice(0, 10)}** | [${t.symbol} ${t.direction}](${t.tradeUrl}) | ${t.quantity} | **$${Number(t.net_pnl).toFixed(2)}** | ${t.accountPnlPct}% | ${t.accountRiskPct}% | ${t.riskTier} |`
+          ),
+        ].join(String.fromCharCode(10))
+      : `*(Zero trades in selected 4-period window)*`;
 
   const telemetry: any = {
+    cutoffDate: cutoffIso,
+    targetTradeDates,
+    targetPeriodTradesMd,
     targetPeriodLabel: targetBucket?.periodLabel || horizon,
     targetPeriodDateRange: targetBucket?.dateRange || "",
     targetPeriodTradesCount: targetBucket?.trades ?? targetPeriodTrades.length,
@@ -1379,7 +1844,7 @@ function buildBehavioralTelemetryAndJournals(
     let totalHits = 0;
     const examples: Array<{ slug: string; snippet: string }> = [];
     const rx = new RegExp(phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "gi");
-    for (const j of allParsedJournals.slice(0, 18)) {
+    for (const j of selectedJournals.slice(0, 14)) {
       const combinedText = `${j.prepSummary || ""} ${j.reviewSummary || ""}`;
       const matches = combinedText.match(rx);
       if (matches && matches.length > 0) {
@@ -1427,21 +1892,22 @@ function buildBehavioralTelemetryAndJournals(
     }));
 
   // G. Journal Review Loop Completeness & Mantra Matrix (Exposes Empty Review Loops & 80% Shield)
+  const matrixJournals = windowJournals.filter((j) => !j.isTemplateOnly || j.periodType === "week" || j.periodType === "month").slice(0, 12);
   telemetry.journalCompletionMatrixMd = [
-    `| Journal Entry | Period | Forecast/Prep? | Review Answers Present? | Key Takeaway | Process Score |`,
-    `|---|---|---|---|---|---|`,
-    ...allParsedJournals.slice(0, 14).map((j) => {
-      const prepStatus = j.hasPrep ? `Yes (${j.prepCharLen}c)` : "Empty / Skeleton";
+    `| Journal Entry | Date Range | Period | Forecast/Prep? | Review Answers Present? | Key Takeaway | Process Score |`,
+    `|---|---|---|---|---|---|---|`,
+    ...matrixJournals.map((j) => {
+      const prepStatus = j.hasPrep ? `Yes (${j.prepCharLen}c)` : "Empty / Template";
       const revStatus = j.hasReview
         ? `Yes (${j.reviewCharLen}c)`
         : j.isTemplateOnly
-        ? "No (Unfilled Template)"
+        ? "Unfilled Template"
         : "No (Questions Unanswered)";
       const takeaway = j.lessonsLearned ? j.lessonsLearned.slice(0, 45) : "None";
-      const scoreStr = j.processRating !== null && j.processRating !== undefined ? `${j.processRating}%` : "Unscored";
-      return `| [${j.slug}](${j.journalUrl}) | ${j.periodType.toUpperCase()} | ${prepStatus} | **${revStatus}** | ${takeaway} | **${scoreStr}** |`;
+      const scoreStr = j.processRating !== null && j.processRating !== undefined ? `${j.processRating}%` : "Unscored (Template)";
+      return `| [${j.humanLabel}](${j.journalUrl}) | ${j.startDate} to ${j.endDate} | ${j.periodType.toUpperCase()} | ${prepStatus} | **${revStatus}** | ${takeaway} | **${scoreStr}** |`;
     }),
-  ].join("\n");
+  ].join(String.fromCharCode(10));
 
   telemetry.journalingForensics = {
     totalPrepChars,
@@ -1459,14 +1925,20 @@ function buildBehavioralTelemetryAndJournals(
   };
 
   // Match trade strictly to exact day slug or exact containing ISO week so Oct 1 NEVER maps to week-2026-10-05!
-  telemetry.sayDoAlignmentMap = trades.slice(-10).map((t) => {
+  telemetry.sayDoAlignmentMap = trades.slice(-12).map((t) => {
     const tDate = String(t.opened_at || "").slice(0, 10);
-    const matchingJournal = allParsedJournals.find((j) => j.slug === `day-${tDate}` || j.slug === `month-${tDate.slice(0, 7)}`);
+    const tMon = getMondayUtc(tDate).toISOString().slice(0, 10);
+    const dayJ = allParsedJournals.find((j) => j.slug === tDate && !j.isTemplateOnly);
+    const weekJ = allParsedJournals.find((j) => j.slug === `week-${tMon}` && !j.isTemplateOnly);
+    const monthJ = allParsedJournals.find((j) => j.slug === `month-${tDate.slice(0, 7)}` && !j.isTemplateOnly);
     return {
       exactTradeDate: tDate,
       trade: `${t.symbol} ${t.direction} on ${tDate} (Qty ${t.quantity} | Net $${t.net_pnl} | Acct Risk ${t.accountRiskPct}%)`,
       tradeUrl: t.tradeUrl,
-      linkedJournalSlug: matchingJournal?.slug || null,
+      dailyJournalWrittenOnTradeDate: Boolean(dayJ),
+      linkedDailySlug: dayJ?.slug || null,
+      linkedWeeklySlug: weekJ?.slug || null,
+      linkedMonthlySlug: monthJ?.slug || null,
     };
   });
 
@@ -1516,13 +1988,18 @@ function buildBehavioralTelemetryAndJournals(
 
   return {
     telemetry,
+    availablePeriods,
     parsedJournals: selectedJournals,
     selectableJournals: allParsedJournals.map((j) => ({
       slug: j.slug,
       periodType: j.periodType,
+      startDate: j.startDate,
+      endDate: j.endDate,
+      humanLabel: j.humanLabel,
       title: j.title,
       hasPrep: j.hasPrep,
       hasReview: j.hasReview,
+      isTemplateOnly: j.isTemplateOnly,
       prepCharLen: j.prepCharLen,
       reviewCharLen: j.reviewCharLen,
       processRating: j.processRating,
@@ -1702,93 +2179,104 @@ async function executeAuditJobInBackground(
       jobId
     );
 
-    const customFocusSection = customScope?.customFocusPrompt?.trim()
-      ? `\n=== SPECIFIC FOCUS REQUESTED BY TRADER ===\n${customScope.customFocusPrompt.trim()}\n`
-      : "";
+    const compactTelemetrySummary = {
+      auditHorizon: horizon.toUpperCase(),
+      targetPeriodLabel: telemetry.targetPeriodLabel,
+      targetPeriodDateRange: telemetry.targetPeriodDateRange,
+      targetPeriodTradesCount: telemetry.targetPeriodTradesCount,
+      targetPeriodWinRatePct: telemetry.targetPeriodWinRatePct,
+      targetPeriodNetPnlUsd: telemetry.targetPeriodNetPnl,
+      exactDatesWithTradesInTargetPeriod: telemetry.targetTradeDates,
+      fourPeriodWindowTradesCount: telemetry.fourPeriodCumulativeTrades,
+      fourPeriodWindowWinRatePct: telemetry.fourPeriodCumulativeWinRatePct,
+      fourPeriodWindowNetPnlUsd: telemetry.fourPeriodCumulativeNetPnl,
+      initialAccountBalanceUsd: telemetry.initialAccountBalance,
+      currentEquityUsd: telemetry.currentEquity,
+      standardFullRiskPct: telemetry.targetRiskPct,
+      revengeTradesCount: telemetry.revengeTradesCount,
+      sameDayMultiTradeClusters: telemetry.sameDayClusters,
+      executionAsymmetry: telemetry.executionAsymmetry,
+      emotionalBaggageMetrics: telemetry.emotionalBaggageMetrics,
+      journalingForensics: telemetry.journalingForensics,
+      sayDoAlignmentMap: telemetry.sayDoAlignmentMap,
+    };
+
+    const targetExecutionTruthBanner =
+      telemetry.targetPeriodTradesCount === 0
+        ? `LOCKED SQLITE EXECUTION FACT: During Target Period ${telemetry.targetPeriodLabel} (${telemetry.targetPeriodDateRange}), the trader executed ZERO (0) trades ($0.00 PnL, 0% risk deployed). Do NOT claim or invent any trades during ${telemetry.targetPeriodDateRange}!`
+        : `LOCKED SQLITE EXECUTION FACT: During Target Period ${telemetry.targetPeriodLabel} (${telemetry.targetPeriodDateRange}), the trader executed EXACTLY ${telemetry.targetPeriodTradesCount} trade(s) for Net P&L $${telemetry.targetPeriodNetPnl} (${telemetry.targetPeriodWinRatePct}% win rate), ONLY on these exact dates: ${telemetry.targetTradeDates.join(", ")}. ZERO trades were taken on any other date in this period. NEVER invent trades on dates not in this list!`;
 
     const deepPrompt = `You are a longitudinal trading psychology and behavioral performance analyst.
 You do NOT evaluate the trader's technical chart model.
 ${horizonRoleGuide}
 
+${targetExecutionTruthBanner}
+
 CRITICAL ACCOUNT % RISK RULE:
 The trader's standard full risk is ${telemetry.targetRiskPct}% of account equity (~$${telemetry.baseline1RUsd} on a $${telemetry.initialAccountBalance} account).
-However, in their trade log, "Realized R" is relative to whatever risk was placed on that specific trade—meaning if the trader intentionally scales down to 0.5% account risk, a stop-out still reads as "-1R" in trade R, even though it only risked 0.5% of the account!
-Therefore, ALWAYS evaluate sizing discipline using the provided \`accountRiskPct\` (% of account risked on the trade) and \`accountPnlPct\` (% of account won/lost), NOT raw lot sizes or raw Trade R alone!
-- \`reduced_risk (<0.72%)\` = intentional half/probe risk (e.g. 0.5% of account)
+Always evaluate sizing discipline using \`accountRiskPct\` (% of account risked on the trade):
+- \`reduced_risk (<0.72%)\` = intentional half/probe risk (~0.5% of account)
 - \`standard_risk (0.72%–1.30%)\` = standard 1% account risk
 - \`oversized_risk (>1.30%)\` = sizing expansion / tilt above 1% standard risk
 
-CLICKABLE LINKS RULE: Whenever you reference a specific trade or journal entry, format it as a clickable Markdown link using the exact URL provided in the data below, e.g. \`[NAS100 Short 10/19 (-$499.20 | 1.0% Risk)](/trades?symbol=NAS100&from=2026-10-19&to=2026-10-19)\` or \`[Journal 2026-W42](/journal?slug=2026-W42)\`.
-${customFocusSection}
-=== 1. SERVER-VERIFIED CALENDAR PERIOD COMPARISON TABLE (LOCKED SQLITE TRUTH — DO NOT ALTER NUMBERS!) ===
+CLICKABLE LINKS RULE: Whenever you reference a specific trade or journal entry, format it as a clickable Markdown link using the exact URL provided below.
+${customScope?.customFocusPrompt?.trim() ? `\n=== SPECIFIC FOCUS REQUESTED BY TRADER ===\n${customScope.customFocusPrompt.trim()}\n` : ""}
+=== 1. SERVER-VERIFIED PERIOD COMPARISON TABLE (${horizon.toUpperCase()} DELTA — LOCKED SQLITE TRUTH!) ===
 ${telemetry.verifiedPeriodTableMd}
 
-=== 1B. SERVER-VERIFIED EXACT TRADE-BY-TRADE LEDGER & SAME-DAY CLUSTERS (DO NOT DUPLICATE TRADES ACROSS DATES!) ===
+=== 1B. TARGET PERIOD VERIFIED TRADES (${telemetry.targetPeriodLabel}: ${telemetry.targetPeriodDateRange}) ===
+${telemetry.targetPeriodTradesMd}
+
+=== 1C. FULL 4-PERIOD WINDOW TRADE LEDGER & SAME-DAY CLUSTERS ===
 ${telemetry.verifiedTradesLedgerMd}
 
-Same-Day Multi-Trade Clusters:
+Same-Day Multi-Trade Clusters in Window:
 ${JSON.stringify(telemetry.sameDayClusters, null, 2)}
 
-CRITICAL DATA INTEGRITY RULES:
-1. Every number in the two Markdown tables above is computed directly from SQLite and matches the trader's dashboard 1-for-1.
-2. When you include a Period Comparison Table or Trade Cluster Table in your report, copy the EXACT numbers, dates, trade counts, P&L, and Risk Tier counts from the Server-Verified tables above!
-3. Notice that Half-Risk + Standard-Risk + Oversized-Risk in every row equals 100% of Total Trades. NEVER invent "unlisted oversized trades" or move a trade from one date to another (e.g. 2026-10-01 has 1 trade of -$1,007.23; 2026-10-05 has 3 trades of -$555.62, -$497.73, and -$504.34 totaling -$1,557.69).
-4. Do NOT confuse the 4-Period Cumulative Net P&L ($${telemetry.fourPeriodCumulativeNetPnl} across ${telemetry.fourPeriodCumulativeTrades} trades) with the Target Period's single-period Net P&L ($${telemetry.targetPeriodNetPnl} across ${telemetry.targetPeriodTradesCount} trades).
-
-=== 1C. JOURNAL REVIEW LOOP COMPLETENESS & PROCESS SCORE MATRIX ===
+=== 1D. JOURNAL REVIEW LOOP COMPLETENESS MATRIX (SCOPED TO THIS WINDOW) ===
 ${telemetry.journalCompletionMatrixMd}
 
-=== 1D. LINGUISTIC CRUTCHES ("LOW PROBABILITY" / "HINDSIGHT" REFRAIN) & ORPHAN TRADES ===
-Linguistic Crutches Detected Across Journals:
-${JSON.stringify(telemetry.linguisticCrutches, null, 2)}
+=== 1E. LINGUISTIC CRUTCHES & ORPHAN TRADES IN WINDOW ===
+Linguistic Crutches: ${JSON.stringify(telemetry.linguisticCrutches)}
+Orphan Trades (Zero notes/tags/mistakes): ${JSON.stringify(telemetry.orphanTrades)}
 
-Orphan Trades (Executed in Ledger with Zero Tags/Notes & Invisible in Journals):
-${JSON.stringify(telemetry.orphanTrades, null, 2)}
+=== 2. COMPACT BEHAVIORAL TELEMETRY SUMMARY ===
+${JSON.stringify(compactTelemetrySummary, null, 2)}
 
-=== 2. OVERALL BEHAVIORAL TELEMETRY (ACCOUNT % RISK NORMALIZED) ===
-${JSON.stringify(telemetry, null, 2)}
-
-=== 2B. PLAYBOOK & TAG PERFORMANCE BREAKDOWN ===
-${telemetry.verifiedPlaybookTableMd}
-Tag Breakdown: ${JSON.stringify(telemetry.tagBreakdown)}
-(Note: Unassigned Playbook Trades = ${telemetry.unassignedPlaybookTrades}, Untagged Trades = ${telemetry.untaggedTrades}. If playbooks or tags are assigned, evaluate edge and discipline by Playbook & Tag; if unassigned, remind the trader to tag setups in the trade log.)
-
-=== 3. ACTIVE GOALS & MULTI-STEP CHECKLISTS TO AUDIT FOR ACCOUNTABILITY ===
+=== 3. ACTIVE GOALS TO AUDIT ===
 ${activeGoals.length > 0 ? activeGoals.map((g) => {
   let stepsArr: any[] = [];
   try { stepsArr = JSON.parse(g.steps_json || "[]"); } catch {}
   const stepsSummary = stepsArr.length > 0
     ? ` | Sub-Steps (${stepsArr.filter((s: any) => s.done).length}/${stepsArr.length} done): ` + stepsArr.map((s: any) => `[${s.done ? "x" : " "}] ${s.text}`).join("; ")
     : "";
-  return `ID: ${g.id} | [${g.horizon.toUpperCase()}] "${g.title}" | Progress: ${g.progress_pct}% | Target Metric: "${g.target_metric}" | Why: "${g.why_it_matters}"${stepsSummary}`;
-}).join("\n") : "No active goals defined yet—propose concrete goals with multi-step checklists across Weekly, Monthly, and Quarterly horizons."}
+  return `ID: ${g.id} | [${g.horizon.toUpperCase()}] "${g.title}" | Progress: ${g.progress_pct}% | Target Metric: "${g.target_metric}"${stepsSummary}`;
+}).join(String.fromCharCode(10)) : "No active goals defined yet—propose concrete Weekly, Monthly, and Quarterly goals."}
 
-=== 4. SELECTED JOURNAL ENTRIES (${parsedJournals.length} ENTRIES | LINK WITH [Slug](journalUrl)) ===
-${parsedJournals.length > 0 ? parsedJournals.map((j: any) => `### JOURNAL [${j.slug}](${j.journalUrl}) (${j.periodType.toUpperCase()}): ${j.title}\n- Process Score: ${j.processRating ?? "N/A"}% | Sub-scores: ${JSON.stringify(j.scores)}\n- Key Takeaway: ${j.lessonsLearned || "None recorded"}\n- Self-Reflection Quotes: ${JSON.stringify(j.qaReflections)}${j.prepSummary ? `\n- Prep Notes: ${j.prepSummary}` : ""}${j.reviewSummary ? `\n- Review Notes: ${j.reviewSummary}` : ""}`).join("\n\n") : "No journal entries in selection."}
+=== 4. SUBSTANTIVE JOURNAL ENTRIES IN WINDOW (${parsedJournals.length} ENTRIES) ===
+${parsedJournals.length > 0 ? parsedJournals.map((j: any) => `### JOURNAL [${j.humanLabel}](${j.journalUrl}) (Slug: ${j.slug} | Range: ${j.startDate} to ${j.endDate})\n- Process Score: ${j.processRating ?? "Unscored"}% | Sub-scores: ${JSON.stringify(j.scores)}\n- Key Takeaway: ${j.lessonsLearned || "None recorded"}\n- Self-Reflection Quotes: ${JSON.stringify(j.qaReflections.slice(0, 10))}${j.prepSummary ? `\n- Prep Notes: ${j.prepSummary}` : ""}${j.reviewSummary ? `\n- Review Notes: ${j.reviewSummary}` : ""}`).join("\n\n") : "No substantive written journal entries in this date window."}
 
-=== 5. SELECTED / RECENT TRADES (LINK WITH [Symbol Direction Date](tradeUrl)) ===
-${recentTradesSample.length > 0 ? recentTradesSample.map((t: any) => `- [${t.symbol} ${t.direction} ${t.opened_at?.slice(0, 10)} ($${t.net_pnl} | Acct PnL: ${t.accountPnlPct}% | Acct Risk: ${t.accountRiskPct ?? "?"}% [${t.riskTier}] | Trade R: ${t.realized_r ?? "?"}R)](${t.tradeUrl}) | Mistakes=${JSON.stringify(t.mistakes)} | Tags=${JSON.stringify(t.tags)} | Notes=${(t.notes || "").replace(/<[^>]+>/g, " ").slice(0, 180)}`).join("\n") : "No closed trades in this selection."}
-
-=== 6. PREVIOUS AI REPORTS IN WINDOW (FOR LONGITUDINAL CONTINUITY) ===
-${priorReports.length > 0 ? priorReports.map((r) => `[${r.created_at.slice(0, 10)} | ${r.title}]:\n${r.summary_md.slice(0, 900)}`).join("\n---\n") : "First report in this horizon series."}
-
-=== INSTRUCTIONS ===
+=== INSTRUCTIONS (STRICT ANTI-HALLUCINATION PROTOCOL) ===
 Write a complete, candid, deeply insightful report in Markdown with these exact 5 sections.
-CRITICAL STYLE & DEPTH REQUIREMENT: Write with the piercing psychological depth of an elite behavioral performance analyst. Specifically examine and call out:
-- **The "Spectator Analyst" vs. Executor Identity**: Does the trader write dense third-person ICT/SMC market narrations ("we got the SMT", "easy to say in hindsight") as a substitute for execution decisions?
-- **Orphan Trades & Same-Day Re-Entry Clusters**: Call out trades taken in the ledger that have zero notes/tags/mistakes or are completely unmentioned in the journals, as well as same-day multi-trade clusters (revenge without the tag).
-- **Uniform Self-Scoring as Emotional Protection (The 80% Shield)**: If process scores are uniformly 80% (4/5) across winning, losing, or 0-trade travel weeks, call out how uniform scoring acts as emotional homeostasis rather than an honest feedback loop.
-- **The Empty Review Loop & Identity Anchor Mantras**: Use the Journal Completion Matrix in 1C to show which entries have unanswered review templates or repeated daily quotes/mantras, and notice whether the trader only answers psychology questions when there is zero emotional consequence (e.g. travel weeks).
-- **Linguistic Crutches (The "Low Probability" Refrain)**: Cite exact counts and quotes from \`linguisticCrutches\` (e.g., how many times "low probability" or "hindsight" appears) to distinguish valid patience from fear disguised as selectivity.
+STRICT DATA RULES — VIOLATING ANY OF THESE INVALIDATES THE REPORT:
+1. **NEVER INVENT TRADES OR DATES**: ${targetExecutionTruthBanner}
+2. **NEVER SUBSTITUTE WEEKLY FOR MONTHLY (OR VICE VERSA)**: In Section 1, you MUST reproduce the exact rows and columns from **Section 1 (SERVER-VERIFIED PERIOD COMPARISON TABLE)** below.
+3. **NEVER FABRICATE QUOTES**: Only quote text that verbatim appears in Section 4 above, and cite its exact journal slug/date.
 
 Include these 5 sections (and complete all 5 sections + the closing JSON block):
-1. **Period-over-Period Trajectory (${horizon.toUpperCase()} Delta Comparison)**: Compare the Target ${horizon} against the prior 3 periods using \`periodComparisonBuckets\`. Highlight what improved, what stagnated, and how Account % Risk (0.5% probe vs 1.0% standard vs >1.3% oversized) evolved.
-2. **Say–Do Alignment & Execution Asymmetry**: Cross-examine what the trader planned in their Journal Prep against what they actually executed (\`sayDoAlignmentMap\` & \`executionAsymmetry\`). Did they execute their written bias, freeze/hesitate on valid setups, or take impulsive off-plan trades? Audit their winner vs. loser hold times and R-capture. Include clickable Markdown links!
-3. **Emotional Baggage, Blind Spots & Avoidance Forensics**: Use \`emotionalBaggageMetrics\` and \`journalingForensics\` to diagnose deeper psychological patterns:
-   - **Emotional Carryover / Scar Tissue**: How did the trader react after losses or missed trades (e.g., post-loss freeze, shrinking risk out of fear, or forcing trades)?
-   - **Journaling Avoidance & C-Game Tells**: Call out Prep-vs-Review effort imbalances (writing 800 words of chart forecast while leaving self-reflection blank), autopilot 80% scoring, or defensive rationalizations in their quotes.
+1. **Period-over-Period Trajectory (${horizon.toUpperCase()} Delta Comparison)**:
+   First, reproduce this exact Server-Verified table verbatim:
+${telemetry.verifiedPeriodTableMd}
+   Then analyze the trajectory across those exact rows, including trade counts, win rate, Net P&L, and Account % Risk tiers.
+2. **Say–Do Alignment & Execution Asymmetry**:
+   Cross-examine the written journals in Section 4 against the exact verified trades in Section 1B/1C (\`sayDoAlignmentMap\`). Call out Same-Day Multi-Trade Clusters (e.g. multiple losses on the same day/symbol) and Orphan Trades (trades with zero notes/tags/mistakes). Include clickable Markdown links!
+3. **Emotional Baggage, Blind Spots & Avoidance Forensics**:
+   Examine:
+   - **Spectator Analyst vs. Executor Identity**: High Prep-to-Review ratio (writing market commentary while leaving post-trade self-reflection blank).
+   - **The 80% Shield**: Uniform 80% process scoring across losing or 0-trade weeks.
+   - **Linguistic Crutches**: Cite exact counts and quotes from \`linguisticCrutches\` ("low probability", "hindsight").
 4. **Goal Accountability Audit**: Grade active goals with specific evidence and clickable links.
-5. **Mental Game Action Protocol & Multi-Level Goals (Weekly -> Monthly -> Quarterly)**: Provide 3 to 5 concrete, trackable action steps (including a specific C-Game Circuit Breaker and an A-Game Pre-Session Rule) followed by Weekly, Monthly, and Quarterly goals.
+5. **Mental Game Action Protocol & Multi-Level Goals (Weekly -> Monthly -> Quarterly)**: Provide 3 to 5 concrete action steps (including a C-Game Circuit Breaker and an A-Game Pre-Session Rule) followed by Weekly, Monthly, and Quarterly goals.
 
 At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this exact structure:
 \`\`\`json
@@ -1840,7 +2328,7 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
     const thinkingMode = customScope?.thinkingMode || "balanced";
     const maxOut =
       customScope?.maxOutputTokens ||
-      (thinkingMode === "fast" ? 8192 : thinkingMode === "balanced" ? 12288 : 16384);
+      (thinkingMode === "fast" ? 4096 : thinkingMode === "balanced" ? 5120 : 6144);
 
     let latestStreamedText = "";
     let latestStreamedReasoning = "";
@@ -1933,8 +2421,7 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
         rawMarkdown = `*(Note: Model completed reasoning trace; see full thought process below)*\n\n${aiRes.reasoning || latestStreamedReasoning}`;
       }
 
-      const tradeLinksMd = recentTradesSample
-        .slice(0, 10)
+      const tradeLinksMd = [...recentTradesSample].reverse().slice(0, 15)
         .map(
           (t: any) =>
             `- [${t.symbol} ${t.direction.toUpperCase()} · ${t.opened_at?.slice(0, 10)} · Net $${t.net_pnl.toFixed(2)} · ${t.accountPnlPct >= 0 ? "+" : ""}${t.accountPnlPct}% Acct · Risked ${t.accountRiskPct ?? "?"}% Acct](${t.tradeUrl})`
@@ -2536,7 +3023,7 @@ export async function GET(req: NextRequest) {
         data: buildBehavioralTelemetryAndJournals(db, "monthly"),
       };
     }
-    const { telemetry, selectableJournals, selectableTrades } = cachedDefaultTelemetry.data;
+    const { telemetry, availablePeriods, selectableJournals, selectableTrades } = cachedDefaultTelemetry.data;
 
     return NextResponse.json({
       ok: true,
@@ -2544,6 +3031,7 @@ export async function GET(req: NextRequest) {
       kobold: { ...localSettings, ...status },
       auditDue,
       telemetry,
+      availablePeriods,
       selectableJournals,
       selectableTrades,
       activeJobs,
@@ -3464,6 +3952,29 @@ ${cleanedContent}`;
         jobId,
         sessionId,
         reportId: linkedReportId,
+      });
+    }
+
+    if (action === "preview_audit_scope") {
+      const hz: GoalHorizon = body.horizon || "weekly";
+      const customScope: CustomAuditScope | undefined = body.customScope;
+      const built = buildBehavioralTelemetryAndJournals(db, hz, customScope);
+      return NextResponse.json({
+        ok: true,
+        buckets: built.telemetry.periodComparisonBuckets,
+        targetPeriodLabel: built.telemetry.targetPeriodLabel,
+        targetPeriodDateRange: built.telemetry.targetPeriodDateRange,
+        targetPeriodTradesCount: built.telemetry.targetPeriodTradesCount,
+        targetTradeDates: built.telemetry.targetTradeDates,
+        matchedJournalsCount: built.parsedJournals.length,
+        matchedJournals: built.parsedJournals.map((j: any) => ({
+          slug: j.slug,
+          humanLabel: j.humanLabel,
+          startDate: j.startDate,
+          endDate: j.endDate,
+          hasPrep: j.hasPrep,
+          hasReview: j.hasReview,
+        })),
       });
     }
 

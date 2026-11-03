@@ -11,6 +11,7 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ReviewExport } from "@/components/review-export";
 import { Markdown } from "@/components/rich-editor";
+import { AuditManagerModal } from "@/components/audit-manager-modal";
 import { AiLogButton } from "@/components/ai-log-button";
 import { useApi, postJson } from "@/lib/use-api";
 import { scheduledRules, progressScore, type Routine, type RoutineCheck } from "@/lib/progress";
@@ -562,6 +563,7 @@ function Progress() {
 
   // Custom Scoped Audit Builder Modal State
   const [scopeModalOpen, setScopeModalOpen] = useState(false);
+  const [auditManagerOpen, setAuditManagerOpen] = useState<boolean>(false);
   const [scopeHorizon, setScopeHorizon] = useState<GoalHorizon>("weekly");
   const [scopePeriodFilter, setScopePeriodFilter] = useState<string>("all");
   const [selectedJournalSlugs, setSelectedJournalSlugs] = useState<string[]>([]);
@@ -1343,43 +1345,6 @@ function Progress() {
     <div>
       <FilterBar
         title="Progress, Goals & AI Accountability Notebook"
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <AiLogButton label="AI Logs" onAborted={() => void fetchCoachData()} />
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => setScopeModalOpen(true)}
-              className="border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20"
-            >
-              <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
-              Custom / Scoped Audit
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                setEditingGoal({
-                  horizon: "weekly",
-                  periodLabel: "This Week",
-                  title: "",
-                  whyItMatters: "",
-                  targetMetric: "",
-                  status: "on_track",
-                  progressPct: 0,
-                });
-                setGoalModalOpen(true);
-              }}
-            >
-              <Target className="mr-1.5 h-3.5 w-3.5 text-indigo-400" />
-              Add Goal
-            </Button>
-            <Button size="sm" onClick={() => setOpen(true)}>
-              <Plus className="mr-1 h-3.5 w-3.5" />
-              Add Routine
-            </Button>
-          </div>
-        }
       />
 
       <div className="space-y-6 p-4">
@@ -1432,77 +1397,20 @@ function Progress() {
                     </span>
                   </div>
                   <p className="text-xs text-muted-foreground mt-0.5">
-                    Tracks sizing by <strong>% of Account Equity Risked</strong> (so 0.5% probe risk vs. {tel?.targetRiskPct || 1}% standard risk are accurately distinguished).
+                    Longitudinal behavioral performance and risk discipline coach.
                   </p>
                 </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2">
-                <select
-                  value={thinkingMode}
-                  onChange={(e) => setThinkingMode(e.target.value as any)}
-                  className="h-8 rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none font-medium"
-                  title="Unified Reasoning Depth & Output Token Budget (Applies to all audits & chats)"
-                >
-                  <option value="fast">⚡ Fast Direct · 8K Output (No &lt;think&gt; delay)</option>
-                  <option value="balanced">🧠 Balanced Reasoning · 12K Output (Recommended)</option>
-                  <option value="deep">🔬 Deep Overnight CoT · 16K Output (Max Depth)</option>
-                </select>
-
-                <select
-                  value={`${reportStyle}:${periodOffset}`}
-                  onChange={(e) => {
-                    const [st, off] = e.target.value.split(":");
-                    setReportStyle((st as any) || "auto");
-                    setPeriodOffset(Number(off || 0));
-                  }}
-                  className="h-8 rounded-lg border border-indigo-500/40 bg-[#0d0f14] px-2 text-xs text-indigo-200 outline-none font-medium"
-                  title="Choose whether to run an End-of-Period Final Audit (e.g. for last week/month if you missed Sunday) or a Mid-Period Check-In"
-                >
-                  <option value="auto:0">🔄 Smart Auto (Monday-&gt;Last Wk / Mid-Wk Check-In)</option>
-                  <option value="end_of_period:1">🏁 End-of-Period Audit · Last Completed Period (W-1 / M-1)</option>
-                  <option value="end_of_period:0">🏁 End-of-Period Audit · Current Period (W0 / M0)</option>
-                  <option value="mid_period:0">📊 Mid-Period Progress Check-In · Current Period</option>
-                  <option value="end_of_period:2">🕰️ Historical Audit · 2 Periods Ago (W-2 / M-2)</option>
-                </select>
-
                 <Button
                   size="sm"
-                  variant="outline"
-                  onClick={() => setScopeModalOpen(true)}
-                  className="text-xs border-indigo-500/50 bg-indigo-500/15 text-indigo-200 hover:bg-indigo-500/25"
+                  onClick={() => setAuditManagerOpen(true)}
+                  className="h-8 text-xs bg-indigo-600 hover:bg-indigo-500 text-white font-bold shadow-md transition px-3.5"
                   title="Open the Report Generation & Queue Manager"
                 >
-                  <SlidersHorizontal className="mr-1.5 h-3.5 w-3.5" />
-                  Report Manager ({selectedJournalSlugs.length || "Auto"})
-                </Button>
-
-                {(["weekly", "monthly", "quarterly", "yearly"] as GoalHorizon[]).map((h) => (
-                  <Button
-                    key={h}
-                    size="sm"
-                    variant={h === "weekly" && !runningAuditJob ? "default" : "outline"}
-                    onClick={() => void handleGenerateAudit(h)}
-                    className="text-xs capitalize"
-                    title={
-                      runningAuditJob
-                        ? `Add ${h} audit to sequential background queue`
-                        : `Run ${h} audit or mid-period check-in now`
-                    }
-                  >
-                    <Sparkles className="mr-1.5 h-3.5 w-3.5" />
-                    {runningAuditJob ? `+ Queue ${h}` : `Run ${h}`}
-                  </Button>
-                ))}
-
-                <Button
-                  size="sm"
-                  variant="outline"
-                  onClick={() => void handleQueueBatchAudits(["weekly", "monthly", "quarterly"])}
-                  className="text-xs border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
-                  title="Queue Weekly, Monthly, and Quarterly audits to run back-to-back in sequence while you are away"
-                >
-                  ⚡ Queue W+M+Q
+                  <Sparkles className="mr-1.5 h-3.5 w-3.5" />
+                  Report Manager
                 </Button>
 
                 <button
@@ -1510,12 +1418,12 @@ function Progress() {
                   onClick={() => void handleToggleAutoStopServer(!autoStopAfterQueue)}
                   className={`inline-flex h-8 items-center gap-1.5 rounded-lg border px-2.5 text-xs font-semibold transition ${
                     autoStopAfterQueue
-                      ? "border-amber-500/50 bg-amber-500/20 text-amber-200"
-                      : "border-border/60 bg-[#0d0f14] text-muted-foreground hover:text-foreground"
+                      ? "border-amber-600/50 dark:border-amber-500/50 bg-amber-100 dark:bg-amber-500/20 text-amber-950 dark:text-amber-200 shadow-sm"
+                      : "border-border/70 bg-card dark:bg-[#0d0f14] text-muted-foreground hover:text-foreground"
                   }`}
                   title="When enabled, KoboldCpp will automatically shut down as soon as the queue finishes so your desktop PC can go to sleep overnight"
                 >
-                  <span>🌙 Auto-Stop Server: {autoStopAfterQueue ? "ON (PC Sleeps)" : "OFF"}</span>
+                  <span className="font-semibold">🌙 Auto-Stop Server: {autoStopAfterQueue ? "ON (PC Sleeps)" : "OFF"}</span>
                 </button>
 
                 <AiLogButton label="Logs" onAborted={() => void fetchCoachData()} />
@@ -2115,7 +2023,7 @@ function Progress() {
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => setScopeModalOpen(true)}
+                  onClick={() => setAuditManagerOpen(true)}
                   className="w-full justify-start text-xs h-8"
                 >
                   <Sparkles className="mr-1.5 h-3.5 w-3.5 text-amber-400" />
@@ -2998,11 +2906,11 @@ function Progress() {
 
         {/* 3B. JOURNAL REFLECTION READINESS CARD (TEMPLATE-AWARE + SIDE-TAB QUICK EDITOR) */}
         {tel?.reflectionReadiness && (
-          <Card className="bg-[#12141d] border-border/70">
+          <Card className="bg-card dark:bg-[#12141d] border-border/70">
             <CardContent className="py-4 flex flex-wrap items-center justify-between gap-4 text-xs">
-              <div className="space-y-1">
+              <div className="space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
-                  <BookOpen className="h-4 w-4 text-indigo-400" />
+                  <BookOpen className="h-4 w-4 text-indigo-600 dark:text-indigo-400" />
                   <span className="font-bold text-foreground">
                     Journal Reflection Readiness (Template-Filtered): {tel.reflectionReadiness.readinessPct}%
                   </span>
@@ -3012,7 +2920,7 @@ function Progress() {
                 </div>
                 {tel.reflectionReadiness.unreviewedJournals?.length > 0 && (
                   <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                    <span className="text-[11px] text-amber-300 font-medium">
+                    <span className="text-[11px] font-semibold text-amber-800 dark:text-amber-300">
                       Click to open in Side-Tab Editor:
                     </span>
                     {tel.reflectionReadiness.unreviewedJournals.slice(0, 6).map((uj: any) => (
@@ -3020,7 +2928,7 @@ function Progress() {
                         key={uj.slug}
                         type="button"
                         onClick={() => void handleOpenSideJournalEditor(uj.slug)}
-                        className="inline-flex items-center gap-1 rounded-md border border-amber-500/40 bg-amber-500/10 hover:bg-amber-500/25 px-2 py-0.5 text-[10px] font-mono text-amber-200 transition"
+                        className="inline-flex items-center gap-1 rounded-md border border-amber-600/40 dark:border-amber-500/40 bg-amber-50 dark:bg-amber-500/10 hover:bg-amber-100 dark:hover:bg-amber-500/25 px-2 py-0.5 text-[10px] font-mono font-medium text-amber-900 dark:text-amber-200 transition"
                         title={
                           uj.isTemplateOnly
                             ? "Auto-populated template only (considered empty until you add notes)"
@@ -3028,7 +2936,7 @@ function Progress() {
                         }
                       >
                         <span>✏️ {uj.slug}</span>
-                        <span className="text-[9px] text-amber-300/80">
+                        <span className="text-[9px] text-amber-800 dark:text-amber-300/80 font-normal">
                           {uj.isTemplateOnly ? "(Template Only)" : "(Needs Review)"}
                         </span>
                       </button>
@@ -3048,13 +2956,16 @@ function Progress() {
                       `week-${new Date().toISOString().slice(0, 10)}`;
                     void handleOpenSideJournalEditor(targetSlug);
                   }}
-                  className="h-8 text-xs border-emerald-500/40 bg-emerald-500/10 text-emerald-300 hover:bg-emerald-500/20"
+                  className="h-8 text-xs font-semibold border-emerald-600/40 dark:border-emerald-500/40 bg-emerald-50 dark:bg-emerald-500/10 text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-500/20"
                 >
                   <BookOpen className="mr-1.5 h-3.5 w-3.5" />
                   Open Journal Side-Tab Editor
                 </Button>
-                <Button onClick={() => void handlePushToJournal(activeReport?.id, "week")}
-                  className="h-8 text-xs border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20"
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void handlePushToJournal(activeReport?.id, "week")}
+                  className="h-8 text-xs font-semibold border-indigo-600/40 dark:border-indigo-500/40 bg-indigo-50 dark:bg-indigo-500/10 text-indigo-800 dark:text-indigo-300 hover:bg-indigo-100 dark:hover:bg-indigo-500/20"
                 >
                   📌 Push Active Focus Rules to Weekly Journal
                 </Button>
@@ -3062,7 +2973,6 @@ function Progress() {
             </CardContent>
           </Card>
         )}
-
         {/* 4. DAILY EXECUTION ROUTINES & 13-WEEK CONSISTENCY HEATMAP */}
         <Card>
           <CardContent className="flex flex-wrap items-center justify-between gap-6 py-6">
@@ -3085,18 +2995,24 @@ function Progress() {
                 />
               </Field>
             </div>
-            <ReviewExport
-              document={{
-                title: `Routine review · ${selected}`,
-                lines: [
-                  `Completed: ${score?.completed ?? 0}/${score?.total ?? 0}`,
-                  ...rules.map(
-                    (r) =>
-                      `${data?.checks.some((c) => c.date === selected && c.ruleId === r.id && c.done) ? "[done]" : "[ ]"} ${r.stage}: ${r.title}`
-                  ),
-                ],
-              }}
-            />
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" onClick={() => setOpen(true)} className="h-8 text-xs font-semibold">
+                <Plus className="mr-1 h-3.5 w-3.5" />
+                Add Routine
+              </Button>
+              <ReviewExport
+                document={{
+                  title: `Routine review · ${selected}`,
+                  lines: [
+                    `Completed: ${score?.completed ?? 0}/${score?.total ?? 0}`,
+                    ...rules.map(
+                      (r) =>
+                        `${data?.checks.some((c) => c.date === selected && c.ruleId === r.id && c.done) ? "[done]" : "[ ]"} ${r.stage}: ${r.title}`
+                    ),
+                  ],
+                }}
+              />
+            </div>
           </CardContent>
         </Card>
 
@@ -3979,6 +3895,13 @@ function Progress() {
           </DialogContent>
         </Dialog>
       </div>
+
+      <AuditManagerModal
+        open={auditManagerOpen}
+        onClose={() => setAuditManagerOpen(false)}
+        coachData={coachData}
+        onJobStarted={() => void fetchCoachData()}
+      />
     </div>
   );
 }
