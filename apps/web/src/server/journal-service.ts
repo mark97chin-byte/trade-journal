@@ -619,6 +619,12 @@ export async function saveJournalEntry(
                    SELECT id FROM journal_entry_revisions ORDER BY id DESC LIMIT 30
                  )`
               ).run();
+
+              // 3) 7-Day Rolling Retention: Purge snapshots older than 7 days
+              db.prepare(
+                `DELETE FROM journal_entry_revisions
+                 WHERE datetime(saved_at) < datetime('now', '-7 days')`
+              ).run();
             }
           }
         } catch (revErr) {
@@ -730,12 +736,19 @@ export function getJournalEntryRevisions(slug: string) {
     const db = new Database(finalPath);
     try {
       ensureJournalSchema(db);
+      try {
+        db.prepare(
+          `DELETE FROM journal_entry_revisions WHERE datetime(saved_at) < datetime('now', '-7 days')`
+        ).run();
+      } catch {}
+
       return db
         .prepare(
           `SELECT id, slug, title, content, review_content as reviewContent,
                   lessons_learned as lessonsLearned, saved_at as savedAt
            FROM journal_entry_revisions
            WHERE slug = ?
+             AND datetime(saved_at) >= datetime('now', '-7 days')
            ORDER BY id DESC LIMIT 5`
         )
         .all(slug) as Array<{

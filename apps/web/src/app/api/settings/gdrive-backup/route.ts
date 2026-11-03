@@ -136,6 +136,24 @@ function listLocalSnapshots(): SnapshotItem[] {
   return items.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+function pruneOldSnapshots(backupsDir: string, keepLimit = 3): string[] {
+  const allSnapshots = listLocalSnapshots();
+  const deleted: string[] = [];
+  if (allSnapshots.length > keepLimit) {
+    const toDelete = allSnapshots.slice(keepLimit);
+    for (const item of toDelete) {
+      try {
+        const fullPath = path.join(backupsDir, item.filename);
+        if (fs.existsSync(fullPath)) {
+          fs.unlinkSync(fullPath);
+          deleted.push(item.filename);
+        }
+      } catch {}
+    }
+  }
+  return deleted;
+}
+
 async function syncBackupsDirToRcloneOrDrive(
   backupsDir: string,
   remoteTarget: string
@@ -210,6 +228,8 @@ export async function GET(req: NextRequest) {
     }
 
     const config = loadGDriveConfig();
+    const backupsDir = resolveBackupsDir();
+    pruneOldSnapshots(backupsDir, config.keepCount || 3);
     const snapshots = listLocalSnapshots();
     return NextResponse.json({ ok: true, config, snapshots });
   } catch (err: any) {
@@ -240,6 +260,9 @@ export async function POST(req: NextRequest) {
             : config.includeCandlesDb,
       };
       saveGDriveConfig(next);
+      const backupsDir = resolveBackupsDir();
+      pruneOldSnapshots(backupsDir, next.keepCount || 3);
+      void syncBackupsDirToRcloneOrDrive(backupsDir, next.rcloneRemotePath).catch(() => {});
       return NextResponse.json({
         ok: true,
         config: next,
@@ -459,6 +482,7 @@ function startAutoBackupScheduler() {
 
         fs.rmSync(stagingDir, { recursive: true, force: true });
 
+        pruneOldSnapshots(backupsDir, cfg.keepCount || 3);
         const syncRes = await syncBackupsDirToRcloneOrDrive(backupsDir, cfg.rcloneRemotePath);
         saveGDriveConfig({
           ...cfg,
