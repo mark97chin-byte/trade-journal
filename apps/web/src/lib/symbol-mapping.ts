@@ -22,16 +22,16 @@ export function cleanBrokerSymbol(raw: string): string {
 }
 
 /**
- * Resolves the provider's exact catalog symbol and dataset.
+ * Resolves the provider's exact catalog symbol and dataset (market folder).
  */
 export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string): MappedInstrument {
   const clean = cleanBrokerSymbol(rawTradeSymbol);
-  const noSlash = clean.replace("/", "");
+  const baseKey = clean.replace(/\.IDX$/i, "").replace(/[\s\/\_]/g, "");
 
-  // 1. London Strategic Edge Data 3.0 Catalog Mapping
+  // 1. London Strategic Edge Data 3.0 Mapping
   if (providerId === "london-strategic-edge") {
     const indices: Record<string, string> = {
-      // S&P 500 -> SPX (dataset: indices)
+      // S&P 500 -> market: indices, symbol: SPX
       "US500": "SPX",
       "SPX500": "SPX",
       "SPX500USD": "SPX",
@@ -39,22 +39,23 @@ export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string
       "SPX": "SPX",
       "ES": "SPX",
       "MES": "SPX",
-      // Nasdaq 100 -> NDX (dataset: indices)
+      // Nasdaq 100 -> market: indices, symbol: NDX
       "NAS100": "NDX",
       "NAS100USD": "NDX",
       "USTEC": "NDX",
       "USTECUSD": "NDX",
+      "USTECH100": "NDX",
       "NDX": "NDX",
       "NQ": "NDX",
       "MNQ": "NDX",
-      // Dow Jones 30 -> DJI (dataset: indices)
+      // Dow Jones 30 -> market: indices, symbol: DJI
       "US30": "DJI",
       "US30USD": "DJI",
       "DJ30": "DJI",
       "DJI": "DJI",
       "YM": "DJI",
       "MYM": "DJI",
-      // Russell 2000 -> RUT (dataset: indices)
+      // Russell 2000 -> market: indices, symbol: RUT
       "US2000": "RUT",
       "US2000USD": "RUT",
       "RUT": "RUT",
@@ -76,32 +77,35 @@ export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string
     if (indices[clean]) {
       return { symbol: indices[clean], dataset: "indices" };
     }
-    if (indices[noSlash]) {
-      return { symbol: indices[noSlash], dataset: "indices" };
+    if (indices[baseKey]) {
+      return { symbol: indices[baseKey], dataset: "indices" };
     }
 
-    if (["XAUUSD", "GOLD", "GC"].includes(noSlash)) {
-      return { symbol: "XAU/USD", dataset: "" };
+    if (["XAUUSD", "GOLD", "GC"].includes(baseKey)) {
+      return { symbol: "XAU/USD", dataset: "commodities" };
     }
-    if (["XAGUSD", "SILVER", "SI"].includes(noSlash)) {
-      return { symbol: "XAG/USD", dataset: "" };
+    if (["XAGUSD", "SILVER", "SI"].includes(baseKey)) {
+      return { symbol: "XAG/USD", dataset: "commodities" };
     }
-    if (["USOIL", "WTI", "CL", "WTICOUSD"].includes(noSlash)) {
-      return { symbol: "WTICO/USD", dataset: "" };
+    if (["USOIL", "WTI", "CL", "WTICOUSD"].includes(baseKey)) {
+      return { symbol: "WTICO/USD", dataset: "commodities" };
     }
-    if (["UKOIL", "BRENT", "BCO", "BCOUSD"].includes(noSlash)) {
-      return { symbol: "BCO/USD", dataset: "" };
-    }
-
-    if (noSlash.endsWith("USD") && ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "ADAUSD", "BNBUSD", "AVAXUSD"].includes(noSlash)) {
-      const coin = noSlash.replace(/USD$/, "");
-      return { symbol: `${coin}/USD`, dataset: "crypto" };
+    if (["UKOIL", "BRENT", "BCO", "BCOUSD"].includes(baseKey)) {
+      return { symbol: "BCO/USD", dataset: "commodities" };
     }
 
-    if (/^[A-Z]{6}$/.test(noSlash)) {
-      const base = noSlash.slice(0, 3);
-      const quote = noSlash.slice(3, 6);
-      return { symbol: `${base}/${quote}`, dataset: "fx" };
+    if (
+      baseKey.endsWith("USD") &&
+      ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "DOGEUSD", "ADAUSD", "BNBUSD", "AVAXUSD"].includes(baseKey)
+    ) {
+      const coin = baseKey.replace(/USD$/, "");
+      return { symbol: `${coin}USDT`, dataset: "crypto" };
+    }
+
+    if (/^[A-Z]{6}$/.test(baseKey)) {
+      const base = baseKey.slice(0, 3);
+      const quote = baseKey.slice(3, 6);
+      return { symbol: `${base}/${quote}`, dataset: "forex" };
     }
 
     return { symbol: clean, dataset: "" };
@@ -128,7 +132,7 @@ export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string
       "CL": "CL.c.0",
     };
     return {
-      symbol: futuresMap[noSlash] || futuresMap[clean] || clean,
+      symbol: futuresMap[baseKey] || futuresMap[clean] || clean,
       dataset: "GLBX.MDP3",
     };
   }
