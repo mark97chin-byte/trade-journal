@@ -2,6 +2,7 @@
 
 import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
   BookOpen,
   ChevronLeft,
@@ -192,7 +193,46 @@ export function PeriodReviewCompanionCard({
   missedTrades = [],
   isSplitMode = false,
 }: PeriodReviewCompanionCardProps) {
+  const router = useRouter();
   const [mode, setMode] = useState<"notes" | "trades" | "missed" | "questions">("notes");
+  const [creatingMissedCompanion, setCreatingMissedCompanion] = useState(false);
+
+  const handleCreateMissedFromCompanion = async () => {
+    setCreatingMissedCompanion(true);
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const targetDate =
+        periodType === "day"
+          ? anchorDate
+          : todayIso >= startDate && todayIso <= endDate
+          ? todayIso
+          : anchorDate;
+      const observedIso = `${targetDate}T13:30:00.000Z`;
+      const res = await fetch("/api/workspace/missed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: "NAS100",
+          direction: "long",
+          observedAt: observedIso,
+          exitAt: observedIso,
+          outcome: "WIN",
+          missReason: "Hesitation / Fear",
+          notes: "<p></p>",
+        }),
+      });
+      const out = await res.json();
+      if (out?.trade?.id) {
+        router.push(`/missed/${encodeURIComponent(out.trade.id)}`);
+      } else {
+        router.push("/missed");
+      }
+    } catch {
+      router.push("/missed");
+    } finally {
+      setCreatingMissedCompanion(false);
+    }
+  };
   const [missedIdx, setMissedIdx] = useState(0);
 
   // Default to expanded height (`true`) so Review Companion matches the height of the main box!
@@ -1284,9 +1324,32 @@ export function PeriodReviewCompanionCard({
       {/* ===================================================================== */}
       {mode === "missed" && (
         <div className="space-y-3">
+          <div className="flex items-center justify-between">
+            <span className="text-[11px] font-semibold text-muted-foreground">
+              Missed Opportunities in This {periodType.charAt(0).toUpperCase() + periodType.slice(1)} ({missedTrades.length})
+            </span>
+            <button
+              type="button"
+              disabled={creatingMissedCompanion}
+              onClick={() => void handleCreateMissedFromCompanion()}
+              className="inline-flex items-center gap-1 rounded-md bg-indigo-600 hover:bg-indigo-500 px-2.5 py-1 text-[11px] font-semibold text-white shadow-2xs transition disabled:opacity-50"
+            >
+              <Plus className="w-3 h-3" />
+              <span>{creatingMissedCompanion ? "Creating..." : "Add Missed Trade"}</span>
+            </button>
+          </div>
           {missedTrades.length === 0 ? (
-            <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-border/40 rounded-lg">
-              No missed trades recorded in this {periodType}.
+            <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-border/40 rounded-lg space-y-2.5">
+              <div>No missed trades recorded in this {periodType}.</div>
+              <button
+                type="button"
+                disabled={creatingMissedCompanion}
+                onClick={() => void handleCreateMissedFromCompanion()}
+                className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-xs font-semibold text-white shadow transition disabled:opacity-50"
+              >
+                <Plus className="w-3.5 h-3.5" />
+                <span>{creatingMissedCompanion ? "Creating..." : "Add Missed Trade"}</span>
+              </button>
             </div>
           ) : activeMissed ? (
             (() => {

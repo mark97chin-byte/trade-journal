@@ -4,9 +4,16 @@ import fs from "fs";
 import type { MarketBar } from "@/lib/market-data";
 
 function getDbPath(): string {
-  const rootData = path.resolve(process.cwd(), "apps/web/data");
-  const localData = path.resolve(process.cwd(), "data");
-  const targetDir = fs.existsSync(path.resolve(process.cwd(), "apps/web")) ? rootData : localData;
+  const directData = path.resolve(process.cwd(), "data");
+  const webData = path.resolve(process.cwd(), "apps", "web", "data");
+  // Match journal.db path resolution so we never create a nested apps/web/apps/web/data folder
+  if (fs.existsSync(path.join(directData, "journal.db")) || fs.existsSync( path.join(directData, "market_candles.db"))) {
+    return path.join(directData, "market_candles.db");
+  }
+  if (fs.existsSync(path.join(webData, "journal.db")) || fs.existsSync(path.join(webData, "market_candles.db"))) {
+    return path.join(webData, "market_candles.db");
+  }
+  const targetDir = process.cwd().endsWith(path.join("apps", "web")) ? directData : webData;
   if (!fs.existsSync(targetDir)) {
     fs.mkdirSync(targetDir, { recursive: true });
   }

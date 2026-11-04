@@ -16,7 +16,6 @@ const MAX_BARS = 100_000;
 const DAY = 86_400_000;
 const utcDate = (time: number) => new Date(time).toISOString().slice(0, 10);
 
-// --- Symbol Normalization ---
 export function normalizeLSESymbol(raw: string): { symbol: string; dataset?: string } {
   const mapped = resolveProviderSymbol("london-strategic-edge", raw);
   return { symbol: mapped.symbol, dataset: mapped.dataset || undefined };
@@ -36,41 +35,36 @@ async function read(path: string, key: string, signal?: AbortSignal): Promise<un
 
 export function parseLseBars(value: unknown): MarketBar[] {
   if (!Array.isArray(value)) throw new MarketDataError("Unexpected market data response.");
-  const bars = value.map((item: unknown) => {
-    if (!item || typeof item !== "object") throw new MarketDataError("Invalid market data candle.");
+  const unique = new Map<number, MarketBar>();
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
     const row = item as Record<string, unknown>;
-    const raw = row.ts ?? row.timestamp ?? row.minute;
-    const stamp = typeof raw === "string" ? raw.replace(" ", "T") : "";
-    const time = Date.parse(/[zZ]$\vert{}[+-]\d{2}:\d{2}$/.test(stamp) ? stamp : `${stamp}Z`);
+    const raw = row.ts ?? row.timestamp ?? row.minute ?? row.time;
+    let time = NaN;
+    if (typeof raw === "number") {
+      time = raw > 1e11 ? raw : raw * 1000;
+    } else if (typeof raw === "string" && raw.trim()) {
+      const stamp = raw.trim().replace(" ", "T");
+      time = Date.parse(/[zZ]$|[+-]\d{2}:\d{2}$/.test(stamp) ? stamp : `${stamp}Z`);
+    }
     const number = (v: unknown) =>
       typeof v === "number" ? v : typeof v === "string" && v.trim() ? Number(v) : NaN;
-    const bar = {
-      time,
-      open: number(row.open),
-      high: number(row.high),
-      low: number(row.low),
-      close: number(row.close),
-      volume: row.volume == null ? 0 : number(row.volume),
-    };
-    if (
-      !Object.values(bar).every(Number.isFinite) ||
-      bar.volume < 0 ||
-      bar.low > Math.min(bar.open, bar.close) ||
-      bar.high < Math.max(bar.open, bar.close) ||
-      bar.low > bar.high
-    ) {
-      throw new MarketDataError("Invalid market data candle. Estimates were not calculated.");
+    const open = number(row.open ?? row.o);
+    const rawHigh = number(row.high ?? row.h);
+    const rawLow = number(row.low ?? row.l);
+    const close = number(row.close ?? row.c);
+    const volume = row.volume == null ? 0 : Math.max(0, number(row.volume ?? row.v) || 0);
+
+    if (!Number.isFinite(time) || !Number.isFinite(open) || !Number.isFinite(close)) {
+      continue;
     }
-    return bar;
-  });
-  const unique = new Map<number, MarketBar>();
-  for (const bar of bars) {
-    unique.set(bar.time, bar);
+    const high = Number.isFinite(rawHigh) ? Math.max(open, close, rawHigh, rawLow || open) : Math.max(open, close);
+    const low = Number.isFinite(rawLow) ? Math.min(open, close, rawLow, rawHigh || open) : Math.min(open, close);
+    unique.set(time, { time, open, high, low, close, volume });
   }
   return [...unique.values()].sort((a, b) => a.time - b.time);
 }
 
-// Fetch a range directly from LSE API with pagination and dual-order verification
 async function fetchLseRange(
   symbol: string,
   dataset: string | undefined,
@@ -81,8 +75,10 @@ async function fetchLseRange(
   key: string,
   signal?: AbortSignal,
 ): Promise<{ bars: MarketBar[]; clipped: boolean }> {
+  const nowCeiling = Date.now() + DAY;
+  const clampedToMs = Math.min(toMs, nowCeiling);
   let cursor = Math.floor(fromMs / DAY) * DAY;
-  const end = (Math.floor((toMs - 1) / DAY) + 1) * DAY;
+  const end = Math.max(cursor + DAY, (Math.floor((clampedToMs - 1) / DAY) + 1) * DAY);
   const windowDays = Math.max(1, Math.floor((1000 * step) / DAY));
   const fetchedBars: MarketBar[] = [];
   let clipped = false;
@@ -145,62 +141,71 @@ export const londonStrategicEdge: MarketDataProvider = {
   },
   async history(request, key) {
     const step = RESOLUTIONS[request.resolution as keyof typeof RESOLUTIONS] ?? 60_000;
+    const nowMs = Date.now();
     const firstBar = Math.floor(request.from / step) * step;
-    const lastBar = Math.floor((request.to - 1) / step) * step;
+    // Clamp lastBar to current time so jumping to a recent date with +2d/+5d forward never requests future bars
+    const clampedTo = Math.min(request.to, nowMs + step);
+    const lastBar = Math.max(firstBar + step, Math.floor((clampedTo - 1) / step) * step);
 
-    // 1. Auto-normalize symbol and dataset
+    // 1. Auto-normalize symbol and dataset (works even if request.symbol already has a slash)
     const mapped = resolveProviderSymbol(PROVIDER_ID, request.symbol);
     const symbol = mapped.symbol;
     const dataset = request.dataset || mapped.dataset || undefined;
 
-    // 2. Query SQLite cache boundaries
+    // 2. Check actual cached bars inside [firstBar, lastBar]
+    const existingWindowBars = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
     const { minTime, maxTime } = getCachedBounds(PROVIDER_ID, symbol, request.resolution);
     const hasCache = minTime !== null && maxTime !== null;
 
-    // 3. Complete Cache Hit: return directly from SQLite
-    if (hasCache && minTime <= firstBar && maxTime >= lastBar) {
-      const eligible = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
+    // Verify the cached bars actually cover the end of the requested range (within 68h for weekends)
+    const maxWeekendGapMs = 68 * 3600_000;
+    const windowStartCovered =
+      existingWindowBars.length > 0 && existingWindowBars[0]!.time <= firstBar + maxWeekendGapMs;
+    const windowEndCovered =
+      existingWindowBars.length > 0 &&
+      existingWindowBars[existingWindowBars.length - 1]!.time >= Math.min(lastBar, nowMs) - maxWeekendGapMs;
+
+    if (windowStartCovered && windowEndCovered) {
       return {
         provider: this.name,
         symbol,
         resolution: request.resolution,
-        bars: eligible,
+        bars: existingWindowBars,
         fetchedAt: new Date().toISOString(),
         truncated: false,
         warnings: [],
       };
     }
 
-    // 4. Incremental Download for missing ranges
+    // 3. Fetch missing range directly for [firstBar, lastBar + step]
     const newBars: MarketBar[] = [];
     let clipped = false;
 
     try {
-      if (!hasCache) {
-        const res = await fetchLseRange(symbol, dataset, request.resolution, firstBar, lastBar + step, step, key, request.signal);
-        newBars.push(...res.bars);
-        clipped = res.clipped;
-      } else {
-        // Earlier range missing (e.g. +5d context expansion)
-        if (firstBar < minTime) {
-          const res = await fetchLseRange(symbol, dataset, request.resolution, firstBar, minTime, step, key, request.signal);
-          newBars.push(...res.bars);
-          if (res.clipped) clipped = true;
-        }
-        // Later range missing
-        if (lastBar > maxTime) {
-          const res = await fetchLseRange(symbol, dataset, request.resolution, maxTime, lastBar + step, step, key, request.signal);
-          newBars.push(...res.bars);
-          if (res.clipped) clipped = true;
-        }
-      }
+      const fetchStart = windowStartCovered && existingWindowBars.length > 0
+        ? existingWindowBars[existingWindowBars.length - 1]!.time
+        : firstBar;
+      const fetchEnd = windowEndCovered && existingWindowBars.length > 0
+        ? existingWindowBars[0]!.time + step
+        : lastBar + step;
 
-      // 5. Save delta rows into SQLite
+      const res = await fetchLseRange(
+        symbol,
+        dataset,
+        request.resolution,
+        fetchStart,
+        fetchEnd,
+        step,
+        key,
+        request.signal
+      );
+      newBars.push(...res.bars);
+      clipped = res.clipped;
+
       if (newBars.length > 0) {
         saveCachedCandles(PROVIDER_ID, symbol, request.resolution, newBars);
       }
 
-      // 6. Query final bounded result from SQLite
       const eligible = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
       return {
         provider: this.name,
@@ -212,17 +217,15 @@ export const londonStrategicEdge: MarketDataProvider = {
         warnings: clipped ? ["Candle history reached provider limit for this window."] : [],
       };
     } catch (err: any) {
-      // Offline fallback: if network fails, return whatever is already cached in SQLite
-      if (hasCache) {
-        const eligible = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
+      if (existingWindowBars.length > 0) {
         return {
           provider: this.name,
           symbol,
           resolution: request.resolution,
-          bars: eligible,
+          bars: existingWindowBars,
           fetchedAt: new Date().toISOString(),
           truncated: true,
-          warnings: ["Network unavailable: Showing offline cached candles from SQLite."],
+          warnings: [`Network notice (${err?.message || "offline"}): Showing cached candles in range.`],
         };
       }
       throw err;

@@ -40,6 +40,7 @@ import { RunningPnlChart } from "@/components/charts/running-pnl-chart";
 import type { TradeMarketResult } from "@/lib/market-data";
 import { useApi } from "@/lib/use-api";
 import { fmtMoney } from "@/lib/utils";
+import { PRESET_TRADING_SYMBOLS, resolveProviderSymbol, cleanBrokerSymbol } from "@/lib/symbol-mapping";
 
 interface PartialTarget {
   id: string;
@@ -471,8 +472,16 @@ function LoadedMissedSetupWorkspace({
   const isDraggingRef = useRef(false);
 
   // Initialize state directly from `initialRecord` (100% synchronous on mount!)
-  const [symbol, setSymbol] = useState(initialRecord.symbol || "NAS100");
-  const [isCustomSymbol, setIsCustomSymbol] = useState(false);
+  const CORE_PRESETS = ["NAS100", "US500", "XAUUSD", "EURUSD", "GBPUSD"];
+  const initCleanSym = cleanBrokerSymbol(initialRecord.symbol || "NAS100");
+  const [symbol, setSymbol] = useState(initCleanSym || "NAS100");
+  const [isCustomSymbol, setIsCustomSymbol] = useState(
+    () => Boolean(initCleanSym && !CORE_PRESETS.includes(initCleanSym))
+  );
+  const lseValidation = useMemo(
+    () => resolveProviderSymbol("london-strategic-edge", symbol || "NAS100"),
+    [symbol]
+  );
   const [direction, setDirection] = useState<"long" | "short">(
     initialRecord.direction === "short" ? "short" : "long"
   );
@@ -536,7 +545,11 @@ function LoadedMissedSetupWorkspace({
     }
     if (sIdx >= 0) {
       const actualEntryMs = bars[sIdx]!.time;
-      if (Math.abs(actualEntryMs - openMs) > 60_000) {
+      // Only snap within the same trading session (<= 12 hours), never across different days!
+      if (
+        Math.abs(actualEntryMs - openMs) > 60_000 &&
+        Math.abs(actualEntryMs - openMs) <= 12 * 3600_000
+      ) {
         setEntryIso(new Date(actualEntryMs).toISOString());
       }
     }
@@ -1250,19 +1263,67 @@ function LoadedMissedSetupWorkspace({
                 <CardContent className="space-y-4">
                   <div className="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
                     <div>
-                      <label className="block text-[11px] text-muted-foreground mb-0.5">
-                        Symbol
-                      </label>
-                      <Input
-                        value={symbol}
-                        onChange={(e) => {
-                          const s = e.target.value.toUpperCase();
-                          setSymbol(s);
-                          setContractMultiplier(inferDefaultPointMultiplier(s));
-                        }}
-                        placeholder="NAS100, US500, XAUUSD"
-                        className="h-8 text-xs font-mono font-bold"
-                      />
+                      <div className="flex items-center justify-between mb-0.5">
+                        <label className="text-[11px] text-muted-foreground">
+                          Symbol
+                        </label>
+                        <span
+                          className="rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.2 text-[9px] font-mono font-semibold text-emerald-400"
+                          title={`Mapped to London Strategic Edge symbol: ${lseValidation.symbol} (${lseValidation.dataset || "custom"})`}
+                        >
+                          LSE: {lseValidation.symbol}
+                        </span>
+                      </div>
+                      {!isCustomSymbol ? (
+                        <select
+                          value={CORE_PRESETS.includes(symbol) ? symbol : "__CUSTOM__"}
+                          onChange={(e) => {
+                            const val = e.target.value;
+                            if (val === "__CUSTOM__") {
+                              setIsCustomSymbol(true);
+                            } else {
+                              setSymbol(val);
+                              setContractMultiplier(inferDefaultPointMultiplier(val));
+                            }
+                          }}
+                          className="h-8 w-full rounded-md border border-border bg-background px-2 text-xs font-mono font-bold text-foreground"
+                        >
+                          {PRESET_TRADING_SYMBOLS.map((item) => (
+                            <option key={item.value} value={item.value}>
+                              {item.label}
+                            </option>
+                          ))}
+                          <option value="__CUSTOM__">+ Custom Asset...</option>
+                        </select>
+                      ) : (
+                        <div className="flex items-center gap-1">
+                          <Input
+                            value={symbol}
+                            onChange={(e) => {
+                              const s = cleanBrokerSymbol(e.target.value);
+                              setSymbol(s);
+                              setContractMultiplier(inferDefaultPointMultiplier(s));
+                            }}
+                            placeholder="e.g. US30, USDJPY, GBPJPY, BTCUSD"
+                            className="h-8 flex-1 text-xs font-mono font-bold"
+                            autoFocus
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setIsCustomSymbol(false);
+                              if (!CORE_PRESETS.includes(symbol)) {
+                                setSymbol("NAS100");
+                                setContractMultiplier(inferDefaultPointMultiplier("NAS100"));
+                              }
+                            }}
+                            className="h-8 rounded-md border border-border bg-secondary px-2 text-[10px] font-semibold text-muted-foreground hover:text-foreground shrink-0"
+                            title="Back to preset symbols list"
+                          >
+                            Presets
+                          </button>
+                        </div>
+                      )}
                     </div>
                     <div>
                       <label className="block text-[11px] text-muted-foreground mb-0.5">

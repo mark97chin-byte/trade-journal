@@ -1077,6 +1077,46 @@ export function JournalEntryEditor({
     };
   }, [flushUnsavedImmediately]);
 
+  const [creatingMissed, setCreatingMissed] = useState(false);
+
+  const handleAddMissedTradeForPeriod = async () => {
+    setCreatingMissed(true);
+    try {
+      flushUnsavedImmediately(false);
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const targetDate =
+        range.periodType === "day"
+          ? range.anchorDate
+          : todayIso >= range.startDate && todayIso <= range.endDate
+          ? todayIso
+          : range.anchorDate;
+      const observedIso = `${targetDate}T13:30:00.000Z`;
+      const res = await fetch("/api/workspace/missed", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          symbol: "NAS100",
+          direction: "long",
+          observedAt: observedIso,
+          exitAt: observedIso,
+          outcome: "WIN",
+          missReason: "Hesitation / Fear",
+          notes: "<p></p>",
+        }),
+      });
+      const out = await res.json();
+      if (out?.trade?.id) {
+        router.push(`/missed/${encodeURIComponent(out.trade.id)}`);
+      } else {
+        router.push("/missed");
+      }
+    } catch {
+      router.push("/missed");
+    } finally {
+      setCreatingMissed(false);
+    }
+  };
+
   const jumpToToday = () => {
     flushUnsavedImmediately();
     const nyToday = new Intl.DateTimeFormat("en-CA", {
@@ -2099,6 +2139,17 @@ export function JournalEntryEditor({
                 <span>Missed Trades ({periodMissedTrades.length})</span>
               </button>
             </div>
+
+            <button
+              type="button"
+              disabled={creatingMissed}
+              onClick={() => void handleAddMissedTradeForPeriod()}
+              className="inline-flex items-center gap-1 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-1.5 text-xs font-semibold text-white shadow-2xs transition disabled:opacity-50"
+              title="Create a new Missed Setup for this journal period and open the Missed Trade Lab"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{creatingMissed ? "Opening Lab..." : "Add Missed Trade"}</span>
+            </button>
           </div>
 
           {bottomTradesTab === "missed" && periodMissedTrades.length > 0 ? (
@@ -2302,8 +2353,17 @@ export function JournalEntryEditor({
             </table>
           </div>
         ) : (
-          <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-slate-200 dark:border-border/40 rounded-lg">
-            No missed trades recorded during this period.
+          <div className="py-8 text-center text-xs text-muted-foreground border border-dashed border-slate-200 dark:border-border/40 rounded-lg space-y-3">
+            <div>No missed trades recorded during this period.</div>
+            <button
+              type="button"
+              disabled={creatingMissed}
+              onClick={() => void handleAddMissedTradeForPeriod()}
+              className="inline-flex items-center gap-1.5 rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3.5 py-1.5 text-xs font-semibold text-white shadow transition disabled:opacity-50"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>{creatingMissed ? "Creating Missed Setup..." : "Add Missed Trade"}</span>
+            </button>
           </div>
         )}
       </div>

@@ -268,15 +268,35 @@ function MissedTradesDirectory() {
           <CardContent className="flex flex-wrap items-center justify-between gap-4 py-3">
             <div className="flex flex-wrap items-center gap-2">
               <select
-                value={newSymbolInput}
-                onChange={(e) => setNewSymbolInput(e.target.value)}
+                value={
+                  ["NAS100", "US500", "XAUUSD", "EURUSD", "GBPUSD"].includes(newSymbolInput)
+                    ? newSymbolInput
+                    : "__CUSTOM__"
+                }
+                onChange={(e) => {
+                  if (e.target.value === "__CUSTOM__") {
+                    const custom = window.prompt(
+                      "Enter custom symbol (e.g. US30, USDJPY, GBPJPY, DE40, BTCUSD):",
+                      newSymbolInput
+                    );
+                    if (custom && custom.trim()) {
+                      setNewSymbolInput(custom.trim().toUpperCase());
+                    }
+                  } else {
+                    setNewSymbolInput(e.target.value);
+                  }
+                }}
                 className="h-8 rounded-md border border-border bg-background px-2 text-xs font-mono font-bold text-foreground"
               >
-                {(journalSymbols?.symbols || ["NAS100", "US500", "US30", "XAUUSD"]).map((s) => (
-                  <option key={s} value={s}>
-                    {s}
-                  </option>
-                ))}
+                <option value="NAS100">NAS100 (LSE: NAS100/USD)</option>
+                <option value="US500">US500 (LSE: SPX500/USD)</option>
+                <option value="XAUUSD">XAUUSD (LSE: XAU/USD)</option>
+                <option value="EURUSD">EURUSD (LSE: EUR/USD)</option>
+                <option value="GBPUSD">GBPUSD (LSE: GBP/USD)</option>
+                {!["NAS100", "US500", "XAUUSD", "EURUSD", "GBPUSD"].includes(newSymbolInput) && (
+                  <option value={newSymbolInput}>{newSymbolInput} (Custom)</option>
+                )}
+                <option value="__CUSTOM__">+ Custom Symbol...</option>
               </select>
               <input
                 type="date"

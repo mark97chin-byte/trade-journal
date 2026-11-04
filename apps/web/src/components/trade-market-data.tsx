@@ -199,13 +199,28 @@ export function TradeMarketData({
   const [isCardExpanded, setIsCardExpanded] = useState(false);
   const [hasAutoLoaded, setHasAutoLoaded] = useState(false);
 
-  // Shared stable localStorage key so refreshing /missed never loses cached candles
+  const anchorDateKey = (anchorIso || trade.openedAt || "").slice(0, 10);
+
+  // Date-scoped localStorage key so jumping to a new date or opening a new missed setup never serves stale Oct 16 bars!
   const cacheKey = useMemo(() => {
     if (isStandalone) {
-      return `candle_cache_shared_${provider || "lse"}_${symbol}_${resolution}`;
+      return `candle_cache_${provider || "lse"}_${symbol}_${resolution}_${anchorDateKey}`;
     }
-    return `candle_cache_${trade.key}`;
-  }, [isStandalone, provider, symbol, resolution, trade.key]);
+    return `candle_cache_${trade.key}_${resolution}_${anchorDateKey}`;
+  }, [isStandalone, provider, symbol, resolution, trade.key, anchorDateKey]);
+
+  // Keep anchorIso and jumpDateInput synced if parent updates trade.openedAt (e.g. changing Setup Entry Time)
+  const prevTradeOpenedRef = useRef<string>(trade.openedAt);
+  useEffect(() => {
+    if (trade.openedAt && trade.openedAt !== prevTradeOpenedRef.current) {
+      prevTradeOpenedRef.current = trade.openedAt;
+      setAnchorIso(trade.openedAt);
+      setJumpDateInput(trade.openedAt.slice(0, 16));
+      if (provider && symbol) {
+        void load({ anchorIsoOverride: trade.openedAt, expandForwardView: true, useCustomDates: false });
+      }
+    }
+  }, [trade.openedAt, provider, symbol]);
 
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
@@ -352,7 +367,14 @@ export function TradeMarketData({
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (parsed.data && Array.isArray(parsed.data.bars) && parsed.data.bars.length > 0) {
+        const bars = parsed?.data?.bars;
+        const targetMs = Date.parse(anchorIso || trade.openedAt || "");
+        const maxBarMs = Array.isArray(bars) && bars.length > 0 ? bars[bars.length - 1].time : 0;
+        const minBarMs = Array.isArray(bars) && bars.length > 0 ? bars[0].time : 0;
+        const coversTarget =
+          !Number.isFinite(targetMs) ||
+          (targetMs >= minBarMs - 72 * 3600_000 && targetMs <= maxBarMs + 72 * 3600_000);
+        if (Array.isArray(bars) && bars.length > 0 && coversTarget) {
           setResult(parsed.data);
           onResultChange?.(parsed.data);
           if (parsed.resolution) setResolution(parsed.resolution);
@@ -379,6 +401,11 @@ export function TradeMarketData({
 
   return (
     <div className="space-y-3">
+      {error && (
+        <div role="alert" className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-2 text-xs font-medium text-rose-400">
+          Market Data Notice: {error}
+        </div>
+      )}
       {result && result.bars.length > 0 ? (
         <HistoricalReplay
           history={result}
