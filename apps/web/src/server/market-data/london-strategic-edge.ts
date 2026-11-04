@@ -1,10 +1,9 @@
 // apps/web/src/server/market-data/london-strategic-edge.ts
-import { RESOLUTIONS, type MarketBar } from "@/lib/market-data";
+import { RESOLUTIONS, aggregateCandles, type MarketBar } from "@/lib/market-data";
 import { MarketDataError, type MarketDataProvider } from "./provider";
 import { readJson } from "./http";
 import { resolveProviderSymbol } from "@/lib/symbol-mapping";
 import {
-  getCachedBounds,
   getCachedCandles,
   saveCachedCandles,
 } from "./candle-db";
@@ -65,7 +64,7 @@ export function parseLseBars(value: unknown): MarketBar[] {
   return [...unique.values()].sort((a, b) => a.time - b.time);
 }
 
-async function fetchLseRange(
+async function fetchLseRangeSingle(
   symbol: string,
   dataset: string | undefined,
   resolution: string,
@@ -91,7 +90,7 @@ async function fetchLseRange(
     const windowEnd = Math.min(end, cursor + windowDays * DAY);
     const params = new URLSearchParams({
       symbol,
-      timeframe: resolution,
+      timeframe: resolution === "1M" ? "1mo" : resolution,
       start: utcDate(cursor),
       end: utcDate(windowEnd),
       order: "asc",
@@ -132,6 +131,59 @@ async function fetchLseRange(
   return { bars: fetchedBars, clipped };
 }
 
+async function fetchLseRangeWithFallback(
+  symbol: string,
+  dataset: string | undefined,
+  resolution: string,
+  fromMs: number,
+  toMs: number,
+  step: number,
+  key: string,
+  signal?: AbortSignal,
+): Promise<{ bars: MarketBar[]; clipped: boolean }> {
+  // Normalize legacy singular dataset names if passed from client cache
+  const normDataset =
+    dataset === "index"
+      ? "indices"
+      : dataset === "forex"
+      ? "fx"
+      : dataset === "commodity"
+      ? ""
+      : dataset;
+
+  // 1. Try primary symbol + dataset
+  try {
+    const primary = await fetchLseRangeSingle(symbol, normDataset, resolution, fromMs, toMs, step, key, signal);
+    if (primary.bars.length > 0) return primary;
+  } catch (err) {
+    if (!normDataset) throw err;
+  }
+
+  // 2. Retry without dataset parameter in case symbol is unique across LSE classes
+  if (normDataset) {
+    try {
+      const noDs = await fetchLseRangeSingle(symbol, undefined, resolution, fromMs, toMs, step, key, signal);
+      if (noDs.bars.length > 0) return noDs;
+    } catch {}
+  }
+
+  // 3. If higher timeframe returned 0 bars, pull 1m bars and aggregate locally
+  if (resolution !== "1m") {
+    try {
+      const base1m = await fetchLseRangeSingle(symbol, normDataset, "1m", fromMs, toMs, 60_000, key, signal);
+      if (base1m.bars.length > 0) {
+        saveCachedCandles(PROVIDER_ID, symbol, "1m", base1m.bars);
+        return {
+          bars: aggregateCandles(base1m.bars, resolution),
+          clipped: base1m.clipped,
+        };
+      }
+    } catch {}
+  }
+
+  return { bars: [], clipped: false };
+}
+
 export const londonStrategicEdge: MarketDataProvider = {
   id: "london-strategic-edge",
   name: "London Strategic Edge",
@@ -143,21 +195,16 @@ export const londonStrategicEdge: MarketDataProvider = {
     const step = RESOLUTIONS[request.resolution as keyof typeof RESOLUTIONS] ?? 60_000;
     const nowMs = Date.now();
     const firstBar = Math.floor(request.from / step) * step;
-    // Clamp lastBar to current time so jumping to a recent date with +2d/+5d forward never requests future bars
     const clampedTo = Math.min(request.to, nowMs + step);
     const lastBar = Math.max(firstBar + step, Math.floor((clampedTo - 1) / step) * step);
 
-    // 1. Auto-normalize symbol and dataset (works even if request.symbol already has a slash)
+    // 1. Auto-normalize symbol and dataset (e.g. US500 -> SPX + indices, NAS100 -> NDX + indices)
     const mapped = resolveProviderSymbol(PROVIDER_ID, request.symbol);
     const symbol = mapped.symbol;
-    const dataset = request.dataset || mapped.dataset || undefined;
+    const dataset = mapped.dataset || request.dataset || undefined;
 
     // 2. Check actual cached bars inside [firstBar, lastBar]
     const existingWindowBars = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
-    const { minTime, maxTime } = getCachedBounds(PROVIDER_ID, symbol, request.resolution);
-    const hasCache = minTime !== null && maxTime !== null;
-
-    // Verify the cached bars actually cover the end of the requested range (within 68h for weekends)
     const maxWeekendGapMs = 68 * 3600_000;
     const windowStartCovered =
       existingWindowBars.length > 0 && existingWindowBars[0]!.time <= firstBar + maxWeekendGapMs;
@@ -177,10 +224,7 @@ export const londonStrategicEdge: MarketDataProvider = {
       };
     }
 
-    // 3. Fetch missing range directly for [firstBar, lastBar + step]
-    const newBars: MarketBar[] = [];
-    let clipped = false;
-
+    // 3. Fetch missing range from LSE
     try {
       const fetchStart = windowStartCovered && existingWindowBars.length > 0
         ? existingWindowBars[existingWindowBars.length - 1]!.time
@@ -189,7 +233,7 @@ export const londonStrategicEdge: MarketDataProvider = {
         ? existingWindowBars[0]!.time + step
         : lastBar + step;
 
-      const res = await fetchLseRange(
+      const res = await fetchLseRangeWithFallback(
         symbol,
         dataset,
         request.resolution,
@@ -199,11 +243,9 @@ export const londonStrategicEdge: MarketDataProvider = {
         key,
         request.signal
       );
-      newBars.push(...res.bars);
-      clipped = res.clipped;
 
-      if (newBars.length > 0) {
-        saveCachedCandles(PROVIDER_ID, symbol, request.resolution, newBars);
+      if (res.bars.length > 0) {
+        saveCachedCandles(PROVIDER_ID, symbol, request.resolution, res.bars);
       }
 
       const eligible = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
@@ -213,8 +255,8 @@ export const londonStrategicEdge: MarketDataProvider = {
         resolution: request.resolution,
         bars: eligible,
         fetchedAt: new Date().toISOString(),
-        truncated: clipped,
-        warnings: clipped ? ["Candle history reached provider limit for this window."] : [],
+        truncated: res.clipped,
+        warnings: res.clipped ? ["Candle history reached provider limit for this window."] : [],
       };
     } catch (err: any) {
       if (existingWindowBars.length > 0) {

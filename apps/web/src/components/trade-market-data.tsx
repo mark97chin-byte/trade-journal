@@ -236,6 +236,17 @@ export function TradeMarketData({
     }
   }, [available, provider, trade.symbol]);
 
+  // Keep mapped symbol and dataset synced if trade.symbol changes or legacy symbol was cached
+  useEffect(() => {
+    if (!provider) return;
+    const mapped = resolveProviderSymbol(provider, trade.symbol);
+    if (mapped.symbol !== symbol || (mapped.dataset || "") !== dataset) {
+      setSymbol(mapped.symbol);
+      setDataset(mapped.dataset || "");
+      setHasAutoLoaded(false);
+    }
+  }, [provider, trade.symbol]);
+
   const info = providerInfo(provider);
   const { data: csv } = useApi<{ datasets: MarketCsvDataset[] }>(
     info?.mode === "csv" ? "/api/market-data/csv" : null
@@ -446,7 +457,7 @@ export function TradeMarketData({
                   ? privacy
                     ? "••••"
                     : fmtMoney(saved.saved.estimate.mae!, trade.currency)
-                  : "Loading market data…"}
+                  : result && result.bars.length === 0 ? "No bars in window (use Jump or Reload below)" : "Loading market data…"}
               </p>
             </div>
             <div>
@@ -460,7 +471,7 @@ export function TradeMarketData({
                   ? privacy
                     ? "••••"
                     : fmtMoney(saved.saved.estimate.mfe!, trade.currency)
-                  : "Loading market data…"}
+                  : result && result.bars.length === 0 ? "No bars in window (use Jump or Reload below)" : "Loading market data…"}
               </p>
             </div>
             <div>

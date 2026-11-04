@@ -288,8 +288,8 @@ function MissedTradesDirectory() {
                 }}
                 className="h-8 rounded-md border border-border bg-background px-2 text-xs font-mono font-bold text-foreground"
               >
-                <option value="NAS100">NAS100 (LSE: NAS100/USD)</option>
-                <option value="US500">US500 (LSE: SPX500/USD)</option>
+                <option value="NAS100">NAS100 (LSE: NDX)</option>
+                <option value="US500">US500 (LSE: SPX)</option>
                 <option value="XAUUSD">XAUUSD (LSE: XAU/USD)</option>
                 <option value="EURUSD">EURUSD (LSE: EUR/USD)</option>
                 <option value="GBPUSD">GBPUSD (LSE: GBP/USD)</option>
