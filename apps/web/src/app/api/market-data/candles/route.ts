@@ -29,8 +29,7 @@ export async function POST(req: NextRequest) {
       : body.toDate
       ? Date.parse(String(body.toDate))
       : nowMs;
-    const maxAllowedToMs = providerId === "databento" ? nowMs - 3600_000 : nowMs;
-    const toMs = Math.min(rawToMs, maxAllowedToMs);
+    const toMs = Math.min(rawToMs, nowMs);
     const safeFromMs = fromMs >= toMs ? toMs - 5 * 86_400_000 : fromMs;
 
     const isNative = NATIVE_PROVIDER_RESOLUTIONS.has(requestedResolution);

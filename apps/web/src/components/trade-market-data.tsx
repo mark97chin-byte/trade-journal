@@ -360,9 +360,13 @@ export function TradeMarketData({
       ? nyInputToUtcMs(targetToStr)
       : closeMs + targetForward * 86_400_000;
 
-    // Clamp lookforward to 1 hour before current time for Databento (or current time for LSE)
-    const maxSafeToMs = provider === "databento" ? Date.now() - 3600_000 : Date.now();
-    const toMs = Math.min(rawToMs, maxSafeToMs);
+    // For standalone/missed setups, if openMs is within the last 7 days and targetForward > 0, extend to Date.now() so today's bars are included!
+    const nowMs = Date.now();
+    const extendedRawToMs =
+      isStandalone && !targetUseCustom && targetForward > 0 && nowMs - openMs <= 7 * 86_400_000
+        ? Math.max(rawToMs, nowMs)
+        : rawToMs;
+    const toMs = Math.min(extendedRawToMs, nowMs);
     const fromMs = rawFromMs >= toMs ? toMs - Math.max(1, targetPadding) * 86_400_000 : rawFromMs;
 
     const useDirectRangeEndpoint =
@@ -1378,6 +1382,19 @@ export function HistoricalReplay({
                 className="rounded bg-secondary hover:bg-secondary/80 border border-border px-2 py-0.5 text-[11px] font-semibold text-foreground transition"
               >
                 Jump
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  const nowNy = utcIsoToNyInput(new Date().toISOString());
+                  onJumpDateInputChange(nowNy);
+                  setTimeout(() => onJumpToDate(), 0);
+                }}
+                className="rounded bg-indigo-600/20 hover:bg-indigo-600/30 border border-indigo-500/40 px-1.5 py-0.5 text-[10px] font-semibold text-indigo-300 transition"
+                title="Jump straight to today's latest available candles"
+              >
+                Today
               </button>
             </div>
 

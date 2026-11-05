@@ -7,17 +7,17 @@ import {
 } from "./candle-db";
 
 const DATABENTO_API_BASE = "https://hist.databento.com/v0";
-const ONE_HOUR_MS = 3600_000;
+const INITIAL_LAG_MS = 2 * 60_000; // Try up to 2m ago; if Databento returns 422 available_end (~15m lag), auto-clamp to exact available_end
 
-// Remember Databento's reported available_end ceiling in-memory so subsequent requests don't hit 422 first
-let cachedDatasetAvailableEndMs: number | null = null;
+// Cache Databento's reported available_end for 90 seconds so it advances continuously throughout the trading day
+let cachedAvailableEnd: { ms: number; expiresAt: number } | null = null;
 
 function getSafeDatabentoCeilingMs(): number {
-  const oneHourAgo = Date.now() - ONE_HOUR_MS;
-  if (cachedDatasetAvailableEndMs !== null && cachedDatasetAvailableEndMs < oneHourAgo) {
-    return cachedDatasetAvailableEndMs;
+  const now = Date.now();
+  if (cachedAvailableEnd && cachedAvailableEnd.expiresAt > now) {
+    return Math.min(now - INITIAL_LAG_MS, cachedAvailableEnd.ms);
   }
-  return oneHourAgo;
+  return now - INITIAL_LAG_MS;
 }
 
 function resolveDatabentoKey(raw: unknown): string {
@@ -208,7 +208,7 @@ async function fetchDatabentoRange(
     const errorText = await res.text();
     const availEndMs = extractAvailableEndMsFrom422(errorText);
     if (availEndMs !== null) {
-      cachedDatasetAvailableEndMs = availEndMs;
+      cachedAvailableEnd = { ms: availEndMs, expiresAt: Date.now() + 90_000 };
       if (fromMs >= availEndMs - 60_000) {
         return [];
       }
@@ -337,7 +337,7 @@ export const databento: MarketDataProvider = {
       first1m,
       last1m,
       step1m,
-      2 * 3600_000 // Only fetch if > 2 hours of open-market data is missing
+      15 * 60_000 // Fetch whenever > 15 minutes of open-market data is uncached
     );
 
     if (missingRanges.length === 0) {

@@ -75,15 +75,15 @@ function computeMissingIntervals(
 }
 
 async function readVault(path: string, key: string, signal?: AbortSignal): Promise<unknown> {
+  // CRITICAL: Only send single lowercase "x-api-key" header so Node Undici never doubles the key!
   return readJson(
     `${VAULT_BASE}${path}`,
     {
-      "X-API-Key": key,
-      "x-api-key": key,
+      "x-api-key": key.trim(),
       "User-Agent": "LuxAlgo-Trade-Journal/market-data",
     },
     signal,
-    { timeoutMs: 60_000, cache: false },
+    { timeoutMs: 60_000, cache: path !== "/usage" },
   );
 }
 
@@ -180,6 +180,10 @@ function parseLseCsvBars(csvText: string): MarketBar[] {
   return [...unique.values()].sort((a, b) => a.time - b.time);
 }
 
+/**
+ * Fetches candles from `/vault/candles` using optimal 5,000-bar chunks
+ * (3 days per request for 1m, 16 days per request for 5m, 50 days for 15m).
+ */
 async function fetchLseVaultRangeSingle(
   symbol: string,
   resolution: string,
@@ -193,7 +197,8 @@ async function fetchLseVaultRangeSingle(
   const clampedToMs = Math.min(toMs, nowCeiling);
   let cursor = Math.floor(fromMs / DAY) * DAY;
   const end = Math.max(cursor + DAY, (Math.floor((clampedToMs - 1) / DAY) + 1) * DAY);
-  const windowDays = Math.max(1, Math.floor((1000 * step) / DAY));
+  // 4,800 bars per window fits comfortably inside limit=5000 with a single `order=asc` call!
+  const windowDays = Math.max(1, Math.min(60, Math.floor((4800 * step) / DAY)));
   const fetchedBars: MarketBar[] = [];
   let clipped = false;
 
@@ -201,9 +206,8 @@ async function fetchLseVaultRangeSingle(
     ? AbortSignal.any([signal, AbortSignal.timeout(90_000)])
     : AbortSignal.timeout(90_000);
 
-  for (let page = 0; page < MAX_PAGES / 2 && cursor < end && fetchedBars.length < MAX_BARS; page++) {
+  for (let page = 0; page < MAX_PAGES && cursor < end && fetchedBars.length < MAX_BARS; page++) {
     const windowEnd = Math.min(end, cursor + windowDays * DAY);
-    // Do NOT pass `dataset` to /vault/candles so XAU/USD and EUR/USD are never filtered out!
     const params = new URLSearchParams({
       symbol,
       timeframe: resolution === "1M" ? "1mo" : resolution,
@@ -212,38 +216,23 @@ async function fetchLseVaultRangeSingle(
       order: "asc",
       limit: "5000",
     });
-    const headPath = `/candles?${params}`;
-    params.set("order", "desc");
-    const pair = new AbortController();
-    const pageSignal = AbortSignal.any([reqSignal, pair.signal]);
-    let pages: unknown[];
-    try {
-      pages = await Promise.all([
-        readVault(headPath, key, pageSignal),
-        readVault(`/candles?${params}`, key, pageSignal),
-      ]);
-    } finally {
-      pair.abort();
-    }
-    const [head, tail] = pages.map(parseLseBars) as [MarketBar[], MarketBar[]];
-    const headTimes = new Set(head.map((b) => b.time));
-    if (
-      head.length !== tail.length ||
-      (head.length > 0 && !tail.some((b) => headTimes.has(b.time)))
-    ) {
+    const rawPage = await readVault(`/candles?${params}`, key, reqSignal);
+    const rows = parseLseBars(rawPage);
+    if (rows.length >= 5000) {
       clipped = true;
     }
-
-    const unique = new Map<number, MarketBar>();
-    for (const b of [...head, ...tail]) {
-      unique.set(b.time, b);
-    }
-    const rows = [...unique.values()].sort((a, b) => a.time - b.time);
     fetchedBars.push(...rows);
     cursor = windowEnd;
   }
 
-  return { bars: fetchedBars, clipped };
+  const unique = new Map<number, MarketBar>();
+  for (const b of fetchedBars) {
+    unique.set(b.time, b);
+  }
+  return {
+    bars: [...unique.values()].sort((a, b) => a.time - b.time),
+    clipped,
+  };
 }
 
 async function fetchLseV3Export(
@@ -288,6 +277,34 @@ async function fetchLseV3Export(
       const text = await res.text();
       return parseLseCsvBars(text);
     }
+    if (res.status === 202) {
+      const jobData = (await res.json().catch(() => ({}))) as Record<string, any>;
+      const jobId = jobData.id || jobData.job_id || jobData.job?.id;
+      if (jobId) {
+        for (let poll = 0; poll < 20; poll++) {
+          await new Promise((r) => setTimeout(r, 1200));
+          const jobRes = await fetch(`${V3_BASE}/jobs/${encodeURIComponent(String(jobId))}`, {
+            headers,
+            cache: "no-store",
+          });
+          if (!jobRes.ok) break;
+          const statusObj = (await jobRes.json().catch(() => ({}))) as Record<string, any>;
+          const state = String(statusObj.state || statusObj.status || "").toLowerCase();
+          if (["ready", "completed", "done", "finished", "succeeded"].includes(state)) {
+            const fileRes = await fetch(`${V3_BASE}/jobs/${encodeURIComponent(String(jobId))}/file`, {
+              headers,
+              cache: "no-store",
+            });
+            if (fileRes.ok) {
+              const text = await fileRes.text();
+              return parseLseCsvBars(text);
+            }
+            break;
+          }
+          if (["failed", "error", "cancelled", "refused"].includes(state)) break;
+        }
+      }
+    }
   } catch {}
   return [];
 }
@@ -303,16 +320,26 @@ async function fetchLseSegment(
   signal?: AbortSignal,
 ): Promise<{ bars: MarketBar[]; clipped: boolean }> {
   const isIndex = dataset === "indices" || ["SPX", "NDX", "DJI", "RUT", "VIX"].includes(symbol);
+  let lastErr: unknown = null;
 
-  // 1. For FX & Metals (XAU/USD, EUR/USD, GBP/USD): /vault/candles is live up to the current minute
+  // 1. For FX & Metals (EUR/USD, GBP/USD, XAU/USD): /vault/candles is live up to the current minute
   if (!isIndex) {
     try {
       const vaultRes = await fetchLseVaultRangeSingle(symbol, resolution, fromMs, toMs, step, key, signal);
       if (vaultRes.bars.length > 0) return vaultRes;
-    } catch {}
+    } catch (err) {
+      lastErr = err;
+    }
 
-    // If 15m/5m/1h returned 0 bars for recent window, pull 1m from /vault/candles and resample
+    // If higher timeframe had 0 bars on /vault/candles, check or fetch 1m and resample
     if (resolution !== "1m") {
+      const cached1m = getCachedCandles(PROVIDER_ID, symbol, "1m", fromMs, toMs);
+      if (cached1m.length > 0 && getOpenMarketMsBetween(cached1m[cached1m.length - 1]!.time, toMs) <= 2 * step) {
+        return {
+          bars: aggregateCandles(cached1m, resolution),
+          clipped: false,
+        };
+      }
       try {
         const vault1m = await fetchLseVaultRangeSingle(symbol, "1m", fromMs, toMs, 60_000, key, signal);
         if (vault1m.bars.length > 0) {
@@ -322,11 +349,13 @@ async function fetchLseSegment(
             clipped: vault1m.clipped,
           };
         }
-      } catch {}
+      } catch (err) {
+        if (!lastErr) lastErr = err;
+      }
     }
   }
 
-  // 2. For Indices (or fallback): /v3/export
+  // 2. Fallback to LSE Data 3.0 (/v3/export)
   const v3Market = isIndex ? "indices" : symbol.startsWith("XAU/") || symbol.startsWith("XAG/") ? "commodities" : "forex";
   const v3Sym = isIndex ? symbol.replace(/\.IDX$/i, "") : symbol;
   const v3Bars = await fetchLseV3Export(v3Market, v3Sym, resolution, fromMs, toMs, key, signal);
@@ -334,6 +363,7 @@ async function fetchLseSegment(
     return { bars: v3Bars, clipped: false };
   }
 
+  if (lastErr) throw lastErr;
   return { bars: [], clipped: false };
 }
 
@@ -355,12 +385,25 @@ export const londonStrategicEdge: MarketDataProvider = {
     const symbol = mapped.symbol;
     const dataset = mapped.dataset || request.dataset || undefined;
 
-    const existingWindowBars = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
-    const maxOpenGapMs = Math.max(3 * step, 45 * 60_000);
+    let existingWindowBars = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
+
+    // If native resolution cache is empty for this window but 1m cache exists in SQLite, seed from 1m!
+    if (existingWindowBars.length === 0 && request.resolution !== "1m") {
+      const cached1m = getCachedCandles(PROVIDER_ID, symbol, "1m", firstBar, lastBar);
+      if (cached1m.length > 0) {
+        const resampled = aggregateCandles(cached1m, request.resolution);
+        if (resampled.length > 0) {
+          saveCachedCandles(PROVIDER_ID, symbol, request.resolution, resampled);
+          existingWindowBars = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
+        }
+      }
+    }
+
+    const maxOpenGapMs = Math.max(3 * step, 30 * 60_000);
     const missingRanges = computeMissingIntervals(
       existingWindowBars,
       firstBar,
-       Math.min(lastBar, nowMs - step),
+      Math.min(lastBar, nowMs - step),
       step,
       maxOpenGapMs
     );
