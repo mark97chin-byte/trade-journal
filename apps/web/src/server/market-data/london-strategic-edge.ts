@@ -49,6 +49,38 @@ function resolveV3MarketAndSymbol(dataset: string | undefined, rawSymbol: string
   return { market: d || "indices", v3Symbol: cleanSym };
 }
 
+function getOpenMarketMsBetween(t1: number, t2: number): number {
+  if (t2 <= t1) return 0;
+  const step = 15 * 60_000;
+  let openMs = 0;
+  for (let t = t1; t < t2; t += step) {
+    const d = new Date(t);
+    const day = d.getUTCDay();
+    const hr = d.getUTCHours();
+    const isWeekendClosed =
+      day === 6 ||
+      (day === 5 && hr >= 21) ||
+      (day === 0 && hr < 22);
+    if (!isWeekendClosed) {
+      openMs += Math.min(step, t2 - t);
+    }
+  }
+  return openMs;
+}
+
+function hasInternalWeekdayGaps(bars: MarketBar[], maxOpenGapMs: number): boolean {
+  for (let i = 1; i < bars.length; i++) {
+    const prev = bars[i - 1]!.time;
+    const curr = bars[i]!.time;
+    if (curr - prev > maxOpenGapMs) {
+      if (getOpenMarketMsBetween(prev, curr) > maxOpenGapMs) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 async function readVault(path: string, key: string, signal?: AbortSignal): Promise<unknown> {
   return readJson(
     `${VAULT_BASE}${path}`,
@@ -58,7 +90,7 @@ async function readVault(path: string, key: string, signal?: AbortSignal): Promi
       "User-Agent": "lse-data/3.0",
     },
     signal,
-    { timeoutMs: 60_000, cache: path !== "/usage" },
+    { timeoutMs: 60_000, cache: false },
   );
 }
 
@@ -419,7 +451,7 @@ export const londonStrategicEdge: MarketDataProvider = {
     const step = RESOLUTIONS[request.resolution as keyof typeof RESOLUTIONS] ?? 60_000;
     const nowMs = Date.now();
     const firstBar = Math.floor(request.from / step) * step;
-    const clampedTo = Math.min(request.to, nowMs + step);
+    const clampedTo = Math.min(request.to, nowMs);
     const lastBar = Math.max(firstBar + step, Math.floor((clampedTo - 1) / step) * step);
 
     const mapped = resolveProviderSymbol(PROVIDER_ID, request.symbol);
@@ -427,14 +459,16 @@ export const londonStrategicEdge: MarketDataProvider = {
     const dataset = mapped.dataset || request.dataset || undefined;
 
     const existingWindowBars = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
-    const maxWeekendGapMs = 68 * 3600_000;
+    const maxOpenGapMs = Math.max(3 * step, 45 * 60_000);
     const windowStartCovered =
-      existingWindowBars.length > 0 && existingWindowBars[0]!.time <= firstBar + maxWeekendGapMs;
+      existingWindowBars.length > 0 &&
+      getOpenMarketMsBetween(firstBar, existingWindowBars[0]!.time) <= maxOpenGapMs;
     const windowEndCovered =
       existingWindowBars.length > 0 &&
-      existingWindowBars[existingWindowBars.length - 1]!.time >= Math.min(lastBar, nowMs) - maxWeekendGapMs;
+      getOpenMarketMsBetween(existingWindowBars[existingWindowBars.length - 1]!.time, Math.min(lastBar, nowMs - 5 * 60_000)) <= maxOpenGapMs;
+    const hasGaps = hasInternalWeekdayGaps(existingWindowBars, 4 * 3600_000);
 
-    if (windowStartCovered && windowEndCovered) {
+    if (windowStartCovered && windowEndCovered && !hasGaps) {
       return {
         provider: this.name,
         symbol,
@@ -447,26 +481,55 @@ export const londonStrategicEdge: MarketDataProvider = {
     }
 
     try {
-      const fetchStart = windowStartCovered && existingWindowBars.length > 0
-        ? existingWindowBars[existingWindowBars.length - 1]!.time
-        : firstBar;
-      const fetchEnd = windowEndCovered && existingWindowBars.length > 0
-        ? existingWindowBars[0]!.time + step
-        : lastBar + step;
+      const newBars: MarketBar[] = [];
+      let clipped = false;
 
-      const res = await fetchLseRangeWithFallback(
-        symbol,
-        dataset,
-        request.resolution,
-        fetchStart,
-        fetchEnd,
-        step,
-        key,
-        request.signal
-      );
+      if (existingWindowBars.length === 0 || hasGaps || (!windowStartCovered && !windowEndCovered)) {
+        const res = await fetchLseRangeWithFallback(
+          symbol,
+          dataset,
+          request.resolution,
+          firstBar,
+          lastBar + step,
+          step,
+          key,
+          request.signal
+        );
+        newBars.push(...res.bars);
+        clipped = res.clipped;
+      } else {
+        if (!windowStartCovered) {
+          const res = await fetchLseRangeWithFallback(
+            symbol,
+            dataset,
+            request.resolution,
+            firstBar,
+            existingWindowBars[0]!.time + step,
+            step,
+            key,
+            request.signal
+          );
+          newBars.push(...res.bars);
+          if (res.clipped) clipped = true;
+        }
+        if (!windowEndCovered) {
+          const res = await fetchLseRangeWithFallback(
+            symbol,
+            dataset,
+            request.resolution,
+            existingWindowBars[existingWindowBars.length - 1]!.time,
+            lastBar + step,
+            step,
+            key,
+            request.signal
+          );
+          newBars.push(...res.bars);
+          if (res.clipped) clipped = true;
+        }
+      }
 
-      if (res.bars.length > 0) {
-        saveCachedCandles(PROVIDER_ID, symbol, request.resolution, res.bars);
+      if (newBars.length > 0) {
+        saveCachedCandles(PROVIDER_ID, symbol, request.resolution, newBars);
       }
 
       const eligible = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
@@ -476,8 +539,8 @@ export const londonStrategicEdge: MarketDataProvider = {
         resolution: request.resolution,
         bars: eligible,
         fetchedAt: new Date().toISOString(),
-        truncated: res.clipped,
-        warnings: res.clipped ? ["Candle history reached provider limit for this window."] : [],
+        truncated: clipped,
+        warnings: clipped ? ["Candle history reached provider limit for this window."] : [],
       };
     } catch (err: any) {
       if (existingWindowBars.length > 0) {

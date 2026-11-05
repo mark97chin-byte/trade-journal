@@ -43,6 +43,66 @@ import { OptionSelect } from "./ui/option-select";
 import { resolveProviderSymbol, resolvePreferredProviderForSymbol } from "@/lib/symbol-mapping";
 
 
+function utcIsoToNyInput(isoStr: string | null | undefined): string {
+  const d = isoStr ? new Date(isoStr) : new Date();
+  if (isNaN(d.getTime())) return new Date().toISOString().slice(0, 16);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(d);
+  const map: Record<string, string> = {};
+  for (const p of parts) map[p.type] = p.value;
+  const hr = map.hour === "24" ? "00" : map.hour || "00";
+  return `${map.year}-${map.month}-${map.day}T${hr}:${map.minute}`;
+}
+
+function nyInputToUtcMs(nyLocalStr: string): number {
+  if (!nyLocalStr) return Date.now();
+  const m = nyLocalStr.match(/^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})/);
+  if (!m) {
+    const parsed = Date.parse(nyLocalStr);
+    return Number.isFinite(parsed) ? parsed : Date.now();
+  }
+  const yr = parseInt(m[1]!, 10);
+  const mo = parseInt(m[2]!, 10) - 1;
+  const dy = parseInt(m[3]!, 10);
+  const hr = parseInt(m[4]!, 10);
+  const mn = parseInt(m[5]!, 10);
+
+  const approxUtcMs = Date.UTC(yr, mo, dy, hr, mn);
+  const dtf = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+  const parts = dtf.formatToParts(new Date(approxUtcMs));
+  const pMap: Record<string, number> = {};
+  for (const p of parts) {
+    const v = parseInt(p.value, 10);
+    if (!isNaN(v)) pMap[p.type] = v;
+  }
+  const nyRepresentedMs = Date.UTC(
+    pMap.year || yr,
+    (pMap.month || mo + 1) - 1,
+    pMap.day || dy,
+    (pMap.hour || 0) % 24,
+    pMap.minute || 0,
+    pMap.second || 0
+  );
+  const offsetMs = nyRepresentedMs - approxUtcMs;
+  return approxUtcMs - offsetMs;
+}
+
 function formatNyTimeDisplay(timeMs: number | null | undefined): string {
   if (!timeMs || !Number.isFinite(timeMs)) return "—";
   const d = new Date(timeMs);
@@ -173,23 +233,20 @@ export function TradeMarketData({
     trade.openedAt || new Date().toISOString()
   );
   const [jumpDateInput, setJumpDateInput] = useState<string>(() =>
-    (trade.openedAt || new Date().toISOString()).slice(0, 16)
+    utcIsoToNyInput(trade.openedAt || new Date().toISOString())
   );
 
   const [useCustomDates, setUseCustomDates] = useState<boolean>(false);
   const [customFrom, setCustomFrom] = useState<string>(() => {
     const ms = Date.parse(trade.openedAt || new Date().toISOString()) - 3 * 86_400_000;
-    return new Date(Number.isFinite(ms) ? ms : Date.now() - 3 * 86_400_000)
-      .toISOString()
-      .slice(0, 16);
+    return utcIsoToNyInput(new Date(Number.isFinite(ms) ? ms : Date.now() - 3 * 86_400_000).toISOString());
   });
   const [customTo, setCustomTo] = useState<string>(() => {
-    const baseMs =
-      Date.parse(trade.closedAt || trade.openedAt || new Date().toISOString()) +
-      2 * 86_400_000;
-    return new Date(Number.isFinite(baseMs) ? baseMs : Date.now())
-      .toISOString()
-      .slice(0, 16);
+    const baseMs = Math.min(
+      Date.now(),
+      Date.parse(trade.closedAt || trade.openedAt || new Date().toISOString()) + 2 * 86_400_000
+    );
+    return utcIsoToNyInput(new Date(Number.isFinite(baseMs) ? baseMs : Date.now()).toISOString());
   });
   const [confirmed, setConfirmed] = useState(false);
 
@@ -215,7 +272,7 @@ export function TradeMarketData({
     if (trade.openedAt && trade.openedAt !== prevTradeOpenedRef.current) {
       prevTradeOpenedRef.current = trade.openedAt;
       setAnchorIso(trade.openedAt);
-      setJumpDateInput(trade.openedAt.slice(0, 16));
+      setJumpDateInput(utcIsoToNyInput(trade.openedAt));
       if (provider && symbol) {
         void load({ anchorIsoOverride: trade.openedAt, expandForwardView: true, useCustomDates: false });
       }
@@ -292,10 +349,10 @@ export function TradeMarketData({
         : openMs + 4 * 3600_000;
 
     const fromMs = targetUseCustom
-      ? Date.parse(targetFromStr)
+      ? nyInputToUtcMs(targetFromStr)
       : openMs - targetPadding * 86_400_000;
     const toMs = targetUseCustom
-      ? Date.parse(targetToStr)
+      ? nyInputToUtcMs(targetToStr)
       : closeMs + targetForward * 86_400_000;
 
     const useDirectRangeEndpoint =
@@ -369,35 +426,12 @@ export function TradeMarketData({
   useEffect(() => {
     if (hasAutoLoaded || !provider || !symbol) return;
     setHasAutoLoaded(true);
-
-    try {
-      const cached = localStorage.getItem(cacheKey);
-      if (cached) {
-        const parsed = JSON.parse(cached);
-        const bars = parsed?.data?.bars;
-        const targetMs = Date.parse(anchorIso || trade.openedAt || "");
-        const maxBarMs = Array.isArray(bars) && bars.length > 0 ? bars[bars.length - 1].time : 0;
-        const minBarMs = Array.isArray(bars) && bars.length > 0 ? bars[0].time : 0;
-        const coversTarget =
-          !Number.isFinite(targetMs) ||
-          (targetMs >= minBarMs - 72 * 3600_000 && targetMs <= maxBarMs + 72 * 3600_000);
-        if (Array.isArray(bars) && bars.length > 0 && coversTarget) {
-          setResult(parsed.data);
-          onResultChange?.(parsed.data);
-          if (parsed.resolution) setResolution(parsed.resolution);
-          if (parsed.paddingDays) setPaddingDays(parsed.paddingDays);
-          if (parsed.forwardDays !== undefined) setForwardDays(parsed.forwardDays);
-          return;
-        }
-      }
-    } catch {}
-
     void load();
   }, [hasAutoLoaded, provider, symbol, cacheKey]);
 
   const handleJumpToDate = () => {
     if (!jumpDateInput) return;
-    const parsedMs = Date.parse(jumpDateInput);
+    const parsedMs = nyInputToUtcMs(jumpDateInput);
     if (!Number.isFinite(parsedMs)) return;
     const iso = new Date(parsedMs).toISOString();
     setAnchorIso(iso);

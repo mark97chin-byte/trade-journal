@@ -29,7 +29,8 @@ export async function POST(req: NextRequest) {
       : body.toDate
       ? Date.parse(String(body.toDate))
       : nowMs;
-    const toMs = Math.max(fromMs + 3600_000, Math.min(rawToMs, nowMs + 3600_000));
+    const toMs = Math.min(rawToMs, nowMs);
+    const safeFromMs = fromMs >= toMs ? toMs - 5 * 86_400_000 : fromMs;
 
     const isNative = NATIVE_PROVIDER_RESOLUTIONS.has(requestedResolution);
     const baseResolution: Resolution = isNative
@@ -49,7 +50,7 @@ export async function POST(req: NextRequest) {
           symbol: normSymbol,
           dataset,
           resolution: baseResolution,
-          from: fromMs,
+          from: safeFromMs,
           to: toMs,
           signal: req.signal,
         },
@@ -65,7 +66,7 @@ export async function POST(req: NextRequest) {
         symbol: normSymbol,
         resolution: requestedResolution,
         bars,
-        from: fromMs,
+        from: safeFromMs,
         to: toMs,
       });
     } catch (providerErr: any) {
@@ -77,7 +78,7 @@ export async function POST(req: NextRequest) {
            WHERE provider LIKE ? AND UPPER(symbol) = UPPER(?) AND timeframe = ? AND time BETWEEN ? AND ?
            ORDER BY time ASC`
         )
-        .all(`%${providerId}%`, normSymbol, providerId === "databento" && baseResolution !== "1d" ? "1m" : baseResolution, fromMs, toMs) as any[];
+        .all(`%${providerId}%`, normSymbol, providerId === "databento" && baseResolution !== "1d" ? "1m" : baseResolution, safeFromMs, toMs) as any[];
 
       if (cachedRows.length > 0) {
         const bars =
