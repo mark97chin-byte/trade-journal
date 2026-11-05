@@ -25,10 +25,12 @@ export const GET = handler(() =>
     multipliers: getMultipliers(),
     currencyConversion: getCurrencyConversion(),
     ...getAiSettings(),
+    localAi: loadLocalAiSettings(),
   }),
 );
 
 interface SettingsBody {
+  localAi?: any;
   timeZone?: string;
   importTimeZone?: string;
   multipliers?: Record<string, number>;
@@ -42,6 +44,7 @@ interface SettingsBody {
 
 export const PATCH = handler(async (request: Request) => {
   const body = (await request.json()) as SettingsBody;
+  if (body.localAi && typeof body.localAi === 'object') { saveLocalAiSettings(body.localAi); }
   requireValue(body && typeof body === "object" && !Array.isArray(body), "Enter valid settings.");
   let conversion: CurrencyConversion | undefined;
   if (body.currencyConversion !== undefined) {

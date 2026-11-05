@@ -17,11 +17,25 @@ export interface PersonaConfig {
   systemPrompt: string;
 }
 
+export interface StrataChatSlotConfig {
+  modelsDir: string;
+  activeModelFile: string;
+  quantKv: string;
+  vramBudgetGb: number;
+  contextSize: number;
+  gpuLayers: number;
+  binaryPath: string;
+}
+
 export interface LocalAiSettings {
   mode: "local_kobold" | "cloud";
+  activeEngineSlot?: "strata_chat" | "kobold_report";
+  autoSwitchOnDemand?: boolean;
+  idleUnloadMinutes?: number;
   baseUrl: string;
   modelsDir: string;
   activeModelFile: string;
+  strataChat?: StrataChatSlotConfig;
   baselineRiskPct?: number;
   accountBalanceOverride?: number;
   general: PersonaConfig;
@@ -32,9 +46,21 @@ export type KoboldConfig = LocalAiSettings;
 
 export const DEFAULT_LOCAL_AI_SETTINGS: LocalAiSettings = {
   mode: "local_kobold",
+  activeEngineSlot: "strata_chat",
+  autoSwitchOnDemand: true,
+  idleUnloadMinutes: 30,
   baseUrl: process.env.KOBOLDCPP_URL || "http://100.75.201.34:5001",
   modelsDir: "~/koboldcpp/models",
   activeModelFile: "Qwen3.8-27B-Q4_K_M.gguf",
+  strataChat: {
+    modelsDir: "~/koboldcpp/models/IQ3_S",
+    activeModelFile: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00005.gguf",
+    quantKv: "tq3_5s",
+    vramBudgetGb: 10.5,
+    contextSize: 32768,
+    gpuLayers: 99,
+    binaryPath: "strata",
+  },
   baselineRiskPct: 1.0,
   accountBalanceOverride: 0,
   general: {

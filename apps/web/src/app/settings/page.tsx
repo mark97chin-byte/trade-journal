@@ -1,5 +1,4 @@
 "use client";
-import { AiModelOrchestratorCard } from "@/components/settings/ai-model-orchestrator-card";
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import {
@@ -185,7 +184,6 @@ function Settings() {
         </div>
       </div>
     
-      <div className="mt-6"><AiModelOrchestratorCard /></div>
-</div>
+      </div>
   );
 }

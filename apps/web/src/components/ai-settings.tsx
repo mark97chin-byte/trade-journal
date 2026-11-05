@@ -27,6 +27,8 @@ import {
   Play,
   Square,
   Terminal,
+  Zap,
+  Clock,
 } from "lucide-react";
 
 interface PersonaConfig {
@@ -37,42 +39,40 @@ interface PersonaConfig {
   systemPrompt: string;
 }
 
+interface StrataChatSlotConfig {
+  modelsDir: string;
+  activeModelFile: string;
+  quantKv: string;
+  vramBudgetGb: number;
+  contextSize: number;
+  gpuLayers: number;
+  binaryPath: string;
+}
+
 interface LocalAiSettingsPayload {
   mode: "local_kobold" | "cloud";
+  activeEngineSlot?: "strata_chat" | "kobold_report";
+  autoSwitchOnDemand?: boolean;
+  idleUnloadMinutes?: number;
   baseUrl: string;
   modelsDir: string;
   activeModelFile: string;
+  strataChat?: StrataChatSlotConfig;
   general: PersonaConfig;
   coach: PersonaConfig;
 }
 
 interface DaemonHardwareState {
+  engineType: "strata_chat" | "kobold_report";
   gpuLayers: number;
   contextSize: number;
   quantKv: string;
+  vramBudgetGb: number;
   flashAttention: boolean;
   useMtp: boolean;
+  idleUnloadMinutes: number;
+  autoSwitchOnDemand: boolean;
 }
-
-const CONTEXT_WINDOW_OPTIONS = [
-  { value: 8192, label: "8,192 tokens (8K - Fast)" },
-  { value: 16384, label: "16,384 tokens (16K - Standard)" },
-  { value: 32768, label: "32,768 tokens (32K - Recommended)" },
-  { value: 65536, label: "65,536 tokens (64K - Deep)" },
-  { value: 98304, label: "98,304 tokens (96K - Extended)" },
-  { value: 131072, label: "131,072 tokens (128K - Massive)" },
-  { value: 262144, label: "262,144 tokens (262K - Full Native)" },
-];
-
-const MAX_OUTPUT_OPTIONS = [
-  { value: 1024, label: "1,024 tokens (Brief)" },
-  { value: 2048, label: "2,048 tokens (Standard)" },
-  { value: 4096, label: "4,096 tokens (Detailed)" },
-  { value: 6144, label: "6,144 tokens (Deep Reasoning)" },
-  { value: 8192, label: "8,192 tokens (Extended CoT)" },
-  { value: 12288, label: "12,288 tokens (Heavy Synthesis)" },
-  { value: 16384, label: "16,384 tokens (Maximum Output)" },
-];
 
 const DEFAULT_GENERAL_PROMPT = `You are the reflection layer of a trader's journal.
 You see only the trader's own recorded data — trades, stats, and notes. Ground every statement in those numbers; never invent trades, prices, or market context you weren't given.
@@ -86,12 +86,25 @@ export function AiSettings() {
   const { data, refresh } = useApi<AiSettingsPayload & { localAi?: LocalAiSettingsPayload }>("/api/settings");
 
   const [activePersonaTab, setActivePersonaTab] = useState<"general" | "coach">("coach");
+  const [selectedSlot, setSelectedSlot] = useState<"strata_chat" | "kobold_report">("strata_chat");
 
   const [localSettings, setLocalSettings] = useState<LocalAiSettingsPayload>({
     mode: "local_kobold",
+    activeEngineSlot: "strata_chat",
+    autoSwitchOnDemand: true,
+    idleUnloadMinutes: 30,
     baseUrl: "http://100.75.201.34:5001",
     modelsDir: "~/koboldcpp/models",
     activeModelFile: "Qwen3.8-27B-Q4_K_M.gguf",
+    strataChat: {
+      modelsDir: "~/koboldcpp/models/IQ3_S",
+      activeModelFile: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00005.gguf",
+      quantKv: "tq3_5s",
+      vramBudgetGb: 10.5,
+      contextSize: 32768,
+      gpuLayers: 99,
+      binaryPath: "strata",
+    },
     general: {
       contextSize: 16384,
       maxOutputTokens: 2048,
@@ -108,16 +121,21 @@ export function AiSettings() {
     },
   });
 
-  // Desktop Hardware Launch Parameters (Controlled remotely on Port 5002)
   const [hwState, setHwState] = useState<DaemonHardwareState>({
+    engineType: "strata_chat",
     gpuLayers: 30,
     contextSize: 32768,
     quantKv: "q8_0",
+    vramBudgetGb: 10.5,
     flashAttention: true,
     useMtp: false,
+    idleUnloadMinutes: 30,
+    autoSwitchOnDemand: true,
   });
 
-  const [discoveredModels, setDiscoveredModels] = useState<Array<{ name: string; sizeMb: number }>>([]);
+  const [discoveredModels, setDiscoveredModels] = useState<
+    Array<{ name: string; sizeMb: number; shards?: number }>
+  >([]);
   const [scanningDir, setScanningDir] = useState(false);
   const [scanMessage, setScanMessage] = useState("");
 
@@ -126,6 +144,7 @@ export function AiSettings() {
     online: boolean;
     loading: boolean;
     processRunning: boolean;
+    activeEngine: string;
     model: string;
     logTail: string;
   }>({
@@ -133,6 +152,7 @@ export function AiSettings() {
     online: false,
     loading: false,
     processRunning: false,
+    activeEngine: "",
     model: "",
     logTail: "",
   });
@@ -151,25 +171,39 @@ export function AiSettings() {
     setProvider(data.aiProvider);
     setModel(data.aiModel);
     if (data.localAi) {
+      const slot = data.localAi.activeEngineSlot || "strata_chat";
+      setSelectedSlot(slot);
       setLocalSettings((prev) => ({
         ...prev,
         ...data.localAi,
+        strataChat: { ...prev.strataChat!, ...(data.localAi?.strataChat || {}) },
         general: { ...prev.general, ...(data.localAi?.general || {}) },
         coach: { ...prev.coach, ...(data.localAi?.coach || {}) },
       }));
     }
   }, [data]);
 
+  const currentSlotFolder =
+    selectedSlot === "strata_chat"
+      ? localSettings.strataChat?.modelsDir || "~/koboldcpp/models/IQ3_S"
+      : localSettings.modelsDir || "~/koboldcpp/models";
+
+  const currentSlotModel =
+    selectedSlot === "strata_chat"
+      ? localSettings.strataChat?.activeModelFile || ""
+      : localSettings.activeModelFile || "";
+
   const syncWithDesktopDaemon = useCallback(
     async (dirToScan?: string, customBaseUrl?: string) => {
       setScanningDir(true);
+      const targetFolder = dirToScan ?? currentSlotFolder;
       try {
         const res = await fetch("/api/ai/coach", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "scan_models",
-            dir: dirToScan || localSettings.modelsDir,
+            dir: targetFolder,
             baseUrl: customBaseUrl || localSettings.baseUrl,
           }),
         });
@@ -177,16 +211,30 @@ export function AiSettings() {
         if (json.ok) {
           if (Array.isArray(json.models)) {
             setDiscoveredModels(json.models);
+            const shardNote = json.models.some((m: any) => m.shards && m.shards > 1)
+              ? " (multi-part shards grouped automatically)"
+              : "";
             setScanMessage(
               json.models.length > 0
-                ? `Discovered ${json.models.length} .gguf model${json.models.length === 1 ? "" : "s"} on desktop`
-                : "No .gguf files found in this folder."
+                ? `Discovered ${json.models.length} .gguf model${json.models.length === 1 ? "" : "s"} in ${targetFolder}${shardNote}`
+                : `No .gguf files found in ${targetFolder}`
             );
-            if (
-              json.models.length > 0 &&
-              !json.models.some((m: any) => m.name === localSettings.activeModelFile)
-            ) {
-              setLocalSettings((prev) => ({ ...prev, activeModelFile: json.models[0].name }));
+            if (json.models.length > 0) {
+              const firstModel = json.models[0].name;
+              if (selectedSlot === "strata_chat") {
+                const cur = localSettings.strataChat?.activeModelFile || "";
+                if (!json.models.some((m: any) => m.name === cur)) {
+                  setLocalSettings((prev) => ({
+                    ...prev,
+                    strataChat: { ...prev.strataChat!, activeModelFile: firstModel },
+                  }));
+                }
+              } else {
+                const cur = localSettings.activeModelFile || "";
+                if (!json.models.some((m: any) => m.name === cur)) {
+                  setLocalSettings((prev) => ({ ...prev, activeModelFile: firstModel }));
+                }
+              }
             }
           }
           if (json.daemonState) {
@@ -195,8 +243,10 @@ export function AiSettings() {
               gpuLayers: json.daemonState.gpuLayers ?? prev.gpuLayers,
               contextSize: json.daemonState.contextSize ?? prev.contextSize,
               quantKv: json.daemonState.quantKv ?? prev.quantKv,
+              vramBudgetGb: json.daemonState.vramBudgetGb ?? prev.vramBudgetGb,
               flashAttention: json.daemonState.flashAttention ?? prev.flashAttention,
               useMtp: json.daemonState.useMtp ?? prev.useMtp,
+              idleUnloadMinutes: json.daemonState.idleUnloadMinutes ?? prev.idleUnloadMinutes,
             }));
           }
           setServerStatus({
@@ -204,7 +254,8 @@ export function AiSettings() {
             online: Boolean(json.online),
             loading: Boolean(json.loading),
             processRunning: Boolean(json.processRunning),
-            model: json.loadedModel || localSettings.activeModelFile,
+            activeEngine: json.daemonState?.engineType || "",
+            model: json.loadedModel || currentSlotModel,
             logTail: json.logTail || "",
           });
         }
@@ -214,14 +265,13 @@ export function AiSettings() {
         setScanningDir(false);
       }
     },
-    [localSettings.modelsDir, localSettings.baseUrl, localSettings.activeModelFile]
+    [currentSlotFolder, localSettings.baseUrl, currentSlotModel, selectedSlot, localSettings.strataChat, localSettings.activeModelFile]
   );
 
   useEffect(() => {
-    void syncWithDesktopDaemon();
-  }, []);
+    void syncWithDesktopDaemon(currentSlotFolder);
+  }, [selectedSlot]);
 
-  // Poll status automatically every 3 seconds while model is loading into VRAM
   useEffect(() => {
     if (!serverStatus.loading && !controllingServer) return;
     const t = setInterval(() => {
@@ -230,9 +280,22 @@ export function AiSettings() {
     return () => clearInterval(t);
   }, [serverStatus.loading, controllingServer, syncWithDesktopDaemon]);
 
-  const handleRemoteControl = async (command: "start" | "stop") => {
+  const handleRemoteControl = async (
+    command: "start" | "stop",
+    slotOverride?: "strata_chat" | "kobold_report"
+  ) => {
+    const targetSlot = slotOverride || selectedSlot;
     setControllingServer(true);
     setFeedback({});
+
+    const isStrata = targetSlot === "strata_chat";
+    const folder = isStrata
+      ? localSettings.strataChat?.modelsDir || "~/koboldcpp/models/IQ3_S"
+      : localSettings.modelsDir;
+    const modelFile = isStrata
+      ? localSettings.strataChat?.activeModelFile || ""
+      : localSettings.activeModelFile;
+
     try {
       const res = await fetch("/api/ai/coach", {
         method: "POST",
@@ -242,9 +305,19 @@ export function AiSettings() {
           command,
           baseUrl: localSettings.baseUrl,
           launchState: {
-            modelsDir: localSettings.modelsDir,
-            modelFile: localSettings.activeModelFile,
-            ...hwState,
+            engineType: targetSlot,
+            modelsDir: folder,
+            modelFile,
+            gpuLayers: isStrata ? (localSettings.strataChat?.gpuLayers ?? 99) : hwState.gpuLayers,
+            contextSize: isStrata
+              ? (localSettings.strataChat?.contextSize ?? 32768)
+              : hwState.contextSize,
+            quantKv: isStrata ? (localSettings.strataChat?.quantKv ?? "tq3_5s") : hwState.quantKv,
+            vramBudgetGb: localSettings.strataChat?.vramBudgetGb ?? 10.5,
+            flashAttention: hwState.flashAttention,
+            useMtp: hwState.useMtp,
+            idleUnloadMinutes: localSettings.idleUnloadMinutes ?? 30,
+            autoSwitchOnDemand: localSettings.autoSwitchOnDemand ?? true,
           },
         }),
       });
@@ -253,10 +326,12 @@ export function AiSettings() {
         setFeedback({
           success:
             command === "start"
-              ? `Starting ${localSettings.activeModelFile} on Desktop (${hwState.gpuLayers} GPU layers, ${hwState.contextSize} ctx)...`
-              : "Stopped KoboldCpp on Desktop (VRAM freed).",
+              ? isStrata
+                ? `Unloaded Report Engine & starting Strata (${modelFile}) with ${localSettings.strataChat?.quantKv || "tq3_5s"} KV cache...`
+                : `Unloaded Strata & starting KoboldCPP Report Engine (${modelFile})...`
+              : "Unloaded active model from Desktop GPU VRAM.",
         });
-        setTimeout(() => void syncWithDesktopDaemon(), 1500);
+        setTimeout(() => void syncWithDesktopDaemon(folder), 1500);
       } else {
         setFeedback({ error: json.error || "Remote control command failed." });
       }
@@ -268,12 +343,23 @@ export function AiSettings() {
   };
 
   const handleSelectModel = async (fileName: string) => {
-    setLocalSettings((prev) => ({ ...prev, activeModelFile: fileName }));
+    if (selectedSlot === "strata_chat") {
+      setLocalSettings((prev) => ({
+        ...prev,
+        strataChat: { ...prev.strataChat!, activeModelFile: fileName },
+      }));
+    } else {
+      setLocalSettings((prev) => ({ ...prev, activeModelFile: fileName }));
+    }
     try {
       await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "set_active_model", modelFile: fileName }),
+        body: JSON.stringify({
+          action: "set_active_model",
+          modelFile: fileName,
+          engineType: selectedSlot,
+        }),
       });
     } catch {}
   };
@@ -285,7 +371,10 @@ export function AiSettings() {
       await postJson(
         "/api/settings",
         {
-          localAi: localSettings,
+          localAi: {
+            ...localSettings,
+            activeEngineSlot: selectedSlot,
+          },
           aiProvider: provider,
           aiModel: model.trim(),
           ...(apiKey.trim() ? { [`${provider}Key`]: apiKey.trim() } : {}),
@@ -293,7 +382,7 @@ export function AiSettings() {
         "PATCH"
       );
       setApiKey("");
-      setFeedback({ success: "AI settings saved successfully." });
+      setFeedback({ success: "AI Engine, On-Demand Orchestrator & Persona settings saved." });
       refresh();
     } catch (err: any) {
       setFeedback({ error: err?.message || "Failed to save AI configuration." });
@@ -314,20 +403,6 @@ export function AiSettings() {
     }));
   };
 
-  const currentCtxOptions = CONTEXT_WINDOW_OPTIONS.some((o) => o.value === curPersona.contextSize)
-    ? CONTEXT_WINDOW_OPTIONS
-    : [
-        { value: curPersona.contextSize, label: `${curPersona.contextSize.toLocaleString()} tokens (Custom)` },
-        ...CONTEXT_WINDOW_OPTIONS,
-      ];
-
-  const currentOutOptions = MAX_OUTPUT_OPTIONS.some((o) => o.value === curPersona.maxOutputTokens)
-    ? MAX_OUTPUT_OPTIONS
-    : [
-        { value: curPersona.maxOutputTokens, label: `${curPersona.maxOutputTokens.toLocaleString()} tokens (Current)` },
-        ...MAX_OUTPUT_OPTIONS,
-      ];
-
   return (
     <Card id="ai-settings" className="scroll-mt-24 border-border/70 bg-[#12141d]">
       <CardHeader className="border-b border-border/40 pb-4">
@@ -341,7 +416,7 @@ export function AiSettings() {
                 AI Engine &amp; Behavioral Coach Settings
               </CardTitle>
               <p className="text-xs text-muted-foreground">
-                Start/stop your desktop GPU server remotely, select GGUF models, and configure independent persona settings.
+                On-demand mutual-exclusion GPU launcher (Strata Chat vs. KoboldCPP Reports), sharded GGUF selector, and persona tuning.
               </p>
             </div>
           </div>
@@ -389,12 +464,12 @@ export function AiSettings() {
 
         {localSettings.mode === "local_kobold" && (
           <div className="space-y-4 rounded-xl border border-indigo-500/25 bg-[#0d0f14] p-4">
-            {/* TOP CONTROL ROW: STATUS BADGE + START / STOP / TEST BUTTONS */}
+            {/* TOP CONTROL ROW: STATUS BADGE + START / STOP / LOGS */}
             <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-3">
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <FolderOpen className="h-4 w-4 text-indigo-400" />
                 <span className="font-bold text-foreground">
-                  Desktop GPU Server &amp; Remote Launcher
+                  Desktop GPU Server &amp; On-Demand Model Orchestrator
                 </span>
                 <span
                   className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${
@@ -408,7 +483,9 @@ export function AiSettings() {
                   {serverStatus.online ? (
                     <>
                       <CheckCircle2 className="h-3 w-3" />
-                      <span>Online · {serverStatus.model}</span>
+                      <span>
+                        Online ({serverStatus.activeEngine === "strata_chat" ? "Strata" : "KoboldCPP"}) · {serverStatus.model}
+                      </span>
                     </>
                   ) : serverStatus.loading ? (
                     <>
@@ -418,7 +495,7 @@ export function AiSettings() {
                   ) : (
                     <>
                       <AlertCircle className="h-3 w-3" />
-                      <span>Server Stopped</span>
+                      <span>GPU Idle (Unloaded)</span>
                     </>
                   )}
                 </span>
@@ -429,13 +506,13 @@ export function AiSettings() {
                   type="button"
                   size="sm"
                   disabled={controllingServer}
-                  onClick={() => void handleRemoteControl("start")}
+                  onClick={() => void handleRemoteControl("start", selectedSlot)}
                   className="h-7 bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-semibold"
                 >
                   <Play className="mr-1 h-3 w-3 fill-current" />
-                  {serverStatus.online || serverStatus.processRunning
-                    ? "Restart with Settings"
-                    : "Start Server"}
+                  {selectedSlot === "strata_chat"
+                    ? "Load Strata Chat Model"
+                    : "Load KoboldCPP Report Model"}
                 </Button>
 
                 {(serverStatus.online || serverStatus.processRunning) && (
@@ -448,7 +525,7 @@ export function AiSettings() {
                     className="h-7 border-rose-500/40 bg-rose-500/10 text-rose-300 hover:bg-rose-500/20 text-xs"
                   >
                     <Square className="mr-1 h-3 w-3 fill-current" />
-                    Stop Server
+                    Unload GPU VRAM
                   </Button>
                 )}
 
@@ -457,7 +534,7 @@ export function AiSettings() {
                   size="sm"
                   variant="outline"
                   disabled={scanningDir}
-                  onClick={() => void syncWithDesktopDaemon()}
+                  onClick={() => void syncWithDesktopDaemon(currentSlotFolder)}
                   className="h-7 text-xs"
                 >
                   <RefreshCw className={`mr-1 h-3 w-3 ${scanningDir ? "animate-spin" : ""}`} />
@@ -470,7 +547,6 @@ export function AiSettings() {
                   variant="ghost"
                   onClick={() => setShowLogs((v) => !v)}
                   className="h-7 text-xs text-muted-foreground hover:text-foreground"
-                  title="View live KoboldCpp console output from Desktop"
                 >
                   <Terminal className="mr-1 h-3.5 w-3.5" />
                   Logs
@@ -478,13 +554,80 @@ export function AiSettings() {
               </div>
             </div>
 
-            {/* COLLAPSIBLE LIVE DESKTOP LOG VIEWER */}
+            {/* DUAL-SLOT ENGINE SELECTOR TABS (MUTUAL EXCLUSION) */}
+            <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-border/60 bg-[#141722] p-2">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setSelectedSlot("strata_chat")}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                    selectedSlot === "strata_chat"
+                      ? "bg-indigo-600 text-white shadow"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                  }`}
+                >
+                  <Zap className="h-3.5 w-3.5 text-amber-300" />
+                  <span>Slot 1 · Interactive Chat (Strata · Qwen3.8-Flash-Next)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSelectedSlot("kobold_report")}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-bold transition ${
+                    selectedSlot === "kobold_report"
+                      ? "bg-indigo-600 text-white shadow"
+                      : "text-muted-foreground hover:text-foreground hover:bg-secondary/40"
+                  }`}
+                >
+                  <FileText className="h-3.5 w-3.5 text-sky-300" />
+                  <span>Slot 2 · Reports &amp; Audits (KoboldCPP · Original Setup)</span>
+                </button>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-4 px-2 text-[11px]">
+                <label className="flex items-center gap-1.5 cursor-pointer text-foreground font-medium">
+                  <input
+                    type="checkbox"
+                    checked={localSettings.autoSwitchOnDemand ?? true}
+                    onChange={(e) =>
+                      setLocalSettings((prev) => ({
+                        ...prev,
+                        autoSwitchOnDemand: e.target.checked,
+                      }))
+                    }
+                    className="accent-indigo-500 h-3.5 w-3.5"
+                  />
+                  <span>Auto-load on demand (Never run both at once)</span>
+                </label>
+
+                <div className="flex items-center gap-1.5 text-muted-foreground">
+                  <Clock className="h-3.5 w-3.5 text-indigo-400" />
+                  <span>Auto-unload after</span>
+                  <input
+                    type="number"
+                    min={5}
+                    max={240}
+                    value={localSettings.idleUnloadMinutes ?? 30}
+                    onChange={(e) =>
+                      setLocalSettings((prev) => ({
+                        ...prev,
+                        idleUnloadMinutes: Math.max(5, Number(e.target.value) || 30),
+                      }))
+                    }
+                    className="w-12 rounded border border-border bg-[#0d0f14] px-1.5 py-0.5 text-center font-mono text-xs text-foreground"
+                  />
+                  <span>mins idle</span>
+                </div>
+              </div>
+            </div>
+
             {showLogs && (
               <div className="rounded-lg border border-border/60 bg-black/80 p-3 font-mono text-[10px] text-emerald-300 max-h-48 overflow-y-auto whitespace-pre-wrap">
-                {serverStatus.logTail || "No KoboldCpp log output yet. Click 'Start Server' above."}
+                {serverStatus.logTail || "No console output yet. Click 'Load Model' above."}
               </div>
             )}
 
+            {/* FOLDER & ENDPOINT CONFIGURATION FOR SELECTED SLOT */}
             <div className="grid gap-3 sm:grid-cols-2">
               <div className="space-y-1">
                 <Label htmlFor="kobold-url">Desktop Endpoint URL</Label>
@@ -499,22 +642,38 @@ export function AiSettings() {
               </div>
 
               <div className="space-y-1">
-                <Label htmlFor="models-dir">Models Folder on Desktop</Label>
+                <Label htmlFor="models-dir">
+                  {selectedSlot === "strata_chat"
+                    ? "Strata Models / Shards Folder on Desktop"
+                    : "KoboldCPP Models Folder on Desktop"}
+                </Label>
                 <div className="flex items-center gap-1.5">
                   <Input
                     id="models-dir"
-                    value={localSettings.modelsDir}
-                    onChange={(e) =>
-                      setLocalSettings((prev) => ({ ...prev, modelsDir: e.target.value }))
+                    value={currentSlotFolder}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (selectedSlot === "strata_chat") {
+                        setLocalSettings((prev) => ({
+                          ...prev,
+                          strataChat: { ...prev.strataChat!, modelsDir: val },
+                        }));
+                      } else {
+                        setLocalSettings((prev) => ({ ...prev, modelsDir: val }));
+                      }
+                    }}
+                    placeholder={
+                      selectedSlot === "strata_chat"
+                        ? "~/koboldcpp/models/IQ3_S"
+                        : "~/koboldcpp/models"
                     }
-                    placeholder="~/koboldcpp/models"
                   />
                   <Button
                     type="button"
                     size="sm"
                     variant="outline"
                     disabled={scanningDir}
-                    onClick={() => void syncWithDesktopDaemon(localSettings.modelsDir)}
+                    onClick={() => void syncWithDesktopDaemon(currentSlotFolder)}
                     className="h-9 px-3 shrink-0"
                   >
                     <FolderOpen className="h-3.5 w-3.5" />
@@ -527,81 +686,157 @@ export function AiSettings() {
               </div>
             </div>
 
-            {/* ACTIVE GGUF DROPDOWN + HARDWARE STARTUP PARAMETERS */}
+            {/* ACTIVE GGUF MODEL FILE + SLOT-SPECIFIC HARDWARE PARAMETERS */}
             <div className="grid gap-3 sm:grid-cols-4 pt-2 border-t border-border/30">
               <div className="space-y-1 sm:col-span-2">
-                <Label htmlFor="active-model-select">Active GGUF Model File</Label>
+                <Label htmlFor="active-model-select">
+                  {selectedSlot === "strata_chat"
+                    ? "Active Strata GGUF Model / First Shard (-00001-of-0000N.gguf)"
+                    : "Active KoboldCPP Report GGUF Model File"}
+                </Label>
                 {discoveredModels.length > 0 ? (
                   <select
                     id="active-model-select"
-                    value={localSettings.activeModelFile}
+                    value={currentSlotModel}
                     onChange={(e) => void handleSelectModel(e.target.value)}
                     className="h-9 w-full rounded-lg border border-border/70 bg-[#141722] px-3 text-xs text-foreground outline-none focus:border-indigo-500 font-mono"
                   >
-                    {discoveredModels.map((m) => (
-                      <option key={m.name} value={m.name}>
-                        {m.name} {m.sizeMb > 0 ? `(${m.sizeMb} MB)` : ""}
-                      </option>
-                    ))}
+                    {discoveredModels.map((m) => {
+                      const sizeLabel =
+                        m.sizeMb >= 1024
+                          ? `${(m.sizeMb / 1024).toFixed(1)} GB`
+                          : `${m.sizeMb} MB`;
+                      const shardTag =
+                        m.shards && m.shards > 1 ? ` [${m.shards} shards · ${sizeLabel}]` : ` (${sizeLabel})`;
+                      return (
+                        <option key={m.name} value={m.name}>
+                          {m.name}
+                          {m.sizeMb > 0 ? shardTag : ""}
+                        </option>
+                      );
+                    })}
                   </select>
                 ) : (
                   <Input
                     id="active-model-select"
-                    value={localSettings.activeModelFile}
+                    value={currentSlotModel}
                     onChange={(e) => void handleSelectModel(e.target.value)}
-                    placeholder="Qwen3.8-27B-Q4_K_M.gguf"
+                    placeholder={
+                      selectedSlot === "strata_chat"
+                        ? "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00005.gguf"
+                        : "Qwen3.8-27B-Q4_K_M.gguf"
+                    }
                   />
                 )}
                 <p className="text-[10px] text-muted-foreground">
-                  Choose any GGUF in your desktop folder and click <strong>Start / Restart</strong>.
+                  {selectedSlot === "strata_chat"
+                    ? "Sharded GGUFs automatically group by their 00001 shard and load all parts together."
+                    : "Choose any GGUF in your desktop folder for overnight reports & audits."}
                 </p>
               </div>
 
-              <div className="space-y-1">
-                <div className="flex justify-between">
-                  <Label>GPU Layers (VRAM)</Label>
-                  <span className="font-mono text-indigo-300 font-bold">{hwState.gpuLayers} / 64</span>
-                </div>
-                <input
-                  type="range"
-                  min="0"
-                  max="65"
-                  step="1"
-                  value={hwState.gpuLayers}
-                  onChange={(e) =>
-                    setHwState((prev) => ({ ...prev, gpuLayers: Number(e.target.value) }))
-                  }
-                  className="w-full accent-indigo-500 mt-1.5"
-                />
-                <p className="text-[10px] text-muted-foreground">
-                  28–32 fits 12GB VRAM cleanly with 32K ctx.
-                </p>
-              </div>
+              {selectedSlot === "strata_chat" ? (
+                <>
+                  <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <Label>VRAM Budget (RTX 4070S)</Label>
+                      <span className="font-mono text-amber-300 font-bold">
+                        {localSettings.strataChat?.vramBudgetGb ?? 10.5} / 12 GB
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="6"
+                      max="11.5"
+                      step="0.5"
+                      value={localSettings.strataChat?.vramBudgetGb ?? 10.5}
+                      onChange={(e) =>
+                        setLocalSettings((prev) => ({
+                          ...prev,
+                          strataChat: {
+                            ...prev.strataChat!,
+                            vramBudgetGb: Number(e.target.value),
+                          },
+                        }))
+                      }
+                      className="w-full accent-indigo-500 mt-1.5"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      Pins hot routers in 12GB VRAM, streams cold experts from 64GB RAM.
+                    </p>
+                  </div>
 
-              <div className="space-y-1">
-                <Label>KV Cache &amp; Flash Attn</Label>
-                <div className="flex items-center gap-1.5">
-                  <OptionSelect
-                    value={hwState.quantKv}
-                    onValueChange={(v) => setHwState((prev) => ({ ...prev, quantKv: v }))}
-                  >
-                    <option value="q8_0">Q8_0 KV (Recommended)</option>
-                    <option value="q4_0">Q4_0 KV (Max VRAM Save)</option>
-                    <option value="f16">FP16 KV (Uncompressed)</option>
-                  </OptionSelect>
-                </div>
-                <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground pt-0.5 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={hwState.flashAttention}
-                    onChange={(e) =>
-                      setHwState((prev) => ({ ...prev, flashAttention: e.target.checked }))
-                    }
-                    className="accent-indigo-500"
-                  />
-                  <span>Enable Flash Attention</span>
-                </label>
-              </div>
+                  <div className="space-y-1">
+                    <Label>Strata TurboQuant KV Cache</Label>
+                    <OptionSelect
+                      value={localSettings.strataChat?.quantKv || "tq3_5s"}
+                      onValueChange={(v) =>
+                        setLocalSettings((prev) => ({
+                          ...prev,
+                          strataChat: { ...prev.strataChat!, quantKv: v },
+                        }))
+                      }
+                    >
+                      <option value="tq3_5s">tq3_5s (3.5-bit · High Intelligence)</option>
+                      <option value="tq3_0">tq3_0 (3.0-bit · Max Speed)</option>
+                      <option value="q8_0">q8_0 (8-bit Standard)</option>
+                    </OptionSelect>
+                    <p className="text-[10px] text-muted-foreground pt-0.5">
+                      Sub-bit KV cache (~40 tok/s with ISTA-DASLab IQ3_S).
+                    </p>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <div className="space-y-1">
+                    <div className="flex justify-between">
+                      <Label>GPU Layers (VRAM)</Label>
+                      <span className="font-mono text-indigo-300 font-bold">
+                        {hwState.gpuLayers} / 64
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min="0"
+                      max="65"
+                      step="1"
+                      value={hwState.gpuLayers}
+                      onChange={(e) =>
+                        setHwState((prev) => ({ ...prev, gpuLayers: Number(e.target.value) }))
+                      }
+                      className="w-full accent-indigo-500 mt-1.5"
+                    />
+                    <p className="text-[10px] text-muted-foreground">
+                      28–32 fits 12GB VRAM cleanly with 32K ctx.
+                    </p>
+                  </div>
+
+                  <div className="space-y-1">
+                    <Label>KV Cache &amp; Flash Attn</Label>
+                    <div className="flex items-center gap-1.5">
+                      <OptionSelect
+                        value={hwState.quantKv}
+                        onValueChange={(v) => setHwState((prev) => ({ ...prev, quantKv: v }))}
+                      >
+                        <option value="q8_0">Q8_0 KV (Recommended)</option>
+                        <option value="q4_0">Q4_0 KV (Max VRAM Save)</option>
+                        <option value="f16">FP16 KV (Uncompressed)</option>
+                      </OptionSelect>
+                    </div>
+                    <label className="flex items-center gap-1.5 text-[10px] text-muted-foreground pt-0.5 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={hwState.flashAttention}
+                        onChange={(e) =>
+                          setHwState((prev) => ({ ...prev, flashAttention: e.target.checked }))
+                        }
+                        className="accent-indigo-500"
+                      />
+                      <span>Enable Flash Attention</span>
+                    </label>
+                  </div>
+                </>
+              )}
             </div>
           </div>
         )}
@@ -620,7 +855,7 @@ export function AiSettings() {
                 }`}
               >
                 <Brain className="h-3.5 w-3.5" />
-                <span>Longitudinal Behavioral Coach</span>
+                <span>Longitudinal Behavioral Coach (Uses Slot 2 · Reports)</span>
               </button>
               <button
                 type="button"
@@ -632,7 +867,7 @@ export function AiSettings() {
                 }`}
               >
                 <FileText className="h-3.5 w-3.5" />
-                <span>General Journal (Recaps &amp; Critiques)</span>
+                <span>Interactive Chat &amp; Recaps (Uses Slot 1 · Strata)</span>
               </button>
             </div>
           </div>
