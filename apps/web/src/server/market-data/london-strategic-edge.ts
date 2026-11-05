@@ -8,45 +8,17 @@ import {
   saveCachedCandles,
 } from "./candle-db";
 
-const V3_BASE = "https://download.londonstrategicedge.com/v3";
 const VAULT_BASE = "https://api.londonstrategicedge.com/vault";
+const V3_BASE = "https://download.londonstrategicedge.com/v3";
 const PROVIDER_ID = "london-strategic-edge";
 const MAX_PAGES = 80;
 const MAX_BARS = 100_000;
 const DAY = 86_400_000;
 const utcDate = (time: number) => new Date(time).toISOString().slice(0, 10);
 
-// LSE Data 3.0 enforces "One download at a time" per API key (429 exports-busy if concurrent).
-// Queue v3 export requests sequentially in-process so parallel calls never collide!
-let v3ExportQueue: Promise<any> = Promise.resolve();
-function runSerializedV3Export<T>(task: () => Promise<T>): Promise<T> {
-  const next = v3ExportQueue.then(task, task);
-  v3ExportQueue = next.catch(() => {});
-  return next;
-}
-
 export function normalizeLSESymbol(raw: string): { symbol: string; dataset?: string } {
   const mapped = resolveProviderSymbol("london-strategic-edge", raw);
   return { symbol: mapped.symbol, dataset: mapped.dataset || undefined };
-}
-
-function resolveV3MarketAndSymbol(dataset: string | undefined, rawSymbol: string): { market: string; v3Symbol: string } {
-  const cleanSym = rawSymbol.trim().toUpperCase().replace(/\.IDX$/i, "");
-  const d = (dataset || "").toLowerCase().trim();
-
-  if (["SPX", "NDX", "DJI", "RUT", "VIX", "BUK100P", "BDE40P"].includes(cleanSym) || d === "indices" || d === "index") {
-    return { market: "indices", v3Symbol: cleanSym };
-  }
-  if (cleanSym.startsWith("XAU/") || cleanSym.startsWith("XAG/") || cleanSym.includes("WTI") || cleanSym.includes("BCO") || d === "commodities" || d === "commodity") {
-    return { market: "commodities", v3Symbol: cleanSym.replace("/", "_") };
-  }
-  if (/^[A-Z]{3}\/[A-Z]{3}$/.test(cleanSym) || d === "forex" || d === "fx") {
-    return { market: "forex", v3Symbol: cleanSym.replace("/", "_") };
-  }
-  if (d === "crypto" || cleanSym.endsWith("USDT")) {
-    return { market: "crypto", v3Symbol: cleanSym.replace("/", "") };
-  }
-  return { market: d || "indices", v3Symbol: cleanSym };
 }
 
 function getOpenMarketMsBetween(t1: number, t2: number): number {
@@ -68,17 +40,38 @@ function getOpenMarketMsBetween(t1: number, t2: number): number {
   return openMs;
 }
 
-function hasInternalWeekdayGaps(bars: MarketBar[], maxOpenGapMs: number): boolean {
-  for (let i = 1; i < bars.length; i++) {
-    const prev = bars[i - 1]!.time;
-    const curr = bars[i]!.time;
-    if (curr - prev > maxOpenGapMs) {
-      if (getOpenMarketMsBetween(prev, curr) > maxOpenGapMs) {
-        return true;
-      }
+function computeMissingIntervals(
+  existingBars: MarketBar[],
+  firstBar: number,
+  lastBar: number,
+  stepMs: number,
+  maxOpenGapMs: number
+): Array<{ from: number; to: number }> {
+  if (lastBar <= firstBar) return [];
+  if (existingBars.length === 0) {
+    return [{ from: firstBar, to: lastBar + stepMs }];
+  }
+
+  const missing: Array<{ from: number; to: number }> = [];
+  const firstCached = existingBars[0]!.time;
+  if (firstBar < firstCached && getOpenMarketMsBetween(firstBar, firstCached) > maxOpenGapMs) {
+    missing.push({ from: firstBar, to: firstCached + stepMs });
+  }
+
+  for (let i = 1; i < existingBars.length; i++) {
+    const prev = existingBars[i - 1]!.time;
+    const curr = existingBars[i]!.time;
+    if (curr - prev > 4 * 3600_000 && getOpenMarketMsBetween(prev, curr) > 4 * 3600_000) {
+      missing.push({ from: prev, to: curr + stepMs });
     }
   }
-  return false;
+
+  const lastCached = existingBars[existingBars.length - 1]!.time;
+  if (lastBar > lastCached && getOpenMarketMsBetween(lastCached, lastBar) > maxOpenGapMs) {
+    missing.push({ from: lastCached, to: lastBar + stepMs });
+  }
+
+  return missing;
 }
 
 async function readVault(path: string, key: string, signal?: AbortSignal): Promise<unknown> {
@@ -87,7 +80,7 @@ async function readVault(path: string, key: string, signal?: AbortSignal): Promi
     {
       "X-API-Key": key,
       "x-api-key": key,
-      "User-Agent": "lse-data/3.0",
+      "User-Agent": "LuxAlgo-Trade-Journal/market-data",
     },
     signal,
     { timeoutMs: 60_000, cache: false },
@@ -95,27 +88,6 @@ async function readVault(path: string, key: string, signal?: AbortSignal): Promi
 }
 
 export function parseLseBars(value: unknown): MarketBar[] {
-  // Handle /v3/preview tabular format: { columns: ["ts", "open", ...], rows: [[...], [...]] }
-  if (
-    value &&
-    typeof value === "object" &&
-    !Array.isArray(value) &&
-    Array.isArray((value as any).columns) &&
-    Array.isArray((value as any).rows) &&
-    Array.isArray((value as any).rows[0])
-  ) {
-    const cols = ((value as any).columns as string[]).map((c) => String(c).toLowerCase().trim());
-    const rawRows = (value as any).rows as unknown[][];
-    const asObjects = rawRows.map((arr) => {
-      const obj: Record<string, unknown> = {};
-      cols.forEach((c, i) => {
-        obj[c] = arr[i];
-      });
-      return obj;
-    });
-    return parseLseBars(asObjects);
-  }
-
   const rows = Array.isArray(value)
     ? value
     : value && typeof value === "object" && Array.isArray((value as any).rows)
@@ -196,7 +168,9 @@ function parseLseCsvBars(csvText: string): MarketBar[] {
     const close = Number(cols[idxClose]);
     const rawHigh = idxHigh >= 0 ? Number(cols[idxHigh]) : Math.max(open, close);
     const rawLow = idxLow >= 0 ? Number(cols[idxLow]) : Math.min(open, close);
-    const volume = (idxVol >= 0 ? Math.max(0, Number(cols[idxVol]) || 0) : 0) || (idxTrades >= 0 ? Math.max(0, Number(cols[idxTrades]) || 0) : 0);
+    const volume =
+      (idxVol >= 0 ? Math.max(0, Number(cols[idxVol]) || 0) : 0) ||
+      (idxTrades >= 0 ? Math.max(0, Number(cols[idxTrades]) || 0) : 0);
 
     if (!Number.isFinite(time) || !Number.isFinite(open) || !Number.isFinite(close)) continue;
     const high = Number.isFinite(rawHigh) ? Math.max(open, close, rawHigh, rawLow) : Math.max(open, close);
@@ -206,127 +180,8 @@ function parseLseCsvBars(csvText: string): MarketBar[] {
   return [...unique.values()].sort((a, b) => a.time - b.time);
 }
 
-function decodeBodyToBars(text: string, contentType: string): MarketBar[] {
-  const trimmed = text.trim();
-  if (!trimmed) return [];
-  if (contentType.includes("json") || trimmed.startsWith("{") || trimmed.startsWith("[")) {
-    try {
-      const json = JSON.parse(trimmed);
-      return parseLseBars(json);
-    } catch {
-      return [];
-    }
-  }
-  return parseLseCsvBars(trimmed);
-}
-
-/**
- * LSE Data 3.0 Fetcher (`https://download.londonstrategicedge.com/v3`)
- * Supports:
- *  - Immediate 200 CSV/JSON stream from `/v3/export` or `/v3/slice`
- *  - Asynchronous 202 Job Polling (`/v3/jobs/{id}` -> `/v3/jobs/{id}/file`)
- */
-async function fetchLseV3Range(
-  market: string,
-  v3Symbol: string,
-  resolution: string,
-  fromMs: number,
-  toMs: number,
-  key: string,
-  signal?: AbortSignal,
-): Promise<MarketBar[]> {
-  return runSerializedV3Export(async () => {
-    const tf = resolution === "1M" ? "1mo" : resolution;
-    // In LSE Data 3.0, `to` (YYYY-MM-DD) is exclusive, so round up to the next UTC day boundary (up to tomorrow UTC)
-    const maxExclusiveMs = Math.floor(Date.now() / DAY) * DAY + DAY;
-    const roundedToMs = Math.min(maxExclusiveMs, (Math.floor((toMs - 1) / DAY) + 1) * DAY);
-    const fromStr = utcDate(Math.floor(fromMs / DAY) * DAY);
-    let toStr = utcDate(roundedToMs);
-    if (toStr <= fromStr) {
-      toStr = utcDate(Math.floor(fromMs / DAY) * DAY + DAY);
-    }
-
-    const headers: Record<string, string> = {
-      "X-API-Key": key.trim(),
-      "User-Agent": "lse-data/3.0",
-    };
-
-    const symbolVariants = Array.from(
-      new Set([
-        v3Symbol,
-        v3Symbol.replace(/\.IDX$/i, ""),
-        `${v3Symbol.replace(/\.IDX$/i, "")}.IDX`,
-      ])
-    );
-
-    for (const sym of symbolVariants) {
-      for (const endpoint of ["/export", "/slice"]) {
-        const params = new URLSearchParams({
-          market,
-          symbol: sym,
-          timeframe: tf,
-          from: fromStr,
-          to: toStr,
-          format: "csv",
-        });
-
-        try {
-          const res = await fetch(`${V3_BASE}${endpoint}?${params}`, {
-            headers,
-            signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
-            cache: "no-store",
-          });
-
-          if (res.status === 200) {
-            const ctype = res.headers.get("content-type") || "";
-            const text = await res.text();
-            const bars = decodeBodyToBars(text, ctype);
-            if (bars.length > 0) return bars;
-          } else if (res.status === 202) {
-            // LSE Data 3.0 queued a background builder job -> poll /v3/jobs/{id} then download /v3/jobs/{id}/file
-            const jobData = (await res.json().catch(() => ({}))) as Record<string, any>;
-            const jobId = jobData.id || jobData.job_id || jobData.job?.id;
-            if (jobId) {
-              for (let poll = 0; poll < 25; poll++) {
-                await new Promise((r) => setTimeout(r, 1200));
-                const jobRes = await fetch(`${V3_BASE}/jobs/${encodeURIComponent(String(jobId))}`, {
-                  headers,
-                  cache: "no-store",
-                });
-                if (!jobRes.ok) break;
-                const statusObj = (await jobRes.json().catch(() => ({}))) as Record<string, any>;
-                const state = String(statusObj.state || statusObj.status || "").toLowerCase();
-
-                if (["ready", "completed", "done", "finished", "succeeded"].includes(state)) {
-                  const fileRes = await fetch(`${V3_BASE}/jobs/${encodeURIComponent(String(jobId))}/file`, {
-                    headers,
-                    cache: "no-store",
-                  });
-                  if (fileRes.ok) {
-                    const ctype = fileRes.headers.get("content-type") || "";
-                    const text = await fileRes.text();
-                    const bars = decodeBodyToBars(text, ctype);
-                    if (bars.length > 0) return bars;
-                  }
-                  break;
-                }
-                if (["failed", "error", "cancelled", "refused"].includes(state)) {
-                  break;
-                }
-              }
-            }
-          }
-        } catch {}
-      }
-    }
-
-    return [];
-  });
-}
-
 async function fetchLseVaultRangeSingle(
   symbol: string,
-  dataset: string | undefined,
   resolution: string,
   fromMs: number,
   toMs: number,
@@ -348,6 +203,7 @@ async function fetchLseVaultRangeSingle(
 
   for (let page = 0; page < MAX_PAGES / 2 && cursor < end && fetchedBars.length < MAX_BARS; page++) {
     const windowEnd = Math.min(end, cursor + windowDays * DAY);
+    // Do NOT pass `dataset` to /vault/candles so XAU/USD and EUR/USD are never filtered out!
     const params = new URLSearchParams({
       symbol,
       timeframe: resolution === "1M" ? "1mo" : resolution,
@@ -356,7 +212,6 @@ async function fetchLseVaultRangeSingle(
       order: "asc",
       limit: "5000",
     });
-    if (dataset) params.set("dataset", dataset);
     const headPath = `/candles?${params}`;
     params.set("order", "desc");
     const pair = new AbortController();
@@ -391,7 +246,53 @@ async function fetchLseVaultRangeSingle(
   return { bars: fetchedBars, clipped };
 }
 
-async function fetchLseRangeWithFallback(
+async function fetchLseV3Export(
+  market: string,
+  v3Symbol: string,
+  resolution: string,
+  fromMs: number,
+  toMs: number,
+  key: string,
+  signal?: AbortSignal,
+): Promise<MarketBar[]> {
+  const tf = resolution === "1M" ? "1mo" : resolution;
+  const maxExclusiveMs = Math.floor(Date.now() / DAY) * DAY + DAY;
+  const roundedToMs = Math.min(maxExclusiveMs, (Math.floor((toMs - 1) / DAY) + 1) * DAY);
+  const fromStr = utcDate(Math.floor(fromMs / DAY) * DAY);
+  let toStr = utcDate(roundedToMs);
+  if (toStr <= fromStr) {
+    toStr = utcDate(Math.floor(fromMs / DAY) * DAY + DAY);
+  }
+
+  const headers: Record<string, string> = {
+    "X-API-Key": key.trim(),
+    "User-Agent": "lse-data/3.0",
+  };
+
+  const params = new URLSearchParams({
+    market,
+    symbol: v3Symbol,
+    timeframe: tf,
+    from: fromStr,
+    to: toStr,
+    format: "csv",
+  });
+
+  try {
+    const res = await fetch(`${V3_BASE}/export?${params}`, {
+      headers,
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(45_000)]) : AbortSignal.timeout(45_000),
+      cache: "no-store",
+    });
+    if (res.status === 200) {
+      const text = await res.text();
+      return parseLseCsvBars(text);
+    }
+  } catch {}
+  return [];
+}
+
+async function fetchLseSegment(
   symbol: string,
   dataset: string | undefined,
   resolution: string,
@@ -401,40 +302,36 @@ async function fetchLseRangeWithFallback(
   key: string,
   signal?: AbortSignal,
 ): Promise<{ bars: MarketBar[]; clipped: boolean }> {
-  const { market, v3Symbol } = resolveV3MarketAndSymbol(dataset, symbol);
+  const isIndex = dataset === "indices" || ["SPX", "NDX", "DJI", "RUT", "VIX"].includes(symbol);
 
-  // 1. For Indices / Stocks / Futures: Query LSE Data 3.0 (/v3/export & /v3/slice with 202 Job Polling) first!
-  if (market === "indices" || market === "us_stocks" || market === "futures") {
-    const v3Bars = await fetchLseV3Range(market, v3Symbol, resolution, fromMs, toMs, key, signal);
-    if (v3Bars.length > 0) {
-      return { bars: v3Bars, clipped: false };
-    }
-    if (resolution !== "1m") {
-      const v3Bars1m = await fetchLseV3Range(market, v3Symbol, "1m", fromMs, toMs, key, signal);
-      if (v3Bars1m.length > 0) {
-        saveCachedCandles(PROVIDER_ID, symbol, "1m", v3Bars1m);
-        return { bars: aggregateCandles(v3Bars1m, resolution), clipped: false };
-      }
-    }
-  }
-
-  // 2. For FX / Commodities (or fallback): Query /vault/candles
-  const vaultCandidates =
-    market === "indices"
-      ? [`${v3Symbol}.IDX`, v3Symbol, `${v3Symbol}/USD`]
-      : [symbol, v3Symbol];
-
-  for (const cand of vaultCandidates) {
+  // 1. For FX & Metals (XAU/USD, EUR/USD, GBP/USD): /vault/candles is live up to the current minute
+  if (!isIndex) {
     try {
-      const vaultRes = await fetchLseVaultRangeSingle(cand, undefined, resolution, fromMs, toMs, step, key, signal);
+      const vaultRes = await fetchLseVaultRangeSingle(symbol, resolution, fromMs, toMs, step, key, signal);
       if (vaultRes.bars.length > 0) return vaultRes;
     } catch {}
+
+    // If 15m/5m/1h returned 0 bars for recent window, pull 1m from /vault/candles and resample
+    if (resolution !== "1m") {
+      try {
+        const vault1m = await fetchLseVaultRangeSingle(symbol, "1m", fromMs, toMs, 60_000, key, signal);
+        if (vault1m.bars.length > 0) {
+          saveCachedCandles(PROVIDER_ID, symbol, "1m", vault1m.bars);
+          return {
+            bars: aggregateCandles(vault1m.bars, resolution),
+            clipped: vault1m.clipped,
+          };
+        }
+      } catch {}
+    }
   }
 
-  // 3. Fallback to /v3 for FX / Commodities if /vault was empty
-  if (market !== "indices") {
-    const v3Bars = await fetchLseV3Range(market, v3Symbol, resolution, fromMs, toMs, key, signal);
-    if (v3Bars.length > 0) return { bars: v3Bars, clipped: false };
+  // 2. For Indices (or fallback): /v3/export
+  const v3Market = isIndex ? "indices" : symbol.startsWith("XAU/") || symbol.startsWith("XAG/") ? "commodities" : "forex";
+  const v3Sym = isIndex ? symbol.replace(/\.IDX$/i, "") : symbol;
+  const v3Bars = await fetchLseV3Export(v3Market, v3Sym, resolution, fromMs, toMs, key, signal);
+  if (v3Bars.length > 0) {
+    return { bars: v3Bars, clipped: false };
   }
 
   return { bars: [], clipped: false };
@@ -460,15 +357,15 @@ export const londonStrategicEdge: MarketDataProvider = {
 
     const existingWindowBars = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);
     const maxOpenGapMs = Math.max(3 * step, 45 * 60_000);
-    const windowStartCovered =
-      existingWindowBars.length > 0 &&
-      getOpenMarketMsBetween(firstBar, existingWindowBars[0]!.time) <= maxOpenGapMs;
-    const windowEndCovered =
-      existingWindowBars.length > 0 &&
-      getOpenMarketMsBetween(existingWindowBars[existingWindowBars.length - 1]!.time, Math.min(lastBar, nowMs - 5 * 60_000)) <= maxOpenGapMs;
-    const hasGaps = hasInternalWeekdayGaps(existingWindowBars, 4 * 3600_000);
+    const missingRanges = computeMissingIntervals(
+      existingWindowBars,
+      firstBar,
+       Math.min(lastBar, nowMs - step),
+      step,
+      maxOpenGapMs
+    );
 
-    if (windowStartCovered && windowEndCovered && !hasGaps) {
+    if (missingRanges.length === 0) {
       return {
         provider: this.name,
         symbol,
@@ -481,55 +378,22 @@ export const londonStrategicEdge: MarketDataProvider = {
     }
 
     try {
-      const newBars: MarketBar[] = [];
       let clipped = false;
-
-      if (existingWindowBars.length === 0 || hasGaps || (!windowStartCovered && !windowEndCovered)) {
-        const res = await fetchLseRangeWithFallback(
+      for (const range of missingRanges) {
+        const res = await fetchLseSegment(
           symbol,
           dataset,
           request.resolution,
-          firstBar,
-          lastBar + step,
+          range.from,
+          range.to,
           step,
           key,
           request.signal
         );
-        newBars.push(...res.bars);
-        clipped = res.clipped;
-      } else {
-        if (!windowStartCovered) {
-          const res = await fetchLseRangeWithFallback(
-            symbol,
-            dataset,
-            request.resolution,
-            firstBar,
-            existingWindowBars[0]!.time + step,
-            step,
-            key,
-            request.signal
-          );
-          newBars.push(...res.bars);
-          if (res.clipped) clipped = true;
+        if (res.bars.length > 0) {
+          saveCachedCandles(PROVIDER_ID, symbol, request.resolution, res.bars);
         }
-        if (!windowEndCovered) {
-          const res = await fetchLseRangeWithFallback(
-            symbol,
-            dataset,
-            request.resolution,
-            existingWindowBars[existingWindowBars.length - 1]!.time,
-            lastBar + step,
-            step,
-            key,
-            request.signal
-          );
-          newBars.push(...res.bars);
-          if (res.clipped) clipped = true;
-        }
-      }
-
-      if (newBars.length > 0) {
-        saveCachedCandles(PROVIDER_ID, symbol, request.resolution, newBars);
+        if (res.clipped) clipped = true;
       }
 
       const eligible = getCachedCandles(PROVIDER_ID, symbol, request.resolution, firstBar, lastBar);

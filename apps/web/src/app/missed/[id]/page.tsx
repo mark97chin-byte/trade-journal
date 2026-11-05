@@ -195,7 +195,7 @@ function rebalanceEqualPartialsForm(
       entryPrice > 0 &&
       Number.isFinite(fullTargetPrice) &&
       fullTargetPrice > 0
-        ? Number((entryPrice + (fullTargetPrice - entryPrice) * ratio).toFixed(2))
+        ? Number((entryPrice + (fullTargetPrice - entryPrice) * ratio).toFixed(entryPrice > 0 && entryPrice < 10 ? 5 : entryPrice > 0 && entryPrice < 250 ? 3 : 2))
         : it.price;
     return {
       ...it,
@@ -1371,7 +1371,13 @@ function LoadedMissedSetupWorkspace({
                       <input
                         type="datetime-local"
                         value={utcIsoToNyInput(entryIso)}
-                        onChange={(e) => setEntryIso(nyInputToUtcIso(e.target.value))}
+                        onChange={(e) => {
+                          const nextIso = nyInputToUtcIso(e.target.value);
+                          setEntryIso(nextIso);
+                          if (!exitIso || Date.parse(exitIso) < Date.parse(nextIso)) {
+                            setExitIso(nextIso);
+                          }
+                        }}
                         className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground font-mono"
                       />
                     </div>
@@ -1848,6 +1854,9 @@ function LoadedMissedSetupWorkspace({
                 onExtractRr={handleApplyExtractedRr}
                 onJumpDateChange={(iso) => {
                   setEntryIso(iso);
+                  if (!exitIso || Date.parse(exitIso) < Date.parse(iso)) {
+                    setExitIso(iso);
+                  }
                 }}
                 initialRrOverlay={
                   parseFloat(entryStr) > 0 &&

@@ -7,7 +7,18 @@ import {
 } from "./candle-db";
 
 const DATABENTO_API_BASE = "https://hist.databento.com/v0";
-const MIN_LAG_MS = 20 * 60_000; // 20m safety buffer for Databento historical ingestion
+const ONE_HOUR_MS = 3600_000;
+
+// Remember Databento's reported available_end ceiling in-memory so subsequent requests don't hit 422 first
+let cachedDatasetAvailableEndMs: number | null = null;
+
+function getSafeDatabentoCeilingMs(): number {
+  const oneHourAgo = Date.now() - ONE_HOUR_MS;
+  if (cachedDatasetAvailableEndMs !== null && cachedDatasetAvailableEndMs < oneHourAgo) {
+    return cachedDatasetAvailableEndMs;
+  }
+  return oneHourAgo;
+}
 
 function resolveDatabentoKey(raw: unknown): string {
   if (!raw) return "";
@@ -29,8 +40,8 @@ function resolveDatabentoKey(raw: unknown): string {
 }
 
 /**
- * Calculates how many milliseconds between [t1, t2] fall during open CME/FX market hours
- * (excludes Friday 21:00 UTC -> Sunday 22:00 UTC weekend closure).
+ * Calculates how many milliseconds between [t1, t2] fall during open CME Globex hours
+ * (excludes Friday 21:00 UTC -> Sunday 22:00 UTC weekend closure and daily 21:00-22:00 UTC maintenance).
  */
 export function getOpenMarketMsBetween(t1: number, t2: number): number {
   if (t2 <= t1) return 0;
@@ -44,24 +55,54 @@ export function getOpenMarketMsBetween(t1: number, t2: number): number {
       day === 6 ||
       (day === 5 && hr >= 21) ||
       (day === 0 && hr < 22);
-    if (!isWeekendClosed) {
+    const isDailyMaintenance = hr === 21;
+    if (!isWeekendClosed && !isDailyMaintenance) {
       openMs += Math.min(step, t2 - t);
     }
   }
   return openMs;
 }
 
-function hasInternalWeekdayGaps(bars: MarketBar[], maxOpenGapMs: number): boolean {
-  for (let i = 1; i < bars.length; i++) {
-    const prev = bars[i - 1]!.time;
-    const curr = bars[i]!.time;
-    if (curr - prev > maxOpenGapMs) {
-      if (getOpenMarketMsBetween(prev, curr) > maxOpenGapMs) {
-        return true;
-      }
+/**
+ * Computes ONLY the uncached [startMs, endMs] sub-intervals inside [firstBar, lastBar]
+ * so we NEVER re-download candles that are already in market_candles.db.
+ */
+function computeMissingIntervals(
+  existingBars: MarketBar[],
+  firstBar: number,
+  lastBar: number,
+  stepMs: number,
+  maxOpenGapMs: number
+): Array<{ from: number; to: number }> {
+  if (lastBar <= firstBar) return [];
+  if (existingBars.length === 0) {
+    return [{ from: firstBar, to: lastBar + stepMs }];
+  }
+
+  const missing: Array<{ from: number; to: number }> = [];
+
+  // 1. Missing Head (before first cached bar)
+  const firstCached = existingBars[0]!.time;
+  if (firstBar < firstCached && getOpenMarketMsBetween(firstBar, firstCached) > maxOpenGapMs) {
+    missing.push({ from: firstBar, to: firstCached });
+  }
+
+  // 2. Missing Internal Gaps (only if gap during open market hours exceeds threshold)
+  for (let i = 1; i < existingBars.length; i++) {
+    const prev = existingBars[i - 1]!.time;
+    const curr = existingBars[i]!.time;
+    if (curr - prev > maxOpenGapMs && getOpenMarketMsBetween(prev, curr) > maxOpenGapMs) {
+      missing.push({ from: prev + stepMs, to: curr });
     }
   }
-  return false;
+
+  // 3. Missing Tail (after last cached bar up to lastBar)
+  const lastCached = existingBars[existingBars.length - 1]!.time;
+  if (lastBar > lastCached && getOpenMarketMsBetween(lastCached, lastBar) > maxOpenGapMs) {
+    missing.push({ from: lastCached + stepMs, to: lastBar + stepMs });
+  }
+
+  return missing;
 }
 
 function parseDatabentoNdjson(rawText: string): MarketBar[] {
@@ -98,6 +139,25 @@ function parseDatabentoNdjson(rawText: string): MarketBar[] {
   return [...unique.values()].sort((a, b) => a.time - b.time);
 }
 
+function extractAvailableEndMsFrom422(errorText: string): number | null {
+  try {
+    const errJson = JSON.parse(errorText);
+    const availEndStr =
+      errJson?.detail?.payload?.available_end ??
+      errJson?.payload?.available_end;
+    if (typeof availEndStr === "string") {
+      const ms = Date.parse(availEndStr);
+      if (Number.isFinite(ms)) return ms - 60_000;
+    }
+  } catch {}
+  const match = errorText.match(/before\s+(\d{4}-\d{2}-\d{2}T[0-9:.]+Z)/i);
+  if (match && match[1]) {
+    const ms = Date.parse(match[1]);
+    if (Number.isFinite(ms)) return ms - 60_000;
+  }
+  return null;
+}
+
 async function fetchDatabentoRange(
   dataset: string,
   symbol: string,
@@ -108,7 +168,7 @@ async function fetchDatabentoRange(
   signal?: AbortSignal,
 ): Promise<MarketBar[]> {
   const cleanKey = resolveDatabentoKey(apiKey);
-  const safeEndMs = Math.min(toMs, Date.now() - MIN_LAG_MS);
+  const safeEndMs = Math.min(toMs, getSafeDatabentoCeilingMs());
   if (fromMs >= safeEndMs - 60_000) {
     return [];
   }
@@ -143,27 +203,17 @@ async function fetchDatabentoRange(
 
   let res = await executeRequest(fromMs, safeEndMs);
 
-  // Automatic recovery if Databento reports 422 data_end_after_available_end
+  // Foolproof recovery for ANY 422 license/range embargo (`dataset_unavailable_range` or `data_end_after_available_end`)
   if (res.status === 422) {
     const errorText = await res.text();
-    try {
-      const errJson = JSON.parse(errorText);
-      const errCase = errJson?.detail?.case;
-      const availEndStr = errJson?.detail?.payload?.available_end;
-      if (errCase === "data_end_after_available_end" && typeof availEndStr === "string") {
-        const availEndMs = Date.parse(availEndStr);
-        if (Number.isFinite(availEndMs)) {
-          if (fromMs >= availEndMs - 60_000) {
-            // The requested delta is entirely after Databento's available_end; return empty delta cleanly
-            return [];
-          }
-          res = await executeRequest(fromMs, availEndMs);
-        }
-      } else {
-        throw new MarketDataError(`Databento API Error (422): ${errorText}`);
+    const availEndMs = extractAvailableEndMsFrom422(errorText);
+    if (availEndMs !== null) {
+      cachedDatasetAvailableEndMs = availEndMs;
+      if (fromMs >= availEndMs - 60_000) {
+        return [];
       }
-    } catch (e) {
-      if (e instanceof MarketDataError) throw e;
+      res = await executeRequest(fromMs, availEndMs);
+    } else {
       throw new MarketDataError(`Databento API Error (422): ${errorText}`);
     }
   }
@@ -206,8 +256,9 @@ export const databento: MarketDataProvider = {
     const providerKey = `databento:${dataset}`;
     const isDaily = request.resolution === "1d";
 
-    const nowAvailableMs = Date.now() - MIN_LAG_MS;
-    const clampedTo = Math.min(request.to, nowAvailableMs);
+    // Clamp `to` to at least 1 hour before current time (or Databento's known license ceiling)
+    const ceilingMs = getSafeDatabentoCeilingMs();
+    const clampedTo = Math.min(request.to, ceilingMs);
 
     // 1. Daily Path
     if (isDaily) {
@@ -216,13 +267,9 @@ export const databento: MarketDataProvider = {
       const lastBar = Math.max(firstBar, Math.floor((clampedTo - 1) / step) * step);
 
       const existing = getCachedCandles(providerKey, normSymbol, "1d", firstBar, lastBar);
-      const startCovered =
-        existing.length > 0 && getOpenMarketMsBetween(firstBar, existing[0]!.time) <= 2 * step;
-      const endCovered =
-        existing.length > 0 &&
-        getOpenMarketMsBetween(existing[existing.length - 1]!.time, clampedTo) <= 2 * step;
+      const missingRanges = computeMissingIntervals(existing, firstBar, lastBar, step, 2 * step);
 
-      if (startCovered && endCovered && !hasInternalWeekdayGaps(existing, 4 * step)) {
+      if (missingRanges.length === 0) {
         return {
           provider: this.name,
           symbol: normSymbol,
@@ -235,17 +282,19 @@ export const databento: MarketDataProvider = {
       }
 
       try {
-        const fetched = await fetchDatabentoRange(
-          dataset,
-          normSymbol,
-          "ohlcv-1d",
-          firstBar,
-          lastBar + step,
-          cleanKey,
-          request.signal,
-        );
-        if (fetched.length > 0) {
-          saveCachedCandles(providerKey, normSymbol, "1d", fetched);
+        for (const range of missingRanges) {
+          const fetched = await fetchDatabentoRange(
+            dataset,
+            normSymbol,
+            "ohlcv-1d",
+            range.from,
+            range.to,
+            cleanKey,
+            request.signal,
+          );
+          if (fetched.length > 0) {
+            saveCachedCandles(providerKey, normSymbol, "1d", fetched);
+          }
         }
         const eligible = getCachedCandles(providerKey, normSymbol, "1d", firstBar, lastBar);
         return {
@@ -273,26 +322,25 @@ export const databento: MarketDataProvider = {
       }
     }
 
-    // 2. Intraday Path: Store 1m base candles in SQLite, aggregate to requested resolution
+    // 2. Intraday Path: Check 1m SQLite cache first and ONLY fetch missing sub-intervals
     const targetStep = RESOLUTIONS[request.resolution as keyof typeof RESOLUTIONS] ?? 60_000;
     const windowStart = Math.floor(request.from / targetStep) * targetStep;
     const windowEnd = Math.max(windowStart + targetStep, Math.ceil(clampedTo / targetStep) * targetStep);
 
     const step1m = RESOLUTIONS["1m"];
     const first1m = windowStart;
-    const last1m = Math.max(first1m, Math.min(windowEnd - step1m, nowAvailableMs));
+    const last1m = Math.max(first1m, Math.min(windowEnd - step1m, getSafeDatabentoCeilingMs()));
 
     const existing1m = getCachedCandles(providerKey, normSymbol, "1m", first1m, last1m);
-    const maxAllowedGapMs = 3 * 3600_000; // 3 hours of open-market time
-    const startCovered =
-      existing1m.length > 0 &&
-      getOpenMarketMsBetween(first1m, existing1m[0]!.time) <= maxAllowedGapMs;
-    const endCovered =
-      existing1m.length > 0 &&
-      getOpenMarketMsBetween(existing1m[existing1m.length - 1]!.time, last1m) <= 45 * 60_000;
-    const hasGaps = hasInternalWeekdayGaps(existing1m, maxAllowedGapMs);
+    const missingRanges = computeMissingIntervals(
+      existing1m,
+      first1m,
+      last1m,
+      step1m,
+      2 * 3600_000 // Only fetch if > 2 hours of open-market data is missing
+    );
 
-    if (startCovered && endCovered && !hasGaps) {
+    if (missingRanges.length === 0) {
       const resampled =
         request.resolution === "1m" ? existing1m : aggregateCandles(existing1m, request.resolution);
       return {
@@ -306,48 +354,22 @@ export const databento: MarketDataProvider = {
       };
     }
 
-    const newBars: MarketBar[] = [];
     try {
-      if (existing1m.length === 0 || hasGaps) {
+      for (const range of missingRanges) {
+        const effectiveTo = Math.min(range.to, getSafeDatabentoCeilingMs());
+        if (range.from >= effectiveTo - 60_000) continue;
         const fetched = await fetchDatabentoRange(
           dataset,
           normSymbol,
           "ohlcv-1m",
-          first1m,
-          last1m + step1m,
+          range.from,
+          effectiveTo,
           cleanKey,
           request.signal,
         );
-        newBars.push(...fetched);
-      } else {
-        if (!startCovered) {
-          const fetched = await fetchDatabentoRange(
-            dataset,
-            normSymbol,
-            "ohlcv-1m",
-            first1m,
-            existing1m[0]!.time,
-            cleanKey,
-            request.signal,
-          );
-          newBars.push(...fetched);
+        if (fetched.length > 0) {
+          saveCachedCandles(providerKey, normSymbol, "1m", fetched);
         }
-        if (!endCovered) {
-          const fetched = await fetchDatabentoRange(
-            dataset,
-            normSymbol,
-            "ohlcv-1m",
-            existing1m[existing1m.length - 1]!.time,
-            last1m + step1m,
-            cleanKey,
-            request.signal,
-          );
-          newBars.push(...fetched);
-        }
-      }
-
-      if (newBars.length > 0) {
-        saveCachedCandles(providerKey, normSymbol, "1m", newBars);
       }
 
       const final1m = getCachedCandles(providerKey, normSymbol, "1m", first1m, last1m);
@@ -364,9 +386,10 @@ export const databento: MarketDataProvider = {
         warnings: [],
       };
     } catch (err: any) {
-      if (existing1m.length > 0) {
+      const fallback1m = getCachedCandles(providerKey, normSymbol, "1m", first1m, last1m);
+      if (fallback1m.length > 0) {
         const resampled =
-          request.resolution === "1m" ? existing1m : aggregateCandles(existing1m, request.resolution);
+          request.resolution === "1m" ? fallback1m : aggregateCandles(fallback1m, request.resolution);
         return {
           provider: this.name,
           symbol: normSymbol,

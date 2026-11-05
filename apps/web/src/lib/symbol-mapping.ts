@@ -227,3 +227,30 @@ export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string
 
   return { symbol: clean, dataset: "" };
 }
+
+/**
+ * Returns the exact decimal precision for a symbol or price level:
+ *  - Standard FX pairs (EUR/USD, GBP/USD, AUD/USD, etc. or price < 10) -> 5 decimals (0.00001)
+ *  - JPY FX pairs (USD/JPY, EUR/JPY, GBP/JPY, etc.) -> 3 decimals (0.001)
+ *  - Indices, Metals & Crypto (NAS100, US500, XAU/USD) -> 2 decimals (0.01)
+ */
+export function getSymbolPriceDecimals(rawSymbol: string, samplePrice?: number): number {
+  const clean = cleanBrokerSymbol(rawSymbol);
+  const noSlash = clean.replace(/[\s\/\_]/g, "");
+
+  if (/^[A-Z]{6}$/.test(noSlash) && !isUsIndexSymbol(clean) && !["XAUUSD", "XAGUSD", "BTCUSD", "ETHUSD", "SOLUSD"].includes(noSlash)) {
+    if (noSlash.endsWith("JPY")) return 3;
+    return 5;
+  }
+  if (typeof samplePrice === "number" && Number.isFinite(samplePrice) && samplePrice > 0) {
+    if (samplePrice < 10) return 5;
+    if (samplePrice < 250 && clean.includes("JPY")) return 3;
+  }
+  return 2;
+}
+
+export function roundSymbolPrice(value: number, decimals: number): number {
+  if (!Number.isFinite(value)) return 0;
+  const factor = Math.pow(10, decimals);
+  return Math.round(value * factor) / factor;
+}

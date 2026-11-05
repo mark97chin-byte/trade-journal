@@ -40,7 +40,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { OptionSelect } from "./ui/option-select";
-import { resolveProviderSymbol, resolvePreferredProviderForSymbol } from "@/lib/symbol-mapping";
+import { resolveProviderSymbol, resolvePreferredProviderForSymbol, getSymbolPriceDecimals, roundSymbolPrice } from "@/lib/symbol-mapping";
 
 
 function utcIsoToNyInput(isoStr: string | null | undefined): string {
@@ -148,11 +148,11 @@ export interface PositionPartialItem {
 export function rebalanceEqualPartials(
   items: PositionPartialItem[],
   entryPrice: number,
-  fullTargetPrice: number
+  fullTargetPrice: number,
+  decimals: number = entryPrice > 0 && entryPrice < 10 ? 5 : entryPrice > 0 && entryPrice < 250 ? 3 : 2
 ): PositionPartialItem[] {
   const n = items.length;
   if (n === 0) return [];
-  // Total legs = n intermediate partials + 1 final leg at Full Take Profit
   const totalLegs = n + 1;
   const hasManual = items.some((it) => it.manualPct);
   const equalPct = Number((100 / totalLegs).toFixed(2));
@@ -161,7 +161,7 @@ export function rebalanceEqualPartials(
     const ratio = (idx + 1) / totalLegs;
     const defaultPrice =
       entryPrice > 0 && fullTargetPrice > 0
-        ? Number((entryPrice + (fullTargetPrice - entryPrice) * ratio).toFixed(2))
+        ? Number((entryPrice + (fullTargetPrice - entryPrice) * ratio).toFixed(decimals))
         : it.price;
     return {
       ...it,
@@ -343,17 +343,27 @@ export function TradeMarketData({
     const targetToStr = overrides?.customTo ?? customTo;
 
     const openMs = Date.parse(targetAnchor || trade.openedAt || new Date().toISOString());
-    const closeMs =
+    const parsedCloseMs =
       !overrides?.anchorIsoOverride && trade.closedAt
         ? Date.parse(trade.closedAt)
-        : openMs + 4 * 3600_000;
+        : openMs + 12 * 3600_000;
+    // Never allow closeMs to be earlier than openMs + 12h (fixes +0d Fwd when Setup Entry Time is moved ahead of old Exit Time)
+    const closeMs = Math.max(
+      openMs + 12 * 3600_000,
+      Number.isFinite(parsedCloseMs) ? parsedCloseMs : openMs + 12 * 3600_000
+    );
 
-    const fromMs = targetUseCustom
+    const rawFromMs = targetUseCustom
       ? nyInputToUtcMs(targetFromStr)
       : openMs - targetPadding * 86_400_000;
-    const toMs = targetUseCustom
+    const rawToMs = targetUseCustom
       ? nyInputToUtcMs(targetToStr)
       : closeMs + targetForward * 86_400_000;
+
+    // Clamp lookforward to 1 hour before current time for Databento (or current time for LSE)
+    const maxSafeToMs = provider === "databento" ? Date.now() - 3600_000 : Date.now();
+    const toMs = Math.min(rawToMs, maxSafeToMs);
+    const fromMs = rawFromMs >= toMs ? toMs - Math.max(1, targetPadding) * 86_400_000 : rawFromMs;
 
     const useDirectRangeEndpoint =
       isStandalone ||
@@ -969,24 +979,29 @@ export function HistoricalReplay({
   const [posStartBarIdx, setPosStartBarIdx] = useState<number>(() =>
     findSmartEntryBarIndex(openMs, initialRrOverlay?.entry)
   );
+  const priceDecimals = useMemo(
+    () => getSymbolPriceDecimals(trade.symbol || history.symbol, history.bars[0]?.close),
+    [trade.symbol, history.symbol, history.bars]
+  );
+
   const [posEntry, setPosEntry] = useState<number>(() => {
     if (initialRrOverlay?.entry && initialRrOverlay.entry > 0) return initialRrOverlay.entry;
     const b = history.bars[0];
-    return b ? b.close : 0;
+    return b ? roundSymbolPrice(b.close, priceDecimals) : 0;
   });
   const [posStop, setPosStop] = useState<number>(() => {
     if (initialRrOverlay?.stop && initialRrOverlay.stop > 0) return initialRrOverlay.stop;
     const b = history.bars[0];
     if (!b) return 0;
-    const span = Math.max(b.close * 0.0025, Math.abs(b.high - b.low) * 2, 15);
-    return Number((b.close - span).toFixed(2));
+    const span = Math.max(b.close * 0.0015, Math.abs(b.high - b.low) * 2);
+    return roundSymbolPrice(b.close - span, priceDecimals);
   });
   const [posTarget, setPosTarget] = useState<number>(() => {
     if (initialRrOverlay?.target && initialRrOverlay.target > 0) return initialRrOverlay.target;
     const b = history.bars[0];
     if (!b) return 0;
-    const span = Math.max(b.close * 0.0025, Math.abs(b.high - b.low) * 2, 15);
-    return Number((b.close + span * 2.5).toFixed(2));
+    const span = Math.max(b.close * 0.0015, Math.abs(b.high - b.low) * 2);
+    return roundSymbolPrice(b.close + span * 2.5, priceDecimals);
   });
   const [posPartials, setPosPartials] = useState<PositionPartialItem[]>(
     () => initialRrOverlay?.partials || []
@@ -1046,8 +1061,9 @@ export function HistoricalReplay({
     const slice = history.bars.slice(Math.max(0, startIdx - 12), startIdx + 1);
     const localLow = Math.min(...slice.map((b) => b.low));
     const localHigh = Math.max(...slice.map((b) => b.high));
-    const entryP = bar.close;
-    const fallbackSpan = Math.max((historyPriceBounds.max - historyPriceBounds.min) * 0.08, 10);
+    const entryP = roundSymbolPrice(bar.close, priceDecimals);
+    const chartSpan = Math.max(bar.close * 0.001, historyPriceBounds.max - historyPriceBounds.min);
+    const fallbackSpan = Math.max(chartSpan * 0.12, bar.close * 0.0012);
 
     setPosDir(dir);
     setPosStartBarIdx(startIdx);
@@ -1056,19 +1072,19 @@ export function HistoricalReplay({
     if (dir === "long") {
       const sl =
         localLow < entryP
-          ? Number((localLow - fallbackSpan * 0.1).toFixed(2))
-          : Number((entryP - fallbackSpan).toFixed(2));
+          ? roundSymbolPrice(localLow - fallbackSpan * 0.15, priceDecimals)
+          : roundSymbolPrice(entryP - fallbackSpan, priceDecimals);
       const risk = Math.abs(entryP - sl) || fallbackSpan;
-      const tp = Number((entryP + risk * 2.5).toFixed(2));
+      const tp = roundSymbolPrice(entryP + risk * 2.5, priceDecimals);
       setPosStop(sl);
       setPosTarget(tp);
     } else {
       const sl =
         localHigh > entryP
-          ? Number((localHigh + fallbackSpan * 0.1).toFixed(2))
-          : Number((entryP + fallbackSpan * 0.1).toFixed(2));
+          ? roundSymbolPrice(localHigh + fallbackSpan * 0.15, priceDecimals)
+          : roundSymbolPrice(entryP + fallbackSpan, priceDecimals);
       const risk = Math.abs(sl - entryP) || fallbackSpan;
-      const tp = Number((entryP - risk * 2.5).toFixed(2));
+      const tp = roundSymbolPrice(entryP - risk * 2.5, priceDecimals);
       setPosStop(sl);
       setPosTarget(tp);
     }
@@ -1080,8 +1096,9 @@ export function HistoricalReplay({
           prev,
           entryP,
           dir === "long"
-            ? Number((entryP + fallbackSpan * 2).toFixed(2))
-            : Number((entryP - fallbackSpan * 2).toFixed(2))
+            ? roundSymbolPrice(entryP + fallbackSpan * 2, priceDecimals)
+            : roundSymbolPrice(entryP - fallbackSpan * 2, priceDecimals),
+          priceDecimals
         )
       );
     }
@@ -1319,9 +1336,9 @@ export function HistoricalReplay({
     }
     onExtractRr({
       direction: simulatedPosition.direction,
-      entry: Number(simulatedPosition.entry.toFixed(2)),
-      stop: Number(simulatedPosition.stop.toFixed(2)),
-      target: Number(simulatedPosition.target.toFixed(2)),
+      entry: roundSymbolPrice(simulatedPosition.entry, priceDecimals),
+      stop: roundSymbolPrice(simulatedPosition.stop, priceDecimals),
+      target: roundSymbolPrice(simulatedPosition.target, priceDecimals),
       partials: simulatedPosition.partials,
       entryTimeIso: new Date(simulatedPosition.startTimeMs).toISOString(),
       exitTimeIso: new Date(simulatedPosition.exitTimeMs).toISOString(),
@@ -2688,7 +2705,8 @@ function ReplayChart({
       moveEv.preventDefault();
       moveEv.stopPropagation();
       const dy = moveEv.clientY - startY;
-      const nextPrice = Number((initialPrice - dy * pricePerPx).toFixed(2));
+      const dragDecimals = getSymbolPriceDecimals(trade.symbol || history.symbol, initialPrice);
+      const nextPrice = roundSymbolPrice(initialPrice - dy * pricePerPx, dragDecimals);
       onDragPriceRef.current?.(kind, nextPrice, partialIdx);
     };
 
