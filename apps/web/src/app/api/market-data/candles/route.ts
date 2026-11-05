@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { aggregateCandles, type Resolution } from "@/lib/market-data";
 import { connectionKey, providerFor } from "@/server/market-data/connections";
 import { getCandleDb } from "@/server/market-data/candle-db";
-import { resolveProviderSymbol, resolvePreferredProviderForSymbol } from "@/lib/symbol-mapping";
+import { resolveProviderSymbol, resolvePreferredProviderForSymbol, isUsIndexSymbol } from "@/lib/symbol-mapping";
 
 export const dynamic = "force-dynamic";
 
@@ -12,7 +12,7 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
     const rawSymbol = String(body.symbol || "NAS100").trim();
-    const providerId = String(body.provider || resolvePreferredProviderForSymbol(rawSymbol));
+    const providerId = isUsIndexSymbol(rawSymbol) ? "databento" : String(body.provider || resolvePreferredProviderForSymbol(rawSymbol));
     const mapped = resolveProviderSymbol(providerId, rawSymbol);
     const normSymbol = mapped.symbol;
     const dataset = body.dataset ? String(body.dataset) : mapped.dataset || undefined;

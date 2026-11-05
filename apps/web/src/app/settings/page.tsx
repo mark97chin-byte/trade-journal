@@ -1,5 +1,5 @@
-import { AiModelOrchestratorCard } from "@/components/settings/ai-model-orchestrator-card";
 "use client";
+import { AiModelOrchestratorCard } from "@/components/settings/ai-model-orchestrator-card";
 
 import { Suspense, useEffect, useRef, useState } from "react";
 import {

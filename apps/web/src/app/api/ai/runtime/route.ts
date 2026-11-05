@@ -27,7 +27,7 @@ export interface AiOrchestratorConfig {
 
 const SETTING_KEY = "ai:dualSlotOrchestrator:v1";
 
-export const QUANTIZATION_PRESETS = [
+const QUANTIZATION_PRESETS = [
   {
     value: "Q5_K_M",
     label: "Q5_K_M · High Intelligence (~40 tok/s · Recommended for RTX 4070S 12GB + 64GB RAM)",
@@ -82,7 +82,7 @@ function getDefaultConfig(): AiOrchestratorConfig {
   };
 }
 
-export function loadAiConfig(): AiOrchestratorConfig {
+function loadAiConfig(): AiOrchestratorConfig {
   const raw = getSetting(SETTING_KEY);
   const defaults = getDefaultConfig();
   if (!raw) return defaults;

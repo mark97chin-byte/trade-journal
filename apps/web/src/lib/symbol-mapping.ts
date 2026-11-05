@@ -66,26 +66,23 @@ export function isUsIndexSymbol(rawTradeSymbol: string): boolean {
 }
 
 /**
- * Selects the default provider based on asset class:
- *  - US Indices (NAS100, US500, US30, ES, NQ, YM) -> "databento" (23/5 CME Globex Futures)
- *  - FX, Metals & Commodities (XAUUSD, EURUSD, GBPUSD) -> "london-strategic-edge"
+ * Strict Provider Routing:
+ *  - US Indices (NAS100, US500, US30, US2000, ES, NQ, YM, RTY) -> ALWAYS "databento" (never LSE)
+ *  - FX, Metals & Commodities (XAUUSD, EURUSD, GBPUSD, etc.) -> "london-strategic-edge"
  */
 export function resolvePreferredProviderForSymbol(
   rawTradeSymbol: string,
   availableProviderIds?: string[]
 ): string {
-  const wantsDatabento = isUsIndexSymbol(rawTradeSymbol);
-  if (!availableProviderIds || availableProviderIds.length === 0) {
-    return wantsDatabento ? "databento" : "london-strategic-edge";
-  }
-  if (wantsDatabento && availableProviderIds.includes("databento")) {
+  if (isUsIndexSymbol(rawTradeSymbol)) {
     return "databento";
   }
-  if (!wantsDatabento && availableProviderIds.includes("london-strategic-edge")) {
+  if (!availableProviderIds || availableProviderIds.length === 0) {
     return "london-strategic-edge";
   }
-  if (availableProviderIds.includes("london-strategic-edge")) return "london-strategic-edge";
-  if (availableProviderIds.includes("databento")) return "databento";
+  if (availableProviderIds.includes("london-strategic-edge")) {
+    return "london-strategic-edge";
+  }
   return availableProviderIds[0] || "london-strategic-edge";
 }
 
@@ -96,8 +93,8 @@ export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string
   const clean = cleanBrokerSymbol(rawTradeSymbol);
   const baseKey = clean.replace(/\.IDX$/i, "").replace(/[\s\/\_]/g, "");
 
-  // 1. Databento Mapping (23/5 CME Globex Futures)
-  if (providerId === "databento") {
+  // 1. Databento Mapping (23/5 CME Globex Futures — Always used for US Indices)
+  if (providerId === "databento" || isUsIndexSymbol(rawTradeSymbol)) {
     const futuresMap: Record<string, string> = {
       "US500": "ES.c.0",
       "SPX500": "ES.c.0",
@@ -149,49 +146,8 @@ export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string
     };
   }
 
-  // 2. London Strategic Edge Mapping (Primary for FX, Metals & Commodities)
+  // 2. London Strategic Edge Mapping (Exclusively for FX, Metals & Commodities)
   if (providerId === "london-strategic-edge") {
-    const indices: Record<string, string> = {
-      "US500": "SPX",
-      "SPX500": "SPX",
-      "SPX500USD": "SPX",
-      "US500USD": "SPX",
-      "SP500": "SPX",
-      "SPX": "SPX",
-      "ES": "SPX",
-      "MES": "SPX",
-      "NAS100": "NDX",
-      "NAS100USD": "NDX",
-      "NASDAQ100": "NDX",
-      "USTEC": "NDX",
-      "USTECUSD": "NDX",
-      "USTECH100": "NDX",
-      "NDX": "NDX",
-      "NQ": "NDX",
-      "MNQ": "NDX",
-      "US30": "DJI",
-      "US30USD": "DJI",
-      "DJ30": "DJI",
-      "DJI": "DJI",
-      "DOW": "DJI",
-      "YM": "DJI",
-      "MYM": "DJI",
-      "US2000": "RUT",
-      "US2000USD": "RUT",
-      "RUSSELL2000": "RUT",
-      "RUT": "RUT",
-      "RTY": "RUT",
-      "UK100": "BUK100P",
-      "FTSE": "BUK100P",
-      "DE30": "BDE40P",
-      "DE40": "BDE40P",
-      "DAX": "BDE40P",
-      "VIX": "VIX",
-    };
-
-    if (indices[clean]) return { symbol: indices[clean], dataset: "indices" };
-    if (indices[baseKey]) return { symbol: indices[baseKey], dataset: "indices" };
-
     if (["XAUUSD", "GOLD", "GC"].includes(baseKey)) {
       return { symbol: "XAU/USD", dataset: "commodities" };
     }
@@ -228,12 +184,6 @@ export function resolveProviderSymbol(providerId: string, rawTradeSymbol: string
   return { symbol: clean, dataset: "" };
 }
 
-/**
- * Returns the exact decimal precision for a symbol or price level:
- *  - Standard FX pairs (EUR/USD, GBP/USD, AUD/USD, etc. or price < 10) -> 5 decimals (0.00001)
- *  - JPY FX pairs (USD/JPY, EUR/JPY, GBP/JPY, etc.) -> 3 decimals (0.001)
- *  - Indices, Metals & Crypto (NAS100, US500, XAU/USD) -> 2 decimals (0.01)
- */
 export function getSymbolPriceDecimals(rawSymbol: string, samplePrice?: number): number {
   const clean = cleanBrokerSymbol(rawSymbol);
   const noSlash = clean.replace(/[\s\/\_]/g, "");

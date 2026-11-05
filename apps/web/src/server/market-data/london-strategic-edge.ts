@@ -2,7 +2,7 @@
 import { RESOLUTIONS, aggregateCandles, type MarketBar } from "@/lib/market-data";
 import { MarketDataError, type MarketDataProvider } from "./provider";
 import { readJson } from "./http";
-import { resolveProviderSymbol } from "@/lib/symbol-mapping";
+import { resolveProviderSymbol, isUsIndexSymbol } from "@/lib/symbol-mapping";
 import {
   getCachedCandles,
   saveCachedCandles,
@@ -381,6 +381,9 @@ export const londonStrategicEdge: MarketDataProvider = {
     const clampedTo = Math.min(request.to, nowMs);
     const lastBar = Math.max(firstBar + step, Math.floor((clampedTo - 1) / step) * step);
 
+    if (isUsIndexSymbol(request.symbol)) {
+      throw new MarketDataError("US Indices exclusively use Databento (23/5 Globex) to prevent mixing RTH-only LSE data.");
+    }
     const mapped = resolveProviderSymbol(PROVIDER_ID, request.symbol);
     const symbol = mapped.symbol;
     const dataset = mapped.dataset || request.dataset || undefined;
