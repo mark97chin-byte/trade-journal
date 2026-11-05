@@ -40,7 +40,7 @@ import { RunningPnlChart } from "@/components/charts/running-pnl-chart";
 import type { TradeMarketResult } from "@/lib/market-data";
 import { useApi } from "@/lib/use-api";
 import { fmtMoney } from "@/lib/utils";
-import { PRESET_TRADING_SYMBOLS, resolveProviderSymbol, cleanBrokerSymbol } from "@/lib/symbol-mapping";
+import { PRESET_TRADING_SYMBOLS, resolveProviderSymbol, resolvePreferredProviderForSymbol, cleanBrokerSymbol } from "@/lib/symbol-mapping";
 
 interface PartialTarget {
   id: string;
@@ -478,9 +478,13 @@ function LoadedMissedSetupWorkspace({
   const [isCustomSymbol, setIsCustomSymbol] = useState(
     () => Boolean(initCleanSym && !CORE_PRESETS.includes(initCleanSym))
   );
-  const lseValidation = useMemo(
-    () => resolveProviderSymbol("london-strategic-edge", symbol || "NAS100"),
+  const activeProviderId = useMemo(
+    () => resolvePreferredProviderForSymbol(symbol || "NAS100"),
     [symbol]
+  );
+  const lseValidation = useMemo(
+    () => resolveProviderSymbol(activeProviderId, symbol || "NAS100"),
+    [activeProviderId, symbol]
   );
   const [direction, setDirection] = useState<"long" | "short">(
     initialRecord.direction === "short" ? "short" : "long"
@@ -1271,7 +1275,7 @@ function LoadedMissedSetupWorkspace({
                           className="rounded bg-emerald-500/15 border border-emerald-500/30 px-1.5 py-0.2 text-[9px] font-mono font-semibold text-emerald-400"
                           title={`Mapped to London Strategic Edge symbol: ${lseValidation.symbol} (${lseValidation.dataset || "custom"})`}
                         >
-                          LSE: {lseValidation.symbol}
+                          {activeProviderId === "databento" ? "DB" : "LSE"}: {lseValidation.symbol}
                         </span>
                       </div>
                       {!isCustomSymbol ? (

@@ -40,7 +40,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { OptionSelect } from "./ui/option-select";
-import { resolveProviderSymbol } from "@/lib/symbol-mapping";
+import { resolveProviderSymbol, resolvePreferredProviderForSymbol } from "@/lib/symbol-mapping";
 
 
 function formatNyTimeDisplay(timeMs: number | null | undefined): string {
@@ -225,27 +225,23 @@ export function TradeMarketData({
   const controller = useRef<AbortController | null>(null);
   useEffect(() => () => controller.current?.abort(), []);
 
-  useEffect(() => {
-    if (!provider && available.length > 0) {
-      const lse = available.find((a) => a.id === "london-strategic-edge");
-      const target = lse?.id ?? available[0]?.id ?? "";
-      setProvider(target);
-      const mapped = resolveProviderSymbol(target, trade.symbol);
-      setSymbol(mapped.symbol);
-      setDataset(mapped.dataset || "");
-    }
-  }, [available, provider, trade.symbol]);
+  const prevTradeSymbolRef = useRef<string>("");
 
-  // Keep mapped symbol and dataset synced if trade.symbol changes or legacy symbol was cached
   useEffect(() => {
-    if (!provider) return;
-    const mapped = resolveProviderSymbol(provider, trade.symbol);
-    if (mapped.symbol !== symbol || (mapped.dataset || "") !== dataset) {
+    if (available.length === 0) return;
+    const availIds = available.map((a) => a.id);
+    const tradeSymChanged = prevTradeSymbolRef.current !== trade.symbol;
+
+    if (!provider || tradeSymChanged) {
+      prevTradeSymbolRef.current = trade.symbol;
+      const preferredProv = resolvePreferredProviderForSymbol(trade.symbol, availIds);
+      const mapped = resolveProviderSymbol(preferredProv, trade.symbol);
+      setProvider(preferredProv);
       setSymbol(mapped.symbol);
       setDataset(mapped.dataset || "");
       setHasAutoLoaded(false);
     }
-  }, [provider, trade.symbol]);
+  }, [available, provider, trade.symbol]);
 
   const info = providerInfo(provider);
   const { data: csv } = useApi<{ datasets: MarketCsvDataset[] }>(

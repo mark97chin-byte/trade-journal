@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { aggregateCandles, type Resolution } from "@/lib/market-data";
 import { connectionKey, providerFor } from "@/server/market-data/connections";
 import { getCandleDb } from "@/server/market-data/candle-db";
-import { resolveProviderSymbol } from "@/lib/symbol-mapping";
+import { resolveProviderSymbol, resolvePreferredProviderForSymbol } from "@/lib/symbol-mapping";
 
 export const dynamic = "force-dynamic";
 
@@ -11,8 +11,8 @@ const NATIVE_PROVIDER_RESOLUTIONS = new Set(["1m", "5m", "15m", "1h", "4h", "1d"
 export async function POST(req: NextRequest) {
   try {
     const body = await req.json();
-    const providerId = String(body.provider || "london-strategic-edge");
     const rawSymbol = String(body.symbol || "NAS100").trim();
+    const providerId = String(body.provider || resolvePreferredProviderForSymbol(rawSymbol));
     const mapped = resolveProviderSymbol(providerId, rawSymbol);
     const normSymbol = mapped.symbol;
     const dataset = body.dataset ? String(body.dataset) : mapped.dataset || undefined;
@@ -69,19 +69,21 @@ export async function POST(req: NextRequest) {
         to: toMs,
       });
     } catch (providerErr: any) {
-      // Offline fallback: only return cached bars that actually overlap [fromMs, toMs]
       const cdb = getCandleDb();
       const cachedRows = cdb
         .prepare(
           `SELECT time, open, high, low, close, volume
            FROM candles
-           WHERE provider LIKE ? AND symbol = ? AND timeframe = ? AND time BETWEEN ? AND ?
+           WHERE provider LIKE ? AND UPPER(symbol) = UPPER(?) AND timeframe = ? AND time BETWEEN ? AND ?
            ORDER BY time ASC`
         )
-        .all(`%${providerId}%`, normSymbol, baseResolution, fromMs, toMs) as any[];
+        .all(`%${providerId}%`, normSymbol, providerId === "databento" && baseResolution !== "1d" ? "1m" : baseResolution, fromMs, toMs) as any[];
 
       if (cachedRows.length > 0) {
-        const bars = isNative ? cachedRows : aggregateCandles(cachedRows, requestedResolution);
+        const bars =
+          (providerId === "databento" && requestedResolution !== "1m" && requestedResolution !== "1d") || !isNative
+            ? aggregateCandles(cachedRows, requestedResolution)
+            : cachedRows;
         return NextResponse.json({
           provider: provider.name,
           symbol: normSymbol,
