@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { FileUp, Landmark, PencilLine } from "lucide-react";
 import { AccountPicker } from "@/components/account-picker";
 import { ManualTradeEntry } from "@/components/manual-trade-entry";
+import { Mt5TailscaleSyncCard } from "@/components/mt5-tailscale-sync-card";
+import { RefreshCw } from "lucide-react";
 import { FilterBar } from "@/components/filter-bar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -86,7 +88,7 @@ function ImportView() {
   return (
     <div>
       <FilterBar title="Import trades" />
-      <div className="mx-auto max-w-3xl p-4">
+      <div className="mx-auto max-w-4xl p-4">
         <Tabs defaultValue="file">
           <TabsList>
             <TabsTrigger value="file" className="max-sm:px-2 max-sm:text-xs">
@@ -100,6 +102,10 @@ function ImportView() {
             <TabsTrigger value="manual" className="max-sm:px-2 max-sm:text-xs">
               <PencilLine className="mr-1.5 hidden h-4 w-4 min-[420px]:block" />
               Manual
+            </TabsTrigger>
+            <TabsTrigger value="mt5_tailscale" className="max-sm:px-2 max-sm:text-xs">
+              <RefreshCw className="mr-1.5 hidden h-4 w-4 min-[420px]:block text-indigo-400" />
+              MT5 Tailscale Sync
             </TabsTrigger>
           </TabsList>
           <TabsContent value="file">
@@ -117,6 +123,9 @@ function ImportView() {
                 <ManualTradeEntry onSaved={() => router.push("/trades")} />
               </CardContent>
             </Card>
+          </TabsContent>
+          <TabsContent value="mt5_tailscale">
+            <Mt5TailscaleSyncCard />
           </TabsContent>
         </Tabs>
       </div>

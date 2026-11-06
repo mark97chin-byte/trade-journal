@@ -2,7 +2,8 @@
 import { OptionSelect } from "@/components/ui/option-select";
 
 import { Suspense, useRef, useState } from "react";
-import { ArrowLeft, FolderPlus, Plus, Search, Trash2 } from "lucide-react";
+import { ArrowLeft, FolderPlus, Plus, Search, Trash2, ArrowRightLeft, Send, Sparkles, ArchiveRestore } from "lucide-react";
+import { NotebookTradeMatcherModal } from "@/components/notebook/notebook-trade-matcher-modal";
 import { FilterBar } from "@/components/filter-bar";
 import { VoiceNote } from "@/components/voice-note";
 import { Button } from "@/components/ui/button";
@@ -79,11 +80,25 @@ function Notebook() {
 
   const createNote = async () => {
     const result = await postJson<{ id: string }>("/api/notes", {
-      folderId: folder === "all" ? "my-notes" : folder,
+      folderId: folder === "all" || folder === "archived" ? "my-notes" : folder,
       title: "Untitled",
     });
     refresh();
     setSelectedId(result.id);
+  };
+
+  const createLiveScratchpad = async () => {
+    const res = await fetch("/api/notebook-bridge", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "create_scratchpad" }),
+    });
+    const data = await res.json();
+    if (data.ok && data.id) {
+      if (folder === "archived") setFolder("my-notes");
+      refresh();
+      setSelectedId(data.id);
+    }
   };
 
   const createFolder = async () => {
@@ -190,10 +205,21 @@ function Notebook() {
       <FilterBar
         title="Notebook"
         actions={
-          <Button size="sm" onClick={createNote}>
-            <Plus />
-            New note
-          </Button>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => void createLiveScratchpad()}
+              className="border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+            >
+              <Sparkles className="h-3.5 w-3.5 mr-1" />
+              + Live Trade Scratchpad
+            </Button>
+            <Button size="sm" onClick={createNote}>
+              <Plus />
+              New note
+            </Button>
+          </div>
         }
       />
       <div className="notebook-workspace" data-note-open={Boolean(selected)}>
@@ -308,7 +334,7 @@ function Notebook() {
           {data?.notes.length === 0 && (
             <p className="p-6 text-center text-sm text-muted-foreground">No notes here yet.</p>
           )}
-          {data?.notes.map((note) => (
+          {data?.notes.filter((n) => folder === 'archived' ? n.folderId === 'archived' : n.folderId !== 'archived').map((note) => (
             <button
               key={note.id}
               className={cn(
@@ -355,6 +381,9 @@ function NoteEditor({ note, onChanged }: { note: NoteRow; onChanged: () => void 
   const [title, setTitle] = useState(note.title);
   const [content, setContent] = useState(note.content);
   const [mode, setMode] = useState<"edit" | "preview">(note.content.trim() ? "preview" : "edit");
+  const [matcherOpen, setMatcherOpen] = useState(false);
+  const [matcherMode, setMatcherMode] = useState<"trade" | "missed">("trade");
+  const [transferFeedback, setTransferFeedback] = useState<string | null>(null);
   const editor = useRef<RichEditorHandle>(null);
   const {
     save: queueSave,
@@ -392,6 +421,56 @@ function NoteEditor({ note, onChanged }: { note: NoteRow; onChanged: () => void 
               save(title, next);
             }}
           />
+          {note.folderId !== "archived" ? (
+            <>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  await flush();
+                  setMatcherMode("trade");
+                  setMatcherOpen(true);
+                }}
+                className="border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+              >
+                <ArrowRightLeft className="h-3.5 w-3.5 mr-1" />
+                Move to Trade...
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={async () => {
+                  await flush();
+                  setMatcherMode("missed");
+                  setMatcherOpen(true);
+                }}
+                className="border-amber-500/40 bg-amber-500/10 text-amber-300 hover:bg-amber-500/20 text-xs font-semibold"
+              >
+                <Send className="h-3.5 w-3.5 mr-1" />
+                Missed Trade...
+              </Button>
+            </>
+          ) : (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={async () => {
+                await fetch("/api/notebook-bridge", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ action: "unarchive_note", noteId: note.id }),
+                });
+                onChanged();
+              }}
+              className="text-xs"
+            >
+              <ArchiveRestore className="h-3.5 w-3.5 mr-1" />
+              Restore from Archive
+            </Button>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -406,6 +485,23 @@ function NoteEditor({ note, onChanged }: { note: NoteRow; onChanged: () => void 
             Delete
           </Button>
         </div>
+
+        <NotebookTradeMatcherModal
+          open={matcherOpen}
+          onOpenChange={setMatcherOpen}
+          preselectedNoteId={note.id}
+          defaultMode={matcherMode}
+          onCompleted={(msg) => {
+            setTransferFeedback(msg);
+            onChanged();
+          }}
+        />
+
+        {transferFeedback && (
+          <div className="rounded-lg border border-emerald-500/40 bg-emerald-500/15 px-3 py-2 text-xs text-emerald-300">
+            {transferFeedback}
+          </div>
+        )}
         <RichEditor
           editorRef={editor}
           mode={mode}

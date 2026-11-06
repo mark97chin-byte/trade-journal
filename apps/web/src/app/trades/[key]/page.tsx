@@ -59,6 +59,8 @@ import { postJson, useApi } from "@/lib/use-api";
 import { fmtDuration, fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
 import { tradeKeyFromSegment } from "@/lib/trade-links";
 import { formatTimestamp } from "@/lib/timezone";
+import { NotebookTradeMatcherModal } from "@/components/notebook/notebook-trade-matcher-modal";
+import { FileText, ArrowRightLeft } from "lucide-react";
 
 interface TradeDetail {
   riskAmount: number | null;
@@ -753,6 +755,26 @@ function AnnotationsCard({
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
   const [isPulling, setIsPulling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [matchingDrafts, setMatchingDrafts] = useState<Array<any>>([]);
+  const [sameDayTradeCount, setSameDayTradeCount] = useState<number>(1);
+  const [dismissedDraftBanner, setDismissedDraftBanner] = useState(false);
+  const [matcherModalOpen, setMatcherModalOpen] = useState(false);
+
+  const fetchMatchingNotebookDrafts = () => {
+    fetch(`/api/notebook-bridge?tradeKey=${encodeURIComponent(trade.key)}`)
+      .then((r) => r.json())
+      .then((res) => {
+        if (res.ok) {
+          setMatchingDrafts(res.matchingDrafts || []);
+          setSameDayTradeCount((res.sameDayTrades || []).length || 1);
+        }
+      })
+      .catch(() => {});
+  };
+
+  useEffect(() => {
+    fetchMatchingNotebookDrafts();
+  }, [trade.key]);
 
   const { data: playbookData } = useApi<{ playbooks: { id: string; name: string }[] }>(
     "/api/playbooks"
@@ -904,6 +926,16 @@ function AnnotationsCard({
 
           <button
             type="button"
+            onClick={() => setMatcherModalOpen(true)}
+            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-indigo-500/40 bg-indigo-500/10 px-2.5 text-[11px] font-semibold text-indigo-300 transition-colors hover:bg-indigo-500/20"
+            title="Pull a draft from Notebook and archive it"
+          >
+            <ArrowRightLeft className="h-3 w-3" />
+            <span>Pull from Notebook</span>
+          </button>
+
+          <button
+            type="button"
             onClick={handlePullFromNotion}
             disabled={isPulling || isSyncing}
             className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
@@ -945,6 +977,115 @@ function AnnotationsCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
+        <NotebookTradeMatcherModal
+          open={matcherModalOpen}
+          onOpenChange={setMatcherModalOpen}
+          preselectedTradeKey={trade.key}
+          onCompleted={(msg) => {
+            setSyncMsg(msg);
+            fetchMatchingNotebookDrafts();
+            // Reload fresh notes/reviewNotes from trade API
+            fetch(`/api/trades/${encodeURIComponent(trade.key)}`)
+              .then((r) => r.json())
+              .then((d) => {
+                if (d?.trade) {
+                  setNotes(cleanLegacyTradeNotes(d.trade.notes));
+                  setReviewNotes(d.trade.review_notes || d.trade.reviewNotes || "");
+                }
+              });
+            void onPatch({});
+          }}
+        />
+
+        {/* SMART MATCHING NOTEBOOK DRAFT NOTIFICATION BANNER (WITH CONFIRMATION) */}
+        {!dismissedDraftBanner && matchingDrafts.length > 0 && (
+          <div className="rounded-xl border border-indigo-500/40 bg-indigo-950/25 p-3 space-y-2 text-xs">
+            <div className="flex items-start justify-between gap-2">
+              <div className="flex items-start gap-2">
+                <FileText className="h-4 w-4 text-indigo-400 shrink-0 mt-0.5" />
+                <div>
+                  <div className="font-bold text-indigo-200">
+                    {matchingDrafts.length === 1 && sameDayTradeCount <= 1
+                      ? `Matching Notebook Draft Found: "${matchingDrafts[0].title || "Untitled"}"`
+                      : `Found ${matchingDrafts.length} Matching Notebook Draft(s) for This Session`}
+                  </div>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    {matchingDrafts.length === 1 && sameDayTradeCount <= 1
+                      ? "Would you like to move this draft (and its screenshots) into this trade and archive the draft (auto-deletes in 14 days)?"
+                      : `There are ${matchingDrafts.length} draft(s) and ${sameDayTradeCount} trade(s) on this date. Click 'Match & Confirm' to choose which draft goes to which trade.`}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDismissedDraftBanner(true)}
+                className="text-[10px] text-muted-foreground hover:text-foreground px-1.5 py-0.5"
+              >
+                Dismiss
+              </button>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 pl-6">
+              {matchingDrafts.length === 1 && sameDayTradeCount <= 1 && (
+                <button
+                  type="button"
+                  onClick={async () => {
+                    const draft = matchingDrafts[0];
+                    if (
+                      !window.confirm(
+                        `Confirm moving Notebook draft "${draft.title}" into ${trade.symbol} ${trade.direction.toUpperCase()}?
+
+The draft will be archived and automatically deleted in 14 days.`
+                      )
+                    ) {
+                      return;
+                    }
+                    const res = await fetch("/api/notebook-bridge", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({
+                        action: "transfer_to_trades",
+                        transfers: [
+                          {
+                            noteId: draft.id,
+                            tradeKey: trade.key,
+                            targetSection: "auto_split",
+                            mode: "append",
+                          },
+                        ],
+                      }),
+                    });
+                    const out = await res.json();
+                    if (out.ok) {
+                      setSyncMsg("Moved Notebook draft & archived!");
+                      fetchMatchingNotebookDrafts();
+                      const tRes = await fetch(`/api/trades/${encodeURIComponent(trade.key)}`).then((r) => r.json());
+                      if (tRes?.trade) {
+                        setNotes(cleanLegacyTradeNotes(tRes.trade.notes));
+                        setReviewNotes(tRes.trade.review_notes || tRes.trade.reviewNotes || "");
+                      }
+                      void onPatch({});
+                    }
+                  }}
+                  className="rounded-lg bg-indigo-600 hover:bg-indigo-500 px-3 py-1 text-[11px] font-semibold text-white shadow transition"
+                >
+                  Confirm &amp; Move Draft Here
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => setMatcherModalOpen(true)}
+                className="rounded-lg border border-indigo-500/40 bg-indigo-500/15 hover:bg-indigo-500/25 px-3 py-1 text-[11px] font-semibold text-indigo-200 transition"
+              >
+                {matchingDrafts.length > 1 || sameDayTradeCount > 1
+                  ? "Match Drafts to Trades..."
+                  : "Choose Section / Match Multiple..."}
+              </button>
+            </div>
+          </div>
+        )}
+
         <div className="flex items-center justify-between">
           <TradeRating value={trade.rating} onChange={(rating) => onPatch({ rating })} />
           <label className="flex items-center gap-2 text-xs">
