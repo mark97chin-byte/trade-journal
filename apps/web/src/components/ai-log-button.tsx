@@ -1,4 +1,5 @@
 "use client";
+import { ensureAiSlotBeforeTask } from "@/lib/ai-slot-guard";
 
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Terminal, RefreshCw, X, Square, Cpu } from "lucide-react";

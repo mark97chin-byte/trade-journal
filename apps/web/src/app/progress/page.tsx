@@ -1,4 +1,5 @@
 "use client";
+import { ensureAiSlotBeforeTask } from "@/lib/ai-slot-guard";
 import { DatePicker } from "@/components/ui/date-picker";
 import { OptionSelect } from "@/components/ui/option-select";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -776,6 +777,8 @@ function Progress() {
     setScopeModalOpen(false);
     setActiveDocType("report");
     try {
+      const slotCheck = await ensureAiSlotBeforeTask("kobold_report", "Report & Audit Generation");
+      if (!slotCheck.proceed) return;
       const res = await fetch("/api/ai/coach", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

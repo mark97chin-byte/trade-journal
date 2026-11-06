@@ -271,7 +271,7 @@ export function AiSettings() {
             online: Boolean(json.online),
             loading: Boolean(json.loading),
             processRunning: Boolean(json.processRunning),
-            activeEngine: json.daemonState?.engineType || "",
+            activeEngine: json.runningSlot || json.daemonState?.engineType || "",
             model: json.loadedModel || currentSlotModel,
             logTail: json.logTail || "",
           });
@@ -302,6 +302,28 @@ export function AiSettings() {
     slotOverride?: "strata_chat" | "kobold_report"
   ) => {
     const targetSlot = slotOverride || selectedSlot;
+    if (command === "start" && (serverStatus.online || serverStatus.processRunning)) {
+      const activeEng = serverStatus.activeEngine;
+      if (activeEng && activeEng !== "none" && activeEng !== targetSlot) {
+        const fromLabel =
+          activeEng === "strata_chat"
+            ? "Slot 1 · Strata (Qwen3.8-Flash-Next)"
+            : "Slot 2 · KoboldCPP (Report Engine)";
+        const toLabel =
+          targetSlot === "strata_chat"
+            ? "Slot 1 · Strata (Qwen3.8-Flash-Next)"
+            : "Slot 2 · KoboldCPP (Report Engine)";
+        const ok = window.confirm(
+          `GPU Slot Switch Confirmation:
+
+Currently running: ${fromLabel}
+Switch to: ${toLabel}
+
+This will unload ${fromLabel} from VRAM first. Click OK to switch, or Cancel to abort.`
+        );
+        if (!ok) return;
+      }
+    }
     setControllingServer(true);
     setFeedback({});
 

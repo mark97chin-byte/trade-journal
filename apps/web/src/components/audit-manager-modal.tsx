@@ -1,4 +1,5 @@
 "use client";
+import { ensureAiSlotBeforeTask } from "@/lib/ai-slot-guard";
 
 import React, { useState, useEffect, useMemo } from "react";
 import {
