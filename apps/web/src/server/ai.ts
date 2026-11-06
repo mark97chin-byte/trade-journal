@@ -177,26 +177,52 @@ export async function probeKoboldStatus(customUrl?: string): Promise<{
   const baseUrl = (customUrl || cfg.baseUrl).replace(/\/+$/, "").replace(/\/v1$/, "");
   const t0 = Date.now();
   try {
-    const res = await fetch(`${baseUrl}/api/v1/model`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    const latencyMs = Date.now() - t0;
-    if (res.ok) {
-      const data = (await res.json()) as { result?: string };
+    const v1Res = await fetch(`${baseUrl}/v1/models`, {
+      signal: AbortSignal.timeout(2500),
+    }).catch(() => null);
+    if (v1Res && v1Res.ok) {
+      const latencyMs = Date.now() - t0;
+      const v1Data = (await v1Res.json().catch(() => ({}))) as any;
+      const firstId =
+        v1Data?.data?.[0]?.id ||
+        v1Data?.models?.[0]?.name ||
+        cfg.strataChat?.activeModelFile ||
+        cfg.activeModelFile;
       return {
         online: true,
         baseUrl,
-        modelName: (data.result || cfg.activeModelFile).replace(/^.*\//, ""),
+        modelName: String(firstId).replace(/^.*\//, ""),
         latencyMs,
       };
     }
-    const v1Res = await fetch(`${baseUrl}/v1/models`, {
-      signal: AbortSignal.timeout(3000),
-    });
-    if (v1Res.ok) {
-      const v1Data = (await v1Res.json()) as any;
-      const firstId = v1Data?.data?.[0]?.id || cfg.activeModelFile;
-      return { online: true, baseUrl, modelName: firstId, latencyMs };
+
+    const res = await fetch(`${baseUrl}/api/v1/model`, {
+      signal: AbortSignal.timeout(2500),
+    }).catch(() => null);
+    if (res && res.ok) {
+      const latencyMs = Date.now() - t0;
+      const data = (await res.json().catch(() => ({}))) as { result?: string };
+      if (data.result && data.result !== "ReadOnly") {
+        return {
+          online: true,
+          baseUrl,
+          modelName: (data.result || cfg.activeModelFile).replace(/^.*\//, ""),
+          latencyMs,
+        };
+      }
+    }
+
+    const healthRes = await fetch(`${baseUrl}/health`, {
+      signal: AbortSignal.timeout(2500),
+    }).catch(() => null);
+    if (healthRes && healthRes.ok) {
+      const latencyMs = Date.now() - t0;
+      return {
+        online: true,
+        baseUrl,
+        modelName: "Qwen3.8-Flash-Next-IQ3_S (Strata)",
+        latencyMs,
+      };
     }
   } catch {}
   return { online: false, baseUrl, modelName: "Offline" };
