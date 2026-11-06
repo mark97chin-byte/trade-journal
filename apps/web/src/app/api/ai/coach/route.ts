@@ -3101,21 +3101,40 @@ export async function POST(req: NextRequest) {
 
     if (action === "scan_models" || action === "daemon_status") {
       const settings = loadLocalAiSettings();
-      const targetDir = String(body.dir || settings.modelsDir || "~/koboldcpp/models").trim();
+      const slotType = String(body.engineType || settings.activeEngineSlot || "strata_chat");
+      const defaultDirForSlot =
+        slotType === "strata_chat"
+          ? settings.strataChat?.modelsDir || "/run/media/mark/Storage 2/AI Models/"
+          : settings.modelsDir || "~/koboldcpp/models/";
+      const targetDir = String(body.dir || defaultDirForSlot).trim();
       const daemonUrl = getControlDaemonUrl(body.baseUrl || settings.baseUrl);
+
+      const persistSlotDir = (dirPath: string) => {
+        if (slotType === "strata_chat") {
+          saveLocalAiSettings({
+            activeEngineSlot: "strata_chat",
+            strataChat: { ...(settings.strataChat as any), modelsDir: dirPath },
+          });
+        } else {
+          saveLocalAiSettings({
+            activeEngineSlot: "kobold_report",
+            modelsDir: dirPath,
+          });
+        }
+      };
 
       try {
         const dRes = await fetch(daemonUrl, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ action: "scan", modelsDir: targetDir }),
+          body: JSON.stringify({ action: "scan", engineType: slotType, modelsDir: targetDir }),
           signal: AbortSignal.timeout(3500),
         });
         if (dRes.ok) {
           const dJson = await dRes.json();
           const stRes = await fetch(daemonUrl, { signal: AbortSignal.timeout(2500) });
           const stJson = stRes.ok ? await stRes.json() : {};
-          saveLocalAiSettings({ modelsDir: targetDir });
+          persistSlotDir(targetDir);
           return NextResponse.json({
             ok: true,
             daemonOnline: true,
@@ -3152,7 +3171,7 @@ export async function POST(req: NextRequest) {
           }
         } catch {}
       }
-      saveLocalAiSettings({ modelsDir: targetDir });
+      persistSlotDir(targetDir);
       return NextResponse.json({
         ok: true,
         daemonOnline: false,
@@ -3169,7 +3188,26 @@ export async function POST(req: NextRequest) {
       const launchState = body.launchState || {};
 
       if (launchState.modelFile) {
-        saveLocalAiSettings({ activeModelFile: launchState.modelFile, baseUrl });
+        if (launchState.engineType === "strata_chat") {
+          saveLocalAiSettings({
+            activeEngineSlot: "strata_chat",
+            baseUrl,
+            strataChat: {
+              ...(settings.strataChat as any),
+              modelsDir: launchState.modelsDir || settings.strataChat?.modelsDir || "/run/media/mark/Storage 2/AI Models/",
+              activeModelFile: launchState.modelFile,
+              quantKv: launchState.quantKv || "int8",
+              vramBudgetGb: launchState.vramBudgetGb ?? 10.5,
+            },
+          });
+        } else {
+          saveLocalAiSettings({
+            activeEngineSlot: "kobold_report",
+            baseUrl,
+            modelsDir: launchState.modelsDir || settings.modelsDir || "~/koboldcpp/models/",
+            activeModelFile: launchState.modelFile,
+          });
+        }
       }
 
       try {

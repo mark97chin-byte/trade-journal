@@ -53,9 +53,9 @@ export const DEFAULT_LOCAL_AI_SETTINGS: LocalAiSettings = {
   modelsDir: "~/koboldcpp/models",
   activeModelFile: "Qwen3.8-27B-Q4_K_M.gguf",
   strataChat: {
-    modelsDir: "~/koboldcpp/models/IQ3_S",
-    activeModelFile: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00005.gguf",
-    quantKv: "tq3_5s",
+    modelsDir: "/run/media/mark/Storage 2/AI Models/",
+    activeModelFile: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+    quantKv: "int8",
     vramBudgetGb: 10.5,
     contextSize: 32768,
     gpuLayers: 99,
@@ -103,9 +103,22 @@ export function loadLocalAiSettings(): LocalAiSettings {
         .get() as { value_json: string } | undefined;
       if (!row) return DEFAULT_LOCAL_AI_SETTINGS;
       const parsed = JSON.parse(row.value_json);
+      const koboldDir =
+        parsed?.modelsDir && !String(parsed.modelsDir).includes("Storage 2")
+          ? parsed.modelsDir
+          : "~/koboldcpp/models/";
       return {
         ...DEFAULT_LOCAL_AI_SETTINGS,
         ...parsed,
+        modelsDir: koboldDir,
+        strataChat: {
+          ...DEFAULT_LOCAL_AI_SETTINGS.strataChat!,
+          ...(parsed?.strataChat || {}),
+          modelsDir:
+            parsed?.strataChat?.modelsDir && !String(parsed.strataChat.modelsDir).includes("koboldcpp/models/IQ3_S")
+              ? parsed.strataChat.modelsDir
+              : "/run/media/mark/Storage 2/AI Models/",
+        },
         general: { ...DEFAULT_LOCAL_AI_SETTINGS.general, ...(parsed?.general || {}) },
         coach: { ...DEFAULT_LOCAL_AI_SETTINGS.coach, ...(parsed?.coach || {}) },
       };

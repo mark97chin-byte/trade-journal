@@ -94,12 +94,12 @@ export function AiSettings() {
     autoSwitchOnDemand: true,
     idleUnloadMinutes: 30,
     baseUrl: "http://100.75.201.34:5001",
-    modelsDir: "~/koboldcpp/models",
+    modelsDir: "~/koboldcpp/models/",
     activeModelFile: "Qwen3.8-27B-Q4_K_M.gguf",
     strataChat: {
-      modelsDir: "~/koboldcpp/models/IQ3_S",
-      activeModelFile: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00005.gguf",
-      quantKv: "tq3_5s",
+      modelsDir: "/run/media/mark/Storage 2/AI Models/",
+      activeModelFile: "Qwen3.8-Flash-Next-GSQ-RCO-IQ3_S-00001-of-00002.gguf",
+      quantKv: "int8",
       vramBudgetGb: 10.5,
       contextSize: 32768,
       gpuLayers: 99,
@@ -185,8 +185,8 @@ export function AiSettings() {
 
   const currentSlotFolder =
     selectedSlot === "strata_chat"
-      ? localSettings.strataChat?.modelsDir || "~/koboldcpp/models/IQ3_S"
-      : localSettings.modelsDir || "~/koboldcpp/models";
+      ? localSettings.strataChat?.modelsDir || "/run/media/mark/Storage 2/AI Models/"
+      : localSettings.modelsDir || "~/koboldcpp/models/";
 
   const currentSlotModel =
     selectedSlot === "strata_chat"
@@ -203,6 +203,7 @@ export function AiSettings() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             action: "scan_models",
+            engineType: selectedSlot,
             dir: targetFolder,
             baseUrl: customBaseUrl || localSettings.baseUrl,
           }),
@@ -238,11 +239,27 @@ export function AiSettings() {
             }
           }
           if (json.daemonState) {
+            if (json.daemonState.strataModelsDir && !dirToScan) {
+              setLocalSettings((prev) => ({
+                ...prev,
+                strataChat: { ...prev.strataChat!, modelsDir: json.daemonState.strataModelsDir },
+              }));
+            }
+            if (json.daemonState.modelsDir && !String(json.daemonState.modelsDir).includes("Storage 2") && !dirToScan) {
+              setLocalSettings((prev) => ({
+                ...prev,
+                modelsDir: json.daemonState.modelsDir,
+              }));
+            }
+            const rawGl = Number(json.daemonState.gpuLayers ?? 30);
+            const safeGl = rawGl > 64 || rawGl <= 0 ? 30 : rawGl;
+            const rawKv = String(json.daemonState.quantKv || "q8_0").toLowerCase();
+            const safeKv = ["q8_0", "q4_0", "f16"].includes(rawKv) ? rawKv : "q8_0";
             setHwState((prev) => ({
               ...prev,
-              gpuLayers: json.daemonState.gpuLayers ?? prev.gpuLayers,
+              gpuLayers: safeGl,
               contextSize: json.daemonState.contextSize ?? prev.contextSize,
-              quantKv: json.daemonState.quantKv ?? prev.quantKv,
+              quantKv: safeKv,
               vramBudgetGb: json.daemonState.vramBudgetGb ?? prev.vramBudgetGb,
               flashAttention: json.daemonState.flashAttention ?? prev.flashAttention,
               useMtp: json.daemonState.useMtp ?? prev.useMtp,
@@ -290,7 +307,7 @@ export function AiSettings() {
 
     const isStrata = targetSlot === "strata_chat";
     const folder = isStrata
-      ? localSettings.strataChat?.modelsDir || "~/koboldcpp/models/IQ3_S"
+      ? localSettings.strataChat?.modelsDir || "/run/media/mark/Storage 2/AI Models/"
       : localSettings.modelsDir;
     const modelFile = isStrata
       ? localSettings.strataChat?.activeModelFile || ""
@@ -308,7 +325,7 @@ export function AiSettings() {
             engineType: targetSlot,
             modelsDir: folder,
             modelFile,
-            gpuLayers: isStrata ? (localSettings.strataChat?.gpuLayers ?? 99) : hwState.gpuLayers,
+            gpuLayers: isStrata ? 30 : (hwState.gpuLayers > 64 ? 30 : hwState.gpuLayers),
             contextSize: isStrata
               ? (localSettings.strataChat?.contextSize ?? 32768)
               : hwState.contextSize,
@@ -769,7 +786,11 @@ export function AiSettings() {
                   <div className="space-y-1">
                     <Label>Strata TurboQuant KV Cache</Label>
                     <OptionSelect
-                      value={localSettings.strataChat?.quantKv || "tq3_5s"}
+                      value={
+                        ["int8", "k8v4", "q4_0"].includes(localSettings.strataChat?.quantKv || "")
+                          ? localSettings.strataChat!.quantKv
+                          : "int8"
+                      }
                       onValueChange={(v) =>
                         setLocalSettings((prev) => ({
                           ...prev,
@@ -777,9 +798,9 @@ export function AiSettings() {
                         }))
                       }
                     >
-                      <option value="tq3_5s">tq3_5s (3.5-bit · High Intelligence)</option>
-                      <option value="tq3_0">tq3_0 (3.0-bit · Max Speed)</option>
-                      <option value="q8_0">q8_0 (8-bit Standard)</option>
+                      <option value="int8">int8 (8-bit KV · Best Intelligence &amp; Speed)</option>
+                      <option value="k8v4">k8v4 (8-bit K / 4-bit V · More Experts in VRAM)</option>
+                      <option value="q4_0">q4_0 (4-bit Hadamard · Max Context Save)</option>
                     </OptionSelect>
                     <p className="text-[10px] text-muted-foreground pt-0.5">
                       Sub-bit KV cache (~40 tok/s with ISTA-DASLab IQ3_S).
