@@ -15,13 +15,13 @@ export interface RiskRule {
 }
 export interface JournalDefaults {
   breakeven: number;
-  breakevenMode: "money" | "percent";
+  breakevenMode: "r_multiple" | "money" | "percent";
   feeRules: FeeRule[];
   riskRules: RiskRule[];
 }
 export const EMPTY_DEFAULTS: JournalDefaults = {
-  breakeven: 0,
-  breakevenMode: "money",
+  breakeven: 0.1,
+  breakevenMode: "r_multiple",
   feeRules: [],
   riskRules: [],
 };
@@ -85,7 +85,7 @@ export function parseJournalDefaults(
   if (
     !isFinite(b.breakeven) ||
     b.breakeven < 0 ||
-    !["money", "percent"].includes(b.breakevenMode as string)
+    !["r_multiple", "money", "percent"].includes(b.breakevenMode as string)
   )
     return { error: "Breakeven must be a nonnegative amount or percentage." };
   for (const key of ["feeRules", "riskRules"] as const) {

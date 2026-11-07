@@ -44,24 +44,99 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
       pnl: typeof pnl === "number" && pnl !== 0 ? pnl : undefined,
     };
   });
+  const extraRow =
+    (db as any).$client
+      .prepare(
+        `SELECT review_notes, realized_r, planned_r, mae_r, mfe_r,
+                capture_eff, risk_percent, exit_reason, partials_breakdown, tickets
+         FROM trades WHERE key = ?`
+      )
+      .get(key) || {};
+
+  const acctRow = db
+    .select()
+    .from(accounts)
+    .where(eq(accounts.id, row.accountId))
+    .get() as any;
+
+  const accountInitialBalance =
+    typeof acctRow?.initialBalance === "number"
+      ? acctRow.initialBalance
+      : typeof acctRow?.initial_balance === "number"
+      ? acctRow.initial_balance
+      : 100000;
+
+  const computedDurationMs =
+    trade.durationMs ??
+    (row.closedAt && row.openedAt
+      ? Math.max(0, Date.parse(row.closedAt) - Date.parse(row.openedAt))
+      : null);
+
+  const coreRiskAmount = tradeRisk(trade);
+  const coreRealizedR = tradeR(trade);
+  const corePlannedR = plannedR(trade);
+
+  const finalRealizedR =
+    coreRealizedR !== null && Number.isFinite(coreRealizedR)
+      ? Number(coreRealizedR.toFixed(2))
+      : typeof extraRow.realized_r === "number"
+      ? extraRow.realized_r
+      : null;
+
+  const finalPlannedR =
+    corePlannedR !== null && Number.isFinite(corePlannedR)
+      ? Number(corePlannedR.toFixed(2))
+      : typeof extraRow.planned_r === "number"
+      ? extraRow.planned_r
+      : null;
+
+  const finalRiskAmount =
+    coreRiskAmount !== null && Number.isFinite(coreRiskAmount)
+      ? coreRiskAmount
+      : finalRealizedR && Math.abs(finalRealizedR) > 0.001
+      ? Math.abs(row.netPnl / finalRealizedR)
+      : typeof extraRow.risk_percent === "number" && extraRow.risk_percent > 0
+      ? (accountInitialBalance * extraRow.risk_percent) / 100
+      : null;
+
+  const finalRiskPercent =
+    typeof extraRow.risk_percent === "number" && extraRow.risk_percent > 0
+      ? extraRow.risk_percent
+      : finalRiskAmount && accountInitialBalance > 0
+      ? Number(((finalRiskAmount / accountInitialBalance) * 100).toFixed(2))
+      : null;
+
+  const finalMfeR = typeof extraRow.mfe_r === "number" ? extraRow.mfe_r : null;
+  const finalMaeR = typeof extraRow.mae_r === "number" ? extraRow.mae_r : null;
+  const finalCaptureEff =
+    typeof extraRow.capture_eff === "number"
+      ? extraRow.capture_eff
+      : finalRealizedR !== null && finalMfeR !== null && finalMfeR > 0
+      ? Number(((finalRealizedR / finalMfeR) * 100).toFixed(1))
+      : null;
+
   return ok({
     timeZone: getTimeZone(),
-            trade: {
-              ...row,
-              status: trade.status,
-              reviewNotes: (row as any).review_notes ?? (row as any).reviewNotes ?? (db as any).$client.prepare("SELECT review_notes FROM trades WHERE key = ?").get(key)?.review_notes ?? "",
-              riskAmount: tradeRisk(trade),
-            realizedR: tradeR(trade),
-            plannedR: plannedR(trade),
-            contractMultiplier: trade.contractMultiplier ?? null,
-            currency:
-            db
-            .select({ currency: accounts.currency })
-            .from(accounts)
-            .where(eq(accounts.id, row.accountId))
-            .get()?.currency ?? "USD",
-            },
-            executions: fills,
+    trade: {
+      ...row,
+      status: trade.status,
+      durationMs: computedDurationMs,
+      reviewNotes: extraRow.review_notes ?? "",
+      partials_breakdown: extraRow.partials_breakdown ?? (row as any).partials_breakdown ?? "",
+      exit_reason: extraRow.exit_reason ?? null,
+      tickets: extraRow.tickets ?? null,
+      riskAmount: finalRiskAmount,
+      riskPercent: finalRiskPercent,
+      accountInitialBalance,
+      realizedR: finalRealizedR,
+      plannedR: finalPlannedR,
+      mfeR: finalMfeR,
+      maeR: finalMaeR,
+      captureEff: finalCaptureEff,
+      contractMultiplier: trade.contractMultiplier ?? null,
+      currency: acctRow?.currency ?? "USD",
+    },
+    executions: fills,
   });
 });
 

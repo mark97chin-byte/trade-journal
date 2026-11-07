@@ -76,16 +76,24 @@ export function JournalDefaultSettings() {
               className={fieldClass}
               value={draft.breakevenMode}
               onValueChange={(next) =>
-                setDraft({ ...draft, breakevenMode: next as "money" | "percent" })
+                setDraft({
+                  ...draft,
+                  breakevenMode: next as "r_multiple" | "money" | "percent",
+                  breakeven:
+                    next === "r_multiple" && (!draft.breakeven || draft.breakeven === 0)
+                      ? 0.1
+                      : draft.breakeven,
+                })
               }
             >
-              <option value="money">Account currency</option>
+              <option value="r_multiple">R-Multiple (±R, e.g. 0.1 = -0.1R to +0.1R)</option>
+              <option value="money">Account currency ($)</option>
               <option value="percent">% of entry notional</option>
             </OptionSelect>
           </Field>
         </div>
         <p className="text-xs text-muted-foreground">
-          Closed trades within this net P&L range count as breakeven. Actual P&L is unchanged.
+          Closed trades within this ± range count as breakeven (default: ±0.1R, meaning -0.1R to +0.1R is Breakeven, above +0.1R is Win, and below -0.1R is Loss). Actual P&amp;L is unchanged.
           Percentage mode uses entry price × total entry quantity × contract multiplier; configure
           multipliers for derivatives first.
         </p>

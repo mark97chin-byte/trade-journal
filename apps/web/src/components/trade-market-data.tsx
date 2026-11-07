@@ -774,7 +774,9 @@ export function TradeMarketData({
 export function getEffectiveExecutions(
   trade: ChartTrade,
   executions: ChartExecution[],
-  history?: TradeMarketResult | null
+  history?: TradeMarketResult | null,
+  priceMode: "candle_avg" | "mt5_direct" = "candle_avg",
+  oneMinBarsCache?: Array<{ time: number; open: number; high: number; low: number; close: number }>
 ): ChartExecution[] {
   const isShort = trade.direction
     ? trade.direction.toLowerCase() === "short" || trade.direction.toLowerCase() === "sell"
@@ -787,10 +789,15 @@ export function getEffectiveExecutions(
   }
 
   const bars = history.bars;
-  const getCandleAt = (targetMs: number) => {
-    let chosen = bars[0]!;
-    for (let i = 0; i < bars.length; i++) {
-      const b = bars[i]!;
+  const decimals = getSymbolPriceDecimals(trade.symbol || history.symbol, bars[0]?.close);
+
+  const getCandleAt = (
+    targetMs: number,
+    sourceBars: Array<{ time: number; open: number; high: number; low: number; close: number }> = bars
+  ) => {
+    let chosen = sourceBars[0]!;
+    for (let i = 0; i < sourceBars.length; i++) {
+      const b = sourceBars[i]!;
       if (b.time <= targetMs) {
         chosen = b;
       } else {
@@ -801,17 +808,26 @@ export function getEffectiveExecutions(
   };
 
   if (executions && executions.length > 0) {
+    const pricingBars =
+      oneMinBarsCache && oneMinBarsCache.length > 0 ? oneMinBarsCache : bars;
     return executions.map((ex) => {
       const ms = Date.parse(ex.executedAt);
-      const bar = getCandleAt(Number.isFinite(ms) ? ms : Date.parse(trade.openedAt));
-      const validPrice =
-        typeof ex.price === "number" && Number.isFinite(ex.price) && ex.price > 0
-          ? ex.price
-          : Number(((bar.open + bar.close) / 2).toFixed(2));
+      const safeMs = Number.isFinite(ms) ? ms : Date.parse(trade.openedAt);
+      const chartBar = getCandleAt(safeMs, bars);
+      const priceBar = getCandleAt(safeMs, pricingBars);
+      const candleAvgPrice = roundSymbolPrice((priceBar.open + priceBar.close) / 2, decimals);
+
+      const useDirect =
+        priceMode === "mt5_direct" &&
+        typeof ex.price === "number" &&
+        Number.isFinite(ex.price) &&
+        ex.price > 0;
+
       return {
         ...ex,
-        price: validPrice,
-        barTimeMs: bar.time,
+        price: useDirect ? ex.price : candleAvgPrice,
+        rawMt5Price: ex.price,
+        barTimeMs: chartBar.time,
       };
     });
   }
@@ -907,9 +923,34 @@ export function HistoricalReplay({
     partials?: PositionPartialItem[];
   } | null;
 }) {
+  const [fillPriceMode, setFillPriceMode] = useState<"candle_avg" | "mt5_direct">(() => {
+    if (typeof window !== "undefined") {
+      const saved = localStorage.getItem("tz_fill_price_mode");
+      if (saved === "mt5_direct" || saved === "candle_avg") return saved;
+    }
+    return "candle_avg";
+  });
+
+  // Cache 1-minute bars per trade key so 1m candle average prices remain exact even when viewing 5m/15m/1h
+  const oneMinBarsRef = useRef<{
+    tradeKey: string;
+    bars: Array<{ time: number; open: number; high: number; low: number; close: number }>;
+  }>({ tradeKey: "", bars: [] });
+
+  if (history.resolution === "1m" && history.bars.length > 0) {
+    oneMinBarsRef.current = { tradeKey: trade.key, bars: history.bars };
+  }
+
   const effectiveExecutions = useMemo(
-    () => getEffectiveExecutions(trade, executions, history),
-    [trade, executions, history]
+    () =>
+      getEffectiveExecutions(
+        trade,
+        executions,
+        history,
+        fillPriceMode,
+        oneMinBarsRef.current.tradeKey === trade.key ? oneMinBarsRef.current.bars : undefined
+      ),
+    [trade, executions, history, fillPriceMode]
   );
 
   const findClosestBarIndex = (targetMs: number) => {
@@ -1421,6 +1462,43 @@ export function HistoricalReplay({
                 + Custom
               </button>
             </div>
+
+            {/* CFD -> Futures Fill Price Alignment Toggle */}
+            {!trade.key.startsWith("missed_") && !trade.key.startsWith("sim_") && (
+              <div
+                className="flex items-center gap-0.5 rounded-lg border border-border/60 bg-muted/30 p-0.5 text-[11px]"
+                title="Choose whether execution markers snap to the 1m candle average price (fixes CFD vs Futures spread) or use raw MT5 prices"
+              >
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFillPriceMode("candle_avg");
+                    try { localStorage.setItem("tz_fill_price_mode", "candle_avg"); } catch {}
+                  }}
+                  className={`rounded px-2 py-0.5 font-semibold transition ${
+                    fillPriceMode === "candle_avg"
+                      ? "bg-indigo-600 text-white shadow-2xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  1m Candle Price
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFillPriceMode("mt5_direct");
+                    try { localStorage.setItem("tz_fill_price_mode", "mt5_direct"); } catch {}
+                  }}
+                  className={`rounded px-2 py-0.5 font-semibold transition ${
+                    fillPriceMode === "mt5_direct"
+                      ? "bg-secondary text-foreground border border-border shadow-2xs"
+                      : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  MT5 Direct
+                </button>
+              </div>
+            )}
 
             {/* Lookback Stepper (Neutral) */}
             <div

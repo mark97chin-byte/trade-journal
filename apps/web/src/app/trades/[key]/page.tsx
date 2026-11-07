@@ -59,13 +59,19 @@ import { postJson, useApi } from "@/lib/use-api";
 import { fmtDuration, fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
 import { tradeKeyFromSegment } from "@/lib/trade-links";
 import { formatTimestamp, formatDateDMY } from "@/lib/timezone";
+import { classifyKillzoneAnd7hCandle } from "@/lib/killzones";
 import { NotebookTradeMatcherModal } from "@/components/notebook/notebook-trade-matcher-modal";
 import { FileText, ArrowRightLeft } from "lucide-react";
 
 interface TradeDetail {
   riskAmount: number | null;
+  riskPercent?: number | null;
+  accountInitialBalance?: number | null;
   realizedR: number | null;
   plannedR: number | null;
+  mfeR?: number | null;
+  maeR?: number | null;
+  captureEff?: number | null;
   contractMultiplier: number | null;
   currency: string;
   key: string;
@@ -289,82 +295,243 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
 
       <div className="p-4 space-y-4">
         {/* 1. FULL-WIDTH TOP SUMMARY BAR (STRETCHES ACROSS THE PAGE) */}
-        <Card className="border-border/70 bg-[#12141c]">
-          <CardContent className="flex flex-wrap items-center justify-between gap-x-8 gap-y-3 py-4">
-            <div className="flex items-center gap-4">
-              <div>
-                <div className="text-xs text-muted-foreground">Net P&L</div>
-                <Pnl value={trade.netPnl} className="text-2xl font-bold" />
-              </div>
-              <Badge
-                variant={
-                  trade.status === "win"
-                    ? "profit"
-                    : trade.status === "loss"
-                    ? "loss"
-                    : "secondary"
-                }
-                className="text-xs uppercase font-semibold px-2.5 py-1"
-              >
-                {trade.status}
-              </Badge>
-            </div>
+        {(() => {
+          const kzEntry = classifyKillzoneAnd7hCandle(trade.openedAt);
+          const kzExit = trade.closedAt ? classifyKillzoneAnd7hCandle(trade.closedAt) : null;
+          const computedDurMs =
+            trade.durationMs != null && trade.durationMs > 0
+              ? trade.durationMs
+              : trade.closedAt && trade.openedAt
+              ? Math.max(0, Date.parse(trade.closedAt) - Date.parse(trade.openedAt))
+              : null;
 
-            <div className="flex flex-wrap items-center gap-x-6 gap-y-2 text-sm">
-              <Meta label="Gross" value={fmtMoney(trade.grossPnl)} monetary />
-              <Meta label="Fees" value={fmtMoney(trade.fees)} monetary />
-              <Meta label="Volume" value={fmtNumber(trade.quantity, 2)} />
-              <Meta label="Avg entry" value={fmtNumber(trade.avgEntry)} monetary />
-              <Meta
-                label="Avg exit"
-                monetary
-                value={trade.avgExit === null ? "open" : fmtNumber(trade.avgExit)}
-              />
-              <Meta label="Duration" value={fmtDuration(trade.durationMs)} />
-              <Meta label="Net / entry" value={fmtPercent(netReturnOnEntry(trade), 2)} />
-              <Meta
-                label="Planned R"
-                value={trade.plannedR === null ? "–" : `${fmtNumber(trade.plannedR)}R`}
-              />
-              <Meta
-                label="Realized R"
-                value={trade.realizedR === null ? "–" : `${fmtNumber(trade.realizedR)}R`}
-              />
-            </div>
+          // Calculate Full-Hold vs Trade Management Efficiency from executions (or 1m candles)
+          const isShort = trade.direction.toLowerCase() === "short";
+          const exitLegs = executions
+            .filter((e) => e.side === (isShort ? "buy" : "sell"))
+            .sort((a, b) => Date.parse(a.executedAt) - Date.parse(b.executedAt));
 
-            {/* Quick Column Collapse Toggles */}
-            <div className="flex items-center gap-1.5 border-l border-border/50 pl-4">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setLeftCollapsed(!leftCollapsed)}
-                className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
-                title={leftCollapsed ? "Expand Journal" : "Collapse Journal"}
-              >
-                {leftCollapsed ? (
-                  <PanelLeftOpen className="h-4 w-4" />
-                ) : (
-                  <PanelLeftClose className="h-4 w-4" />
-                )}
-                <span className="hidden sm:inline ml-1">Journal</span>
-              </Button>
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => setRightCollapsed(!rightCollapsed)}
-                className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
-                title={rightCollapsed ? "Expand Chart" : "Collapse Chart"}
-              >
-                {rightCollapsed ? (
-                  <PanelRightOpen className="h-4 w-4" />
-                ) : (
-                  <PanelRightClose className="h-4 w-4" />
-                )}
-                <span className="hidden sm:inline ml-1">Chart</span>
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
+          // Time to TP1 (first partial scale-out)
+          const firstExitMs = exitLegs.length > 1 ? Date.parse(exitLegs[0]!.executedAt) : null;
+          const timeToTp1Ms =
+            firstExitMs && Number.isFinite(firstExitMs)
+              ? Math.max(0, firstExitMs - Date.parse(trade.openedAt))
+              : null;
+
+          // Full-Hold P&L = holding 100% of initial quantity until the final exit leg's price
+          const finalExitPrice =
+            exitLegs.length > 0
+              ? exitLegs[exitLegs.length - 1]!.price
+              : trade.avgExit ?? trade.avgEntry;
+          const avgMove = isShort
+            ? trade.avgEntry - (trade.avgExit ?? trade.avgEntry)
+            : (trade.avgExit ?? trade.avgEntry) - trade.avgEntry;
+          const impliedMult =
+            trade.contractMultiplier && trade.contractMultiplier > 0
+              ? trade.contractMultiplier
+              : Math.abs(avgMove) > 0 && trade.quantity > 0 && Math.abs(trade.grossPnl) > 0
+              ? Math.abs(trade.grossPnl) / (Math.abs(avgMove) * trade.quantity)
+              : 1;
+          const finalMove = isShort
+            ? trade.avgEntry - finalExitPrice
+            : finalExitPrice - trade.avgEntry;
+          const fullHoldPnl =
+            exitLegs.length > 1
+              ? Number((trade.quantity * finalMove * impliedMult).toFixed(2))
+              : trade.netPnl;
+          const deltaVsHold = Number((trade.netPnl - fullHoldPnl).toFixed(2));
+          const mgmtEffPct =
+            Math.abs(fullHoldPnl) > 0.01
+              ? Number(((trade.netPnl / fullHoldPnl) * 100).toFixed(1))
+              : 100;
+
+          // Live MFE R / MAE R fallback from loaded marketResult candles if stopLoss is set
+          let displayMfeR = trade.mfeR ?? null;
+          let displayMaeR = trade.maeR ?? null;
+          if (
+            (displayMfeR === null || displayMaeR === null) &&
+            marketResult?.bars?.length &&
+            trade.stopLoss &&
+            trade.stopLoss > 0
+          ) {
+            const openT = Date.parse(trade.openedAt);
+            const closeT = trade.closedAt ? Date.parse(trade.closedAt) : Date.now();
+            const tBars = marketResult.bars.filter(
+              (b) => b.time >= openT - 60_000 && b.time <= closeT + 60_000
+            );
+            const riskPts = Math.abs(trade.avgEntry - trade.stopLoss);
+            if (tBars.length > 0 && riskPts > 0) {
+              const hi = Math.max(...tBars.map((b) => b.high));
+              const lo = Math.min(...tBars.map((b) => b.low));
+              const favPts = isShort
+                ? Math.max(0, trade.avgEntry - lo)
+                : Math.max(0, hi - trade.avgEntry);
+              const advPts = isShort
+                ? Math.max(0, hi - trade.avgEntry)
+                : Math.max(0, trade.avgEntry - lo);
+              if (displayMfeR === null) displayMfeR = Number((favPts / riskPts).toFixed(2));
+              if (displayMaeR === null) displayMaeR = Number((advPts / riskPts).toFixed(2));
+            }
+          }
+
+          const displayCaptureEff =
+            trade.captureEff ??
+            (trade.realizedR != null && displayMfeR != null && displayMfeR > 0
+              ? Number(((trade.realizedR / displayMfeR) * 100).toFixed(1))
+              : null);
+
+          return (
+            <Card className="border-border/70 bg-[#12141c]">
+              <CardContent className="space-y-3 py-4">
+                {/* TOP ROW: P&L, STATUS, DAY/DATE, KILLZONE / 7H CANDLE, PANEL TOGGLES */}
+                <div className="flex flex-wrap items-center justify-between gap-4 border-b border-border/40 pb-3">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <div>
+                      <div className="text-[11px] text-muted-foreground">Net P&amp;L</div>
+                      <Pnl value={trade.netPnl} className="text-2xl font-bold" />
+                    </div>
+                    <Badge
+                      variant={
+                        trade.status === "win"
+                          ? "profit"
+                          : trade.status === "loss"
+                          ? "loss"
+                          : "secondary"
+                      }
+                      className="text-xs uppercase font-semibold px-2.5 py-1"
+                    >
+                      {trade.status}
+                    </Badge>
+
+                    {/* Day of Week, Date (DD-MM-YYYY) & NY Entry -> Exit Time */}
+                    <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-border/50">
+                      <span className="rounded-md border border-border/70 bg-secondary/40 px-2.5 py-1 font-mono text-xs font-semibold text-foreground">
+                        {kzEntry.dayShort}, {kzEntry.dateDMY}
+                      </span>
+                      <span className="rounded-md border border-border/70 bg-secondary/40 px-2.5 py-1 font-mono text-xs text-muted-foreground">
+                        {kzEntry.timeHM}
+                        {kzExit ? ` → ${kzExit.timeHM}` : ""} NY
+                      </span>
+                      <span
+                        className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${
+                          kzEntry.isKillzone
+                            ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
+                            : "border-amber-500/40 bg-amber-500/15 text-amber-300"
+                        }`}
+                        title={`7-Hour Candle Window: ${kzEntry.candle7h}`}
+                      >
+                        {kzEntry.label}
+                      </span>
+                      {kzEntry.isKillzone && (
+                        <span className="rounded-md border border-border/60 bg-background/60 px-2 py-1 font-mono text-[11px] text-muted-foreground">
+                          {kzEntry.candle7h}
+                        </span>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Quick Column Collapse Toggles */}
+                  <div className="flex items-center gap-1.5">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setLeftCollapsed(!leftCollapsed)}
+                      className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+                      title={leftCollapsed ? "Expand Journal" : "Collapse Journal"}
+                    >
+                      {leftCollapsed ? (
+                        <PanelLeftOpen className="h-4 w-4" />
+                      ) : (
+                        <PanelLeftClose className="h-4 w-4" />
+                      )}
+                      <span className="hidden sm:inline ml-1">Journal</span>
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setRightCollapsed(!rightCollapsed)}
+                      className="h-8 px-2 text-xs text-muted-foreground hover:text-foreground"
+                      title={rightCollapsed ? "Expand Chart" : "Collapse Chart"}
+                    >
+                      {rightCollapsed ? (
+                        <PanelRightOpen className="h-4 w-4" />
+                      ) : (
+                        <PanelRightClose className="h-4 w-4" />
+                      )}
+                      <span className="hidden sm:inline ml-1">Chart</span>
+                    </Button>
+                  </div>
+                </div>
+
+                {/* SECOND ROW: COMPLETE EXECUTION, RISK, R-MULTIPLE, OPTIMAL R & MGMT EFFICIENCY TELEMETRY */}
+                <div className="flex flex-wrap items-center gap-x-6 gap-y-2.5 text-sm">
+                  <Meta
+                    label="Realized R"
+                    value={
+                      trade.realizedR === null
+                        ? "–"
+                        : `${trade.realizedR > 0 ? "+" : ""}${fmtNumber(trade.realizedR, 2)}R`
+                    }
+                  />
+                  <Meta
+                    label="Planned R"
+                    value={trade.plannedR === null ? "–" : `${fmtNumber(trade.plannedR, 2)}R`}
+                  />
+                  <Meta
+                    label="Account Risk"
+                    value={
+                      trade.riskPercent != null
+                        ? `${fmtNumber(trade.riskPercent, 2)}%${
+                            trade.riskAmount ? ` (${fmtMoney(trade.riskAmount, trade.currency)})` : ""
+                          }`
+                        : trade.riskAmount != null
+                        ? fmtMoney(trade.riskAmount, trade.currency)
+                        : "–"
+                    }
+                  />
+                  <Meta
+                    label="Optimal R (MFE)"
+                    value={displayMfeR === null ? "–" : `+${fmtNumber(displayMfeR, 2)}R`}
+                  />
+                  <Meta
+                    label="Max Heat (MAE)"
+                    value={displayMaeR === null ? "–" : `-${fmtNumber(displayMaeR, 2)}R`}
+                  />
+                  <Meta
+                    label="R Capture Eff"
+                    value={displayCaptureEff === null ? "–" : `${fmtNumber(displayCaptureEff, 1)}%`}
+                  />
+                  <Meta
+                    label="Mgmt vs Full Hold"
+                    value={`${mgmtEffPct}% (${deltaVsHold >= 0 ? "+" : ""}${fmtMoney(
+                      deltaVsHold,
+                      trade.currency
+                    )})`}
+                  />
+                  <Meta
+                    label="Duration"
+                    value={
+                      computedDurMs != null
+                        ? `${fmtDuration(computedDurMs)}${
+                            timeToTp1Ms != null ? ` (TP1: ${fmtDuration(timeToTp1Ms)})` : ""
+                          }`
+                        : "–"
+                    }
+                  />
+                  <Meta label="Volume" value={`${fmtNumber(trade.quantity, 2)}L`} />
+                  <Meta label="Avg entry" value={fmtNumber(trade.avgEntry)} monetary />
+                  <Meta
+                    label="Avg exit"
+                    monetary
+                    value={trade.avgExit === null ? "open" : fmtNumber(trade.avgExit)}
+                  />
+                  <Meta label="Gross" value={fmtMoney(trade.grossPnl)} monetary />
+                  <Meta label="Fees" value={fmtMoney(trade.fees)} monetary />
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })()}
 
         {/* 2. DYNAMIC RESIZABLE 2-COLUMN LAYOUT */}
         <div className="flex flex-col lg:flex-row gap-0 relative items-stretch min-h-[600px]">

@@ -373,12 +373,20 @@ def fetch_reconstructed_trades(all_history: bool = False):
         if realized_r is not None and mfe_r and mfe_r > 0:
             capture_eff = round((realized_r / mfe_r) * 100, 1)
 
-        if tot_pnl > 5.0:
-            outcome = "WIN"
-        elif tot_pnl < -5.0:
-            outcome = "LOSS"
+        if realized_r is not None:
+            if realized_r > 0.1:
+                outcome = "WIN"
+            elif realized_r < -0.1:
+                outcome = "LOSS"
+            else:
+                outcome = "BE"
         else:
-            outcome = "BE"
+            if tot_pnl > 5.0:
+                outcome = "WIN"
+            elif tot_pnl < -5.0:
+                outcome = "LOSS"
+            else:
+                outcome = "BE"
 
         trade_ideas.append({
             "cluster_id": f"{c['symbol']}_{pos_ids[0]}",
@@ -389,6 +397,8 @@ def fetch_reconstructed_trades(all_history: bool = False):
             "net_pnl": round(tot_pnl, 2),
             "entry_price": round(weighted_entry, 5),
             "exit_price": round(weighted_exit, 5),
+            "stop_loss": round(initial_sl, 5) if initial_sl > 0 else None,
+            "profit_target": round(initial_tp, 5) if initial_tp > 0 else None,
             "realized_r": realized_r,
             "planned_r": planned_r,
             "mfe_r": mfe_r,
@@ -632,11 +642,19 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None, account_id
     direction = "long" if str(trade.get("direction", "")).upper() in ["BUY", "LONG"] else "short"
 
     net_pnl = float(trade.get("net_pnl", 0.0))
+    r_val = trade.get("realized_r")
     if not trade.get("close_time"):
         status = "open"
-    elif net_pnl > 0:
+    elif r_val is not None:
+        if r_val > 0.1:
+            status = "win"
+        elif r_val < -0.1:
+            status = "loss"
+        else:
+            status = "breakeven"
+    elif net_pnl > 5.0:
         status = "win"
-    elif net_pnl < 0:
+    elif net_pnl < -5.0:
         status = "loss"
     else:
         status = "breakeven"
