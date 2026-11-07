@@ -1,4 +1,5 @@
 "use client";
+import { DateTimeInputDMY, DateInputDMY } from "@/components/ui/datetime-dmy";
 
 import React, { useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Vela } from "@luxalgo/vela";
@@ -738,8 +739,7 @@ export function TradeMarketData({
                     <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
                       From (Start Date &amp; Time)
                     </label>
-                    <input
-                      type="datetime-local"
+                    <DateTimeInputDMY
                       value={customFrom}
                       onChange={(e) => setCustomFrom(e.target.value)}
                       className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground"
@@ -749,8 +749,7 @@ export function TradeMarketData({
                     <label className="block text-[10px] uppercase tracking-wider text-muted-foreground mb-0.5">
                       To (End Date &amp; Time)
                     </label>
-                    <input
-                      type="datetime-local"
+                    <DateTimeInputDMY
                       value={customTo}
                       onChange={(e) => setCustomTo(e.target.value)}
                       className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground"
@@ -1368,8 +1367,7 @@ export function HistoricalReplay({
             {/* JUMP TO SPECIFIC DATE (AUTO-DOWNLOADS IF MISSING) */}
             <div className="flex items-center gap-1 rounded-md border border-border/60 bg-muted/30 px-1.5 py-0.5 text-xs">
               <Calendar className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-              <input
-                type="datetime-local"
+              <DateTimeInputDMY
                 value={jumpDateInput}
                 onChange={(e) => onJumpDateInputChange(e.target.value)}
                 className="h-6 bg-transparent text-[11px] text-foreground outline-none font-mono"

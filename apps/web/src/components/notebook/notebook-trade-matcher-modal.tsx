@@ -15,6 +15,7 @@ import { Dialog, DialogContent, DialogTitle, DialogDescription } from "@/compone
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { formatDateDMY } from "@/lib/timezone";
 
 interface DraftNote {
   id: string;
@@ -64,7 +65,7 @@ export function NotebookTradeMatcherModal({
       {
         selected: boolean;
         tradeKey: string;
-        targetSection: "auto_split" | "setup" | "review";
+        targetSection: "setup" | "review";
       }
     >
   >({});
@@ -96,7 +97,7 @@ export function NotebookTradeMatcherModal({
         const defaultTradeKey = preselectedTradeKey || allTrades[0]?.key || "";
         const initMap: Record<
           string,
-          { selected: boolean; tradeKey: string; targetSection: "auto_split" | "setup" | "review" }
+          { selected: boolean; tradeKey: string; targetSection: "setup" | "review" }
         > = {};
 
         allNotes.forEach((n, idx) => {
@@ -114,7 +115,7 @@ export function NotebookTradeMatcherModal({
           initMap[n.id] = {
             selected: Boolean(isPreselected),
             tradeKey: guessedTradeKey,
-            targetSection: "auto_split",
+            targetSection: "setup",
           };
         });
 
@@ -265,7 +266,7 @@ export function NotebookTradeMatcherModal({
                 const cfg = mappings[n.id] || {
                   selected: false,
                   tradeKey: trades[0]?.key || "",
-                  targetSection: "auto_split",
+                  targetSection: "setup",
                 };
                 const plainPreview = (n.content || "")
                   .replace(/<[^>]+>/g, " ")
@@ -304,7 +305,7 @@ export function NotebookTradeMatcherModal({
                             )}
                           </div>
                           <div className="text-[10px] text-muted-foreground font-mono">
-                            Updated: {(n.updatedAt || "").slice(0, 16).replace("T", " ")}
+                            Updated: {formatDateDMY((n.updatedAt || "").slice(0, 16).replace("T", " "))}
                           </div>
                           {plainPreview && (
                             <p className="text-[11px] text-muted-foreground line-clamp-1 mt-0.5">
@@ -333,7 +334,7 @@ export function NotebookTradeMatcherModal({
                             className="h-8 w-full rounded-lg border border-border bg-background px-2.5 font-mono text-xs text-foreground"
                           >
                             {trades.map((t) => {
-                              const dt = (t.openedAt || "").slice(0, 16).replace("T", " ");
+                              const dt = formatDateDMY((t.openedAt || "").slice(0, 16).replace("T", " "));
                               const pnlStr =
                                 t.netPnl >= 0 ? `+$${t.netPnl.toFixed(2)}` : `-$${Math.abs(t.netPnl).toFixed(2)}`;
                               return (
@@ -357,13 +358,12 @@ export function NotebookTradeMatcherModal({
                                 ...prev,
                                 [n.id]: {
                                   ...cfg,
-                                  targetSection: e.target.value as "auto_split" | "setup" | "review",
+                                  targetSection: e.target.value as "setup" | "review",
                                 },
                               }))
                             }
                             className="h-8 w-full rounded-lg border border-border bg-background px-2 text-xs text-foreground"
                           >
-                            <option value="auto_split">Auto-Split (Setup + Review at Divider)</option>
                             <option value="setup">Execution &amp; Setup Notes</option>
                             <option value="review">Post-Trade Review</option>
                           </select>
@@ -412,7 +412,7 @@ export function NotebookTradeMatcherModal({
               >
                 {notes.map((n) => (
                   <option key={n.id} value={n.id}>
-                    {(n.updatedAt || "").slice(0, 10)} · {n.title || "Untitled"}
+                    {formatDateDMY((n.updatedAt || "").slice(0, 10))} · {n.title || "Untitled"}
                   </option>
                 ))}
               </select>

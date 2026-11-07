@@ -80,7 +80,7 @@ function fmtHoldTime(ms: number | null): string {
 function formatMonthLabel(mKey: string): string {
   const [y, m] = mKey.split("-");
   const date = new Date(Date.UTC(Number(y), Number(m) - 1, 1));
-  return date.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+  return date.toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
 }
 
 export function YourStatsOverview({

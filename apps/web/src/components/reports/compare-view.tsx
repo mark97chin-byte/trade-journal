@@ -1,4 +1,5 @@
 "use client";
+import { DateTimeInputDMY, DateInputDMY } from "@/components/ui/datetime-dmy";
 
 import React, { useState } from "react";
 import {
@@ -240,8 +241,7 @@ export function CompareView({
           {/* Start Date */}
           <div>
             <label className="text-[11px] text-muted-foreground block mb-1">Start date</label>
-            <input
-              type="date"
+            <DateInputDMY
               value={state.startDate}
               onChange={(e) =>
                 setState((prev) => ({ ...prev, startDate: e.target.value }))
@@ -253,8 +253,7 @@ export function CompareView({
           {/* End Date */}
           <div className="sm:col-span-2">
             <label className="text-[11px] text-muted-foreground block mb-1">End date</label>
-            <input
-              type="date"
+            <DateInputDMY
               value={state.endDate}
               onChange={(e) =>
                 setState((prev) => ({ ...prev, endDate: e.target.value }))

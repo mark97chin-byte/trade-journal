@@ -538,7 +538,95 @@ def wipe_notion_trades_database():
     print("[Wipe] Notion Trades database cleared.")
 
 
-def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
+
+def resolve_or_create_mt5_account(conn, acct_login, acct_server, acct_currency, acct_balance, sample_cluster_ids):
+    """
+    Safely maps the logged-in MT5 account to SQLite `accounts`:
+    - Preserves 'mt5-main' ("MetaTrader 5 Account") for your existing account so zero current trades are affected.
+    - Automatically creates a new account row `mt5-<login>` when you switch to a new MT5 login (e.g. Stage 2 prop firm).
+    """
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS journal_kv_settings (
+            key TEXT PRIMARY KEY,
+            value_json TEXT NOT NULL
+        )
+    """)
+    row = cur.execute("SELECT value_json FROM journal_kv_settings WHERE key = 'mt5_login_account_map'").fetchone()
+    login_map = {}
+    if row and row[0]:
+        try:
+            login_map = json.loads(row[0])
+        except Exception:
+            login_map = {}
+
+    login_str = str(acct_login or "").strip()
+    if not login_str or login_str == "0":
+        return "mt5-main"
+
+    if login_str in login_map:
+        mapped_id = login_map[login_str]
+        return mapped_id
+
+    # Check if any sample trade from this MT5 login already exists under 'mt5-main'
+    existing_main_count = cur.execute("SELECT COUNT(*) FROM trades WHERE account_id = 'mt5-main'").fetchone()[0]
+    overlap_with_main = False
+    if sample_cluster_ids:
+        placeholders = ",".join("?" for _ in sample_cluster_ids[:25])
+        overlap_rows = cur.execute(
+            f"SELECT COUNT(*) FROM trades WHERE account_id = 'mt5-main' AND key IN ({placeholders})",
+            sample_cluster_ids[:25],
+        ).fetchone()[0]
+        overlap_with_main = overlap_rows > 0
+
+    if overlap_with_main or (existing_main_count == 0 and not login_map):
+        login_map[login_str] = "mt5-main"
+        cur.execute(
+            "INSERT INTO journal_kv_settings (key, value_json) VALUES ('mt5_login_account_map', ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+            (json.dumps(login_map),),
+        )
+        conn.commit()
+        print(f"[MT5 Account] Mapped MT5 Login #{login_str} ({acct_server}) -> existing 'mt5-main'")
+        return "mt5-main"
+
+    # Otherwise, this is a brand-new MT5 account (e.g. Prop Firm Stage 2 or new evaluation)!
+    new_acct_id = f"mt5-{login_str}"
+    acct_name = f"MT5 #{login_str}" + (f" ({acct_server})" if acct_server else "")
+    now_iso = datetime.now(timezone.utc).isoformat()
+
+    # Inspect accounts table columns dynamically so insert matches schema
+    acct_cols = [r[1] for r in cur.execute("PRAGMA table_info(accounts)").fetchall()]
+    exists = cur.execute("SELECT id FROM accounts WHERE id = ?", (new_acct_id,)).fetchone()
+    if not exists and acct_cols:
+        insert_map = {
+            "id": new_acct_id,
+            "name": acct_name,
+            "broker": "MT5",
+            "kind": "manual",
+            "currency": acct_currency or "USD",
+            "initial_balance": float(acct_balance or 100000.0),
+            "profit_calculation": "FIFO",
+            "created_at": now_iso,
+            "updated_at": now_iso,
+        }
+        valid_k = [k for k in insert_map.keys() if k in acct_cols]
+        ph = ",".join("?" for _ in valid_k)
+        cur.execute(
+            f"INSERT OR IGNORE INTO accounts ({','.join(valid_k)}) VALUES ({ph})",
+            [insert_map[k] for k in valid_k],
+        )
+        print(f"[MT5 Account] Auto-created NEW Account '{acct_name}' (id={new_acct_id}, balance={acct_balance})!")
+
+    login_map[login_str] = new_acct_id
+    cur.execute(
+        "INSERT INTO journal_kv_settings (key, value_json) VALUES ('mt5_login_account_map', ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
+        (json.dumps(login_map),),
+    )
+    conn.commit()
+    return new_acct_id
+
+
+def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None, account_id="mt5-main"):
     """Saves or self-heals a trade and all its individual MT5 execution legs."""
     cur = conn.cursor()
     direction = "long" if str(trade.get("direction", "")).upper() in ["BUY", "LONG"] else "short"
@@ -557,8 +645,7 @@ def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None):
     # and Notion links are handled by the top Notion action buttons.
     notes_content = ""
 
-    cluster_key = str(trade["cluster_id"])
-    account_id = "mt5-main"
+    cluster_key = str(trade["cluster_id"]) if account_id == "mt5-main" else f"{account_id}_{trade['cluster_id']}"
     symbol = str(trade["symbol"])
     asset_class = infer_asset_class(symbol)
     entry_side = "sell" if direction == "short" else "buy"
@@ -973,7 +1060,12 @@ if __name__ == "__main__":
     import sys
     do_wipe = "--wipe" in sys.argv
     init_mt5()
-    print(f"Reconstructing trades, partials, and MAE/MFE from MT5 (NY = Broker - {MT5_NY_OFFSET_HOURS}h)...")
+    _ainfo = mt5.account_info()
+    _mt5_login = getattr(_ainfo, "login", 0) if _ainfo else 0
+    _mt5_server = getattr(_ainfo, "server", "") if _ainfo else ""
+    _mt5_currency = getattr(_ainfo, "currency", "USD") if _ainfo else "USD"
+    _mt5_balance = getattr(_ainfo, "balance", 100000.0) if _ainfo else 100000.0
+    print(f"Reconstructing trades, partials, and MAE/MFE from MT5 Account #{_mt5_login} ({_mt5_server})...")
     trade_ideas = fetch_reconstructed_trades(all_history=do_wipe)
     mt5.shutdown()
 
@@ -984,6 +1076,10 @@ if __name__ == "__main__":
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     db_conn = sqlite3.connect(DB_PATH)
+    _sample_cids = [t["cluster_id"] for t in trade_ideas]
+    active_account_id = resolve_or_create_mt5_account(
+        db_conn, _mt5_login, _mt5_server, _mt5_currency, _mt5_balance, _sample_cids
+    )
 
     if do_wipe:
         print("[Wipe] Clearing local SQLite trades and executions tables...")
@@ -1003,13 +1099,13 @@ if __name__ == "__main__":
                 notion_info = push_to_notion(t, schema)
                 if notion_info:
                     synced_notion_count += 1
-                    save_to_sqlite(db_conn, t, notion_page_id=notion_info.get("id"), notion_url=notion_info.get("url"))
+                    save_to_sqlite(db_conn, t, notion_page_id=notion_info.get("id"), notion_url=notion_info.get("url"), account_id=active_account_id)
                 else:
-                    save_to_sqlite(db_conn, t)
+                    save_to_sqlite(db_conn, t, account_id=active_account_id)
             else:
                 prev_info = existing[cid]
                 print(f"[Notion] Skipping {cid} (Already in Notion)")
-                save_to_sqlite(db_conn, t, notion_page_id=prev_info.get("id"), notion_url=prev_info.get("url"))
+                save_to_sqlite(db_conn, t, notion_page_id=prev_info.get("id"), notion_url=prev_info.get("url"), account_id=active_account_id)
 
         self_heal_database(db_conn)
 

@@ -306,23 +306,33 @@ async function runRemoteSyncOnDevice(
   };
 }
 
-function mergeStagingDb(targetDbPath: string, stagingDbPath: string): { tradesMerged: number } {
+function mergeStagingDb(targetDbPath: string, stagingDbPath: string): { tradesMerged: number; accountsSynced: number } {
   const conn = new Database(targetDbPath);
   try {
     conn.exec("PRAGMA wal_checkpoint(PASSIVE);");
     conn.exec(`ATTACH DATABASE '${stagingDbPath}' AS stg;`);
 
-    conn.exec(`
-      DELETE FROM main.trades
-      WHERE account_id = 'mt5-main'
-        AND key NOT IN (SELECT key FROM stg.trades);
-    `);
-    conn.exec(`
-      DELETE FROM main.executions
-      WHERE account_id = 'mt5-main'
-        AND id NOT IN (SELECT id FROM stg.executions);
-    `);
+    // 1. Automatically create any new MT5 accounts (e.g. Stage 2 prop firm or new account login)
+    let accountsSynced = 0;
+    try {
+      const stgAccounts = conn.prepare("SELECT * FROM stg.accounts").all() as any[];
+      const importCols = (conn.prepare("PRAGMA main.table_info(accounts)").all() as Array<{ name: string }>).map(
+        (c) => c.name
+      );
+      for (const acc of stgAccounts) {
+        const exists = conn.prepare("SELECT id FROM main.accounts WHERE id = ?").get(acc.id);
+        if (!exists && importCols.length > 0) {
+          const validKeys = Object.keys(acc).filter((k) => importCols.includes(k));
+          const placeholders = validKeys.map(() => "?").join(", ");
+          conn
+            .prepare(`INSERT OR IGNORE INTO main.accounts (${validKeys.join(", ")}) VALUES (${placeholders})`)
+            .run(...validKeys.map((k) => acc[k]));
+          accountsSynced += 1;
+        }
+      }
+    } catch {}
 
+    // 2. Upsert executions without wiping historical accounts
     conn.exec(`
       INSERT OR REPLACE INTO main.executions
       SELECT * FROM stg.executions;
@@ -366,7 +376,7 @@ function mergeStagingDb(targetDbPath: string, stagingDbPath: string): { tradesMe
 
     conn.exec("DETACH DATABASE stg;");
     conn.exec("PRAGMA wal_checkpoint(TRUNCATE);");
-    return { tradesMerged: rows.length };
+    return { tradesMerged: rows.length, accountsSynced };
   } finally {
     conn.close();
   }
@@ -440,7 +450,7 @@ export async function POST(req: NextRequest) {
       if (res.ok && fs.existsSync(stagingDb)) {
         try {
           const mergeInfo = mergeStagingDb(dbPath, stagingDb);
-          combinedLog += `[Database] Merged ${mergeInfo.tradesMerged} setups into active SQLite journal!\n`;
+          combinedLog += `[Database] Merged ${mergeInfo.tradesMerged} setups (${(mergeInfo as any).accountsSynced || 0} new account(s) auto-created) into active SQLite journal!\n`;
           syncSuccess = true;
           successfulDevice = dev.name;
           break;

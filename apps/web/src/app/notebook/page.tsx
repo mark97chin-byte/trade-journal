@@ -15,6 +15,7 @@ import { ReviewExport } from "@/components/review-export";
 import { useAutosave } from "@/lib/use-autosave";
 import { postJson, useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { formatDateDMY } from "@/lib/timezone";
 
 interface NoteRow {
   id: string;
@@ -345,7 +346,7 @@ function Notebook() {
             >
               <div className="truncate text-sm font-medium">{note.title || "Untitled"}</div>
               <div className="truncate text-xs text-muted-foreground">
-                {note.updatedAt.slice(0, 10)} · {note.content.slice(0, 60) || "empty"}
+                {formatDateDMY(note.updatedAt.slice(0, 10))} · {note.content.slice(0, 60) || "empty"}
               </div>
             </button>
           ))}

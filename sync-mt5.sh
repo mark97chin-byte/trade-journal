@@ -98,17 +98,12 @@ if wipe_mode:
     print('[Tablet Master DB] Wiping old trades & executions for clean re-import...')
     conn.execute('DELETE FROM main.executions;')
     conn.execute('DELETE FROM main.trades;')
-else:
-    conn.execute('''
-        DELETE FROM main.trades
-        WHERE account_id = 'mt5-main'
-          AND key NOT IN (SELECT key FROM stg.trades);
-    ''')
-    conn.execute('''
-        DELETE FROM main.executions
-        WHERE account_id = 'mt5-main'
-          AND id NOT IN (SELECT id FROM stg.executions);
-    ''')
+
+# Safely sync any newly created MT5 accounts without ever deleting existing trades
+try:
+    conn.execute('INSERT OR IGNORE INTO main.accounts SELECT * FROM stg.accounts;')
+except Exception:
+    pass
 
 conn.execute('''
     INSERT OR REPLACE INTO main.executions

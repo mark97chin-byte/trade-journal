@@ -49,7 +49,7 @@ function fmtDateShort(iso: string | null | undefined): string {
   if (!iso) return "-";
   const d = new Date(iso);
   if (isNaN(d.getTime())) return String(iso).slice(0, 10);
-  return d.toLocaleDateString("en-US", {
+  return d.toLocaleDateString("en-GB", {
     month: "2-digit",
     day: "2-digit",
     year: "numeric",

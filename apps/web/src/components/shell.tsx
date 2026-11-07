@@ -29,6 +29,7 @@ import { ThemeToggle } from "./theme";
 import { PageTransition } from "./page-transition";
 import { Button } from "./ui/button";
 import { HoverHint } from "./ui/tooltip";
+import { readHiddenSidebarHrefs, readSidebarOrder, SIDEBAR_HIDDEN_STORAGE_KEY, SIDEBAR_ORDER_STORAGE_KEY } from "./sidebar-settings";
 
 const NAV = [
   { href: "/", label: "Dashboard", icon: LayoutDashboard },
@@ -90,6 +91,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarReady, setSidebarReady] = useState(false);
+  const [hiddenHrefs, setHiddenHrefs] = useState<string[]>([]);
+  const [orderHrefs, setOrderHrefs] = useState<string[]>([]);
   useEffect(() => setMenuOpen(false), [pathname]);
   useEffect(() => {
     const desktop = window.matchMedia("(min-width: 1024px)");
@@ -103,6 +106,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
     const read = () => {
       try {
         setSidebarCollapsed(localStorage.getItem(SIDEBAR_COLLAPSED_KEY) === "true");
+        setHiddenHrefs(readHiddenSidebarHrefs());
+        setOrderHrefs(readSidebarOrder());
       } catch {
         setSidebarCollapsed(false);
       } finally {
@@ -111,10 +116,19 @@ export function Shell({ children }: { children: React.ReactNode }) {
     };
     read();
     const sync = (event: StorageEvent) => {
-      if (event.key === SIDEBAR_COLLAPSED_KEY || event.key === null) read();
+      if (event.key === SIDEBAR_COLLAPSED_KEY || event.key === SIDEBAR_HIDDEN_STORAGE_KEY || event.key === null) read();
     };
+    const onCustomVis = () => {
+      setHiddenHrefs(readHiddenSidebarHrefs());
+      setOrderHrefs(readSidebarOrder());
+    };
+        setOrderHrefs(readSidebarOrder());
     window.addEventListener("storage", sync);
-    return () => window.removeEventListener("storage", sync);
+    window.addEventListener("journal-sidebar-visibility-change", onCustomVis);
+    return () => {
+      window.removeEventListener("storage", sync);
+      window.removeEventListener("journal-sidebar-visibility-change", onCustomVis);
+    };
   }, []);
   useEffect(() => {
     const shortcut = (event: KeyboardEvent) => {
@@ -153,7 +167,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         if ((event.target as HTMLElement).closest("a")) setMenuOpen(false);
       }}
     >
-      {NAV.map(({ href, label, icon }) => (
+      {[...NAV].sort((a, b) => (orderHrefs.indexOf(a.href) === -1 ? 999 : orderHrefs.indexOf(a.href)) - (orderHrefs.indexOf(b.href) === -1 ? 999 : orderHrefs.indexOf(b.href))).filter((item) => !hiddenHrefs.includes(item.href)).map(({ href, label, icon }) => (
         <NavLink
           key={href}
           href={href === "/prop-firms" ? href : filterQuery.size ? `${href}?${filterQuery}` : href}
@@ -164,7 +178,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
         />
       ))}
       <div className="!my-3 border-t" />
-      {NAV_SETUP.map(({ href, label, icon }) => (
+      {[...NAV_SETUP].sort((a, b) => (orderHrefs.indexOf(a.href) === -1 ? 999 : orderHrefs.indexOf(a.href)) - (orderHrefs.indexOf(b.href) === -1 ? 999 : orderHrefs.indexOf(b.href))).filter((item) => !hiddenHrefs.includes(item.href)).map(({ href, label, icon }) => (
         <NavLink
           key={href}
           href={filterQuery.size ? `${href}?${filterQuery}` : href}

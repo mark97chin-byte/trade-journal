@@ -1,3 +1,4 @@
+import { getJournalConfig } from "@/server/journal-service";
 import { NextRequest, NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
@@ -187,26 +188,41 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const action = body.action || "";
 
-    // 1. CREATE PRE-STRUCTURED LIVE TRADE SCRATCHPAD NOTE
+    // 1. CREATE LIVE TRADE SCRATCHPAD FOLLOWING USER'S "TRADE ENTRY" AUTO-POPULATE TEMPLATE
     if (action === "create_scratchpad") {
       const symbol = String(body.symbol || "").trim().toUpperCase();
       const direction = String(body.direction || "LONG").toUpperCase();
       const nowStr = new Date().toISOString();
+      const [yyyy, mm, dd] = nowStr.slice(0, 10).split("-");
+      const ddmmyyyy = `${dd}-${mm}-${yyyy}`;
       const timeLabel = nowStr.slice(11, 16);
       const id = crypto.randomUUID();
       const title = symbol
-        ? `[Trade Draft] ${symbol} ${direction} (${ nowStr.slice(0, 10) } ${timeLabel})`
-        : `[Trade Draft] Live Execution (${ nowStr.slice(0, 10) } ${timeLabel})`;
+        ? `[Trade Draft] ${symbol} ${direction} (${ddmmyyyy} ${timeLabel})`
+        : `[Trade Draft] Live Execution (${ddmmyyyy} ${timeLabel})`;
 
-      const templateHtml =
-        `<h3>1. Entry &amp; Before-Trade Screenshot</h3>` +
-        `<p><strong>Symbol / Bias:</strong> ${symbol || "NAS100"} (${direction})</p>` +
-        `<p><strong>Entry Thesis &amp; Confirmation:</strong> </p>` +
-        `<p><em>(Paste your Before-Trade screenshot below)</em></p><p><br/></p>` +
-        `<hr/>` +
-        `<h3>2. Post-Trade Review &amp; After Screenshot</h3>` +
-        `<p><strong>Execution &amp; Management Notes:</strong> </p>` +
-        `<p><em>(Paste your After-Trade screenshot below)</em></p><p><br/></p>`;
+      // Read user's configured default template for Trade Entry (Execution & Setup Notes)
+      let templateHtml = "";
+      try {
+        const jConfig = getJournalConfig() as any;
+        const templates: any[] = jConfig?.templates || [];
+        const defaultTemplates: Record<string, string> = jConfig?.defaultTemplates || {};
+        const setupTplId = defaultTemplates.trade_setup;
+        const matchedTpl: any =
+          (setupTplId ? templates.find((t: any) => t.id === setupTplId) : null) ||
+          templates.find((t: any) => (t.name || "").toLowerCase() === "trade entry");
+        const tplBody = String(matchedTpl?.content ?? matchedTpl?.html ?? matchedTpl?.body ?? "").trim();
+        if (tplBody) {
+          templateHtml = tplBody;
+        }
+      } catch {}
+
+      if (!templateHtml) {
+        templateHtml =
+          `<h3>Execution &amp; Setup Notes</h3>` +
+          `<p><strong>Symbol / Bias:</strong> ${symbol || "NAS100"} (${direction})</p>` +
+          `<p><em>(Paste your trade screenshot &amp; notes below)</em></p><p><br/></p>`;
+      }
 
       db.prepare(
         `INSERT INTO notes (id, folder_id, title, content, created_at, updated_at)
@@ -244,7 +260,7 @@ export async function POST(req: NextRequest) {
 
           if (!note || !trade) continue;
 
-          const section = item.targetSection || "auto_split";
+          const section = item.targetSection || "setup";
           const mode = item.mode || "append";
 
           let nextNotes = (trade.notes || "").trim();

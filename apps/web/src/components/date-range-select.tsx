@@ -1,4 +1,5 @@
 "use client";
+import { DateTimeInputDMY, DateInputDMY } from "@/components/ui/datetime-dmy";
 
 import React, { useState } from "react";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
@@ -101,8 +102,7 @@ export function DateRangeSelect({ currentRange }: { currentRange: string }) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-[10px] text-muted-foreground block mb-1">From</label>
-                  <input
-                    type="date"
+                  <DateInputDMY
                     value={fromDate}
                     onChange={(e) => setFromDate(e.target.value)}
                     className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"
@@ -110,8 +110,7 @@ export function DateRangeSelect({ currentRange }: { currentRange: string }) {
                 </div>
                 <div>
                   <label className="text-[10px] text-muted-foreground block mb-1">To</label>
-                  <input
-                    type="date"
+                  <DateInputDMY
                     value={toDate}
                     onChange={(e) => setToDate(e.target.value)}
                     className="w-full rounded-md border border-border bg-background px-2 py-1 text-xs text-foreground outline-none focus:ring-1 focus:ring-primary"

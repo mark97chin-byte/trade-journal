@@ -1,4 +1,5 @@
 "use client";
+import { DateTimeInputDMY, DateInputDMY } from "@/components/ui/datetime-dmy";
 
 import React, { useState, useEffect, useRef, useMemo } from "react";
 import {
@@ -524,8 +525,7 @@ export function DataManagementSettings() {
               <label className="block text-xs font-semibold text-foreground mb-1">
                 Start Date (Inclusive)
               </label>
-              <input
-                type="date"
+              <DateInputDMY
                 value={startDate}
                 onChange={(e) => setStartDate(e.target.value)}
                 className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"
@@ -535,8 +535,7 @@ export function DataManagementSettings() {
               <label className="block text-xs font-semibold text-foreground mb-1">
                 End Date (Inclusive)
               </label>
-              <input
-                type="date"
+              <DateInputDMY
                 value={endDate}
                 onChange={(e) => setEndDate(e.target.value)}
                 className="h-9 w-full rounded-lg border border-border bg-background px-3 text-xs text-foreground"

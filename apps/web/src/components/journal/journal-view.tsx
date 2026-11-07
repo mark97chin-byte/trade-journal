@@ -884,7 +884,7 @@ export function JournalView({ trades, activeEntrySlugs = [] }: JournalViewProps)
     return entries.map(([dateStr, trs]) => {
       const netPnl = trs.reduce((acc, t) => acc + t.netPnl, 0);
       const dt = new Date(`${dateStr}T12:00:00Z`);
-      const dateFormatted = dt.toLocaleDateString("en-US", {
+      const dateFormatted = dt.toLocaleDateString("en-GB", {
         weekday: "short",
         month: "short",
         day: "2-digit",
@@ -970,10 +970,10 @@ export function JournalView({ trades, activeEntrySlugs = [] }: JournalViewProps)
         const mon = new Date(`${mondayStr}T12:00:00Z`);
         const sun = new Date(mon.getTime() - 86_400_000);
         const sat = new Date(mon.getTime() + 5 * 86_400_000);
-        const title = `${sun.toLocaleDateString("en-US", {
+        const title = `${sun.toLocaleDateString("en-GB", {
           month: "short",
           day: "2-digit",
-        })} - ${sat.toLocaleDateString("en-US", {
+        })} - ${sat.toLocaleDateString("en-GB", {
           month: "short",
           day: "2-digit",
           year: "numeric",
@@ -1087,7 +1087,7 @@ export function JournalView({ trades, activeEntrySlugs = [] }: JournalViewProps)
         const daysInMonth = new Date(yr, mo, 0).getDate();
 
         const dt = new Date(`${mKey}-01T12:00:00Z`);
-        const title = dt.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+        const title = dt.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
         const netPnl = trs.reduce((acc, t) => acc + t.netPnl, 0);
 
         const weekItems: SubPeriodItem[] = [1, 2, 3, 4, 5].map((w) => {

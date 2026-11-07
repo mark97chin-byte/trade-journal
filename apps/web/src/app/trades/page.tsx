@@ -15,6 +15,7 @@ import {
 } from "@tanstack/react-table";
 import { ArrowUpDown, Check, Columns3, Download, Tag, Trash2 } from "lucide-react";
 import { dayKeyOf, netReturnOnEntry, type TradeMetrics } from "@luxalgo/journal-core";
+import { formatDateDMY } from "@/lib/timezone";
 import { FilterBar, useFilters } from "@/components/filter-bar";
 import { Pnl } from "@/components/pnl";
 import { MonetaryValue } from "@/components/privacy";
@@ -118,7 +119,7 @@ function Trades() {
         header: "Close date",
         cell: ({ getValue }) => (
           <span className="text-muted-foreground">
-            {getValue<string | null>() ? dayKeyOf(getValue<string>(), timeZone) : "open"}
+            {getValue<string | null>() ? formatDateDMY(dayKeyOf(getValue<string>(), timeZone)) : "open"}
           </span>
         ),
       },

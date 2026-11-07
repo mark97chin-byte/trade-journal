@@ -1,4 +1,5 @@
 "use client";
+import { DateTimeInputDMY, DateInputDMY } from "@/components/ui/datetime-dmy";
 
 import React, { use, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -1368,8 +1369,7 @@ function LoadedMissedSetupWorkspace({
                           {derivedSession}
                         </span>
                       </div>
-                      <input
-                        type="datetime-local"
+                      <DateTimeInputDMY
                         value={utcIsoToNyInput(entryIso)}
                         onChange={(e) => {
                           const nextIso = nyInputToUtcIso(e.target.value);
@@ -1385,8 +1385,7 @@ function LoadedMissedSetupWorkspace({
                       <label className="block text-[11px] text-muted-foreground mb-0.5">
                         Theoretical Exit Time (NY Time)
                       </label>
-                      <input
-                        type="datetime-local"
+                      <DateTimeInputDMY
                         value={utcIsoToNyInput(exitIso)}
                         onChange={(e) => setExitIso(nyInputToUtcIso(e.target.value))}
                         className="h-8 w-full rounded-md border border-border bg-background px-2.5 text-xs text-foreground font-mono"

@@ -438,7 +438,7 @@ function getMondayUtc(dateStrOrDate: string | Date): Date {
 
 function formatHumanDateShort(isoDate: string): string {
   const d = new Date(`${isoDate.slice(0, 10)}T12:00:00Z`);
-  return d.toLocaleDateString("en-US", { month: "short", day: "2-digit", timeZone: "UTC" });
+  return d.toLocaleDateString("en-GB", { month: "short", day: "2-digit", timeZone: "UTC" });
 }
 
 function formatWeekHumanLabel(mondayIso: string, sundayIso?: string): string {
@@ -480,7 +480,7 @@ function parseJournalSlugRange(slug: string): {
     const startStr = `${mKey}-01`;
     const endStr = `${mKey}-${String(lastDay).padStart(2, "0")}`;
     const dt = new Date(`${startStr}T12:00:00Z`);
-    const mLabel = dt.toLocaleDateString("en-US", { month: "short", year: "numeric", timeZone: "UTC" });
+    const mLabel = dt.toLocaleDateString("en-GB", { month: "short", year: "numeric", timeZone: "UTC" });
     return {
       periodType: "month",
       startDate: startStr,

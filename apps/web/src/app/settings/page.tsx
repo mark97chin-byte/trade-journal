@@ -5,8 +5,8 @@ import {
   ArrowLeftRight,
   ChartCandlestick,
   Database,
-  Download,
   Globe,
+  PanelLeft,
   SlidersHorizontal,
   Sparkles,
 } from "lucide-react";
@@ -16,9 +16,8 @@ import { MarketDataSettings } from "@/components/market-data-settings";
 import { AiSettings } from "@/components/ai-settings";
 import { CurrencySettings } from "@/components/currency-settings";
 import { DataManagementSettings } from "@/components/data-management-settings";
+import { SidebarSettings } from "@/components/sidebar-settings";
 import { FilterBar } from "@/components/filter-bar";
-import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Label } from "@/components/ui/label";
 import { OptionSelect } from "@/components/ui/option-select";
 import { cn } from "@/lib/utils";
@@ -29,6 +28,12 @@ const sections = [
     label: "General",
     icon: Globe,
     description: "Choose the timezones used to display and import your trades.",
+  },
+  {
+    id: "sidebar",
+    label: "Sidebar",
+    icon: PanelLeft,
+    description: "Choose which navigation tabs are shown, hidden, or reordered in the left sidebar.",
   },
   {
     id: "trading",
@@ -61,6 +66,7 @@ const sections = [
     description: "Download your journal data for safekeeping or use in other tools.",
   },
 ] as const;
+
 type Section = (typeof sections)[number]["id"];
 
 function sectionForHash(hash: string): Section {
@@ -158,7 +164,6 @@ function Settings() {
         </div>
         <div className="min-w-0">
           {sections.map(({ id, label, description }) => (
-            // Keep panels mounted so changing sections preserves unsaved form drafts.
             <section key={id} hidden={active !== id} aria-labelledby={`settings-heading-${id}`}>
               <div className="mb-5 space-y-1.5">
                 <h2 id={`settings-heading-${id}`} className="text-xl font-semibold tracking-tight">
@@ -168,6 +173,7 @@ function Settings() {
               </div>
               <div className="space-y-4">
                 {id === "general" && <TimeZoneSettings />}
+                {id === "sidebar" && <SidebarSettings />}
                 {id === "trading" && (
                   <>
                     <ContractMultiplierSettings />
@@ -177,13 +183,12 @@ function Settings() {
                 {id === "currency-conversion" && <CurrencySettings />}
                 {id === "market-data" && <MarketDataSettings />}
                 {id === "ai-settings" && <AiSettings />}
-{id === "your-data" && <DataManagementSettings />}
+                {id === "your-data" && <DataManagementSettings />}
               </div>
             </section>
           ))}
         </div>
       </div>
-    
-      </div>
+    </div>
   );
 }

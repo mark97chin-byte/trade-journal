@@ -1,4 +1,5 @@
 "use client";
+import { DateTimeInputDMY, DateInputDMY } from "@/components/ui/datetime-dmy";
 import { ensureAiSlotBeforeTask } from "@/lib/ai-slot-guard";
 
 import React, { useState, useEffect, useMemo } from "react";
@@ -394,8 +395,7 @@ export function AuditManagerModal({
                     </select>
                     <div className="flex items-center gap-1.5">
                       <span className="text-[11px] text-muted-foreground">Or pick any date in week:</span>
-                      <input
-                        type="date"
+                      <DateInputDMY
                         value={selectedWeekAnchor}
                         onChange={(e) => {
                           if (e.target.value) setSelectedWeekAnchor(e.target.value);
@@ -479,8 +479,7 @@ export function AuditManagerModal({
                   <label className="block text-[11px] font-semibold text-muted-foreground">
                     1. Choose Anchor Date on Calendar:
                   </label>
-                  <input
-                    type="date"
+                  <DateInputDMY
                     value={calendarDay}
                     onChange={(e) => setCalendarDay(e.target.value)}
                     className="h-9 w-full rounded-lg border border-border/70 bg-background dark:bg-[#0b0d13] px-3 text-xs font-semibold text-foreground outline-none focus:border-indigo-500"

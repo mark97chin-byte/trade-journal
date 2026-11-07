@@ -58,7 +58,7 @@ import { useAutosave } from "@/lib/use-autosave";
 import { postJson, useApi } from "@/lib/use-api";
 import { fmtDuration, fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
 import { tradeKeyFromSegment } from "@/lib/trade-links";
-import { formatTimestamp } from "@/lib/timezone";
+import { formatTimestamp, formatDateDMY } from "@/lib/timezone";
 import { NotebookTradeMatcherModal } from "@/components/notebook/notebook-trade-matcher-modal";
 import { FileText, ArrowRightLeft } from "lucide-react";
 
@@ -575,8 +575,8 @@ function TradePeriodCompanion({ openedAt }: { openedAt: string }) {
 
   const periods = useMemo(
     () => [
-      { id: "day", label: `Daily (${dateStr.slice(5)})`, slug: dateStr },
-      { id: "week", label: `Weekly (${mondayStr.slice(5)})`, slug: `week-${mondayStr}` },
+      { id: "day", label: `Daily (${dateStr.slice(8, 10)}-${dateStr.slice(5, 7)})`, slug: dateStr },
+      { id: "week", label: `Weekly (${mondayStr.slice(8, 10)}-${mondayStr.slice(5, 7)})`, slug: `week-${mondayStr}` },
       { id: "month", label: `Monthly (${monthKey})`, slug: `month-${monthKey}` },
       { id: "quarter", label: `Quarterly (${yr}-Q${qNum})`, slug: `quarter-${yr}-Q${qNum}` },
     ],
@@ -1049,7 +1049,7 @@ The draft will be archived and automatically deleted in 14 days.`
                           {
                             noteId: draft.id,
                             tradeKey: trade.key,
-                            targetSection: "auto_split",
+                            targetSection: "setup",
                             mode: "append",
                           },
                         ],

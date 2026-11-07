@@ -1,4 +1,5 @@
 "use client";
+import { DateTimeInputDMY, DateInputDMY } from "@/components/ui/datetime-dmy";
 
 import React, { Suspense, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
@@ -298,8 +299,7 @@ function MissedTradesDirectory() {
                 )}
                 <option value="__CUSTOM__">+ Custom Symbol...</option>
               </select>
-              <input
-                type="date"
+              <DateInputDMY
                 value={selectedDateFilter || newDateInput}
                 onChange={(e) => setNewDateInput(e.target.value)}
                 className="h-8 rounded-md border border-border bg-background px-2.5 text-xs font-mono text-foreground"
