@@ -1,3 +1,4 @@
+import { pruneOrphanAttachments } from "@/server/attachment-gc";
 import { tradeRisk, tradeR, plannedR } from "@luxalgo/journal-core";
 import { eq } from "drizzle-orm";
 import { db, trades, playbooks, accounts } from "@/db";
@@ -106,13 +107,41 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
       ? Number(((finalRiskAmount / accountInitialBalance) * 100).toFixed(2))
       : null;
 
-  const finalMfeR = typeof extraRow.mfe_r === "number" ? extraRow.mfe_r : null;
+  let finalMfeR = typeof extraRow.mfe_r === "number" ? extraRow.mfe_r : null;
   const finalMaeR = typeof extraRow.mae_r === "number" ? extraRow.mae_r : null;
+
+  // Ensure finalMfeR is never less than the furthest partial exit fill achieved
+  if (finalRealizedR !== null && Math.abs(finalRealizedR) > 0.01 && row.avgExit != null) {
+    const isShort = row.direction === "short";
+    const avgMovePts = Math.abs(row.avgEntry - row.avgExit);
+    const oneRPts = avgMovePts > 0 ? avgMovePts / Math.abs(finalRealizedR) : 0;
+    if (oneRPts > 0 && fills.length > 0) {
+      const exitPrices = fills
+        .filter((f: any) => !String(f.id).endsWith("_entry") && typeof f.price === "number" && f.price > 0)
+        .map((f: any) => Number(f.price));
+      exitPrices.push(row.avgExit);
+      const maxFavPts = Math.max(
+        ...exitPrices.map((p) => (isShort ? Math.max(0, row.avgEntry - p) : Math.max(0, p - row.avgEntry))),
+        0
+      );
+      const floorMfeR = Number(Math.max(finalRealizedR, maxFavPts / oneRPts).toFixed(2));
+      if (finalMfeR === null || finalMfeR < floorMfeR) {
+        finalMfeR = floorMfeR;
+        const healedCap = finalMfeR > 0 ? Number(Math.min(100, (finalRealizedR / finalMfeR) * 100).toFixed(1)) : null;
+        try {
+          (db as any).$client
+            .prepare("UPDATE trades SET mfe_r = ?, capture_eff = ? WHERE key = ?")
+            .run(finalMfeR, healedCap, key);
+        } catch {}
+      }
+    }
+  }
+
   const finalCaptureEff =
-    typeof extraRow.capture_eff === "number"
+    finalRealizedR !== null && finalMfeR !== null && finalMfeR > 0
+      ? Number(Math.min(100, Math.max(0, (finalRealizedR / finalMfeR) * 100)).toFixed(1))
+      : typeof extraRow.capture_eff === "number"
       ? extraRow.capture_eff
-      : finalRealizedR !== null && finalMfeR !== null && finalMfeR > 0
-      ? Number(((finalRealizedR / finalMfeR) * 100).toFixed(1))
       : null;
 
   return ok({
@@ -213,6 +242,11 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
   // 1. Update SQLite
   if (Object.keys(patch).length > 0) {
     db.update(trades).set(patch).where(eq(trades.key, decoded)).run();
+  }
+  if (body.notes !== undefined || body.reviewNotes !== undefined) {
+    try {
+      pruneOrphanAttachments((db as any).$client);
+    } catch {}
   }
 
   // 2. Sync to Notion if this trade is linked to a Notion page

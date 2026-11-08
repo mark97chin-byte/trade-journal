@@ -122,46 +122,44 @@ def infer_asset_class(symbol: str) -> str:
     return "futures"
 
 
-def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close_ts, worst_exit_price, is_sl_hit):
+def calculate_mae_mfe(symbol, direction, entry_price, initial_sl, open_ts, close_ts, worst_exit_price, is_sl_hit, best_exit_price=0.0):
     """
-    Uses naive broker datetimes so Wine/Linux local system timezone (e.g. UTC+8)
-    never shifts the MT5 M1 candle lookup window.
+    Uses timezone-aware UTC datetimes for mt5.copy_rates_range() so Python's
+    C-extension .timestamp() never shifts the window by Malaysia (UTC+8) offset,
+    and guarantees MFE is at least as large as the best actual partial exit fill.
     """
-    dt_from = datetime.fromtimestamp(open_ts, tz=timezone.utc).replace(tzinfo=None)
-    dt_to = datetime.fromtimestamp(close_ts, tz=timezone.utc).replace(tzinfo=None)
-
-    if dt_to <= dt_from:
-        dt_to = dt_from + timedelta(minutes=1)
+    dt_from = datetime.fromtimestamp(open_ts - 60, tz=timezone.utc)
+    dt_to = datetime.fromtimestamp(max(close_ts + 60, open_ts + 60), tz=timezone.utc)
 
     rates = mt5.copy_rates_range(symbol, mt5.TIMEFRAME_M1, dt_from, dt_to)
-    if rates is None or len(rates) == 0:
+    risk_distance = abs(entry_price - initial_sl) if initial_sl > 0 else None
+    if not risk_distance or risk_distance <= 0:
         return None, None
 
-    highest = max(bar["high"] for bar in rates)
-    lowest = min(bar["low"] for bar in rates)
-    risk_distance = abs(entry_price - initial_sl) if initial_sl > 0 else None
+    if rates is not None and len(rates) > 0:
+        highest = max(float(bar["high"]) for bar in rates)
+        lowest = min(float(bar["low"]) for bar in rates)
+    else:
+        highest = max(entry_price, best_exit_price or entry_price, worst_exit_price or entry_price)
+        lowest = min(entry_price, best_exit_price or entry_price, worst_exit_price or entry_price)
 
     if direction == "BUY":
-        if is_sl_hit and worst_exit_price > 0:
-            lowest = max(lowest, worst_exit_price)
+        if best_exit_price > 0:
+            highest = max(highest, best_exit_price)
+        if worst_exit_price > 0:
+            lowest = min(lowest, worst_exit_price)
         price_mfe = max(0.0, highest - entry_price)
         price_mae = max(0.0, entry_price - lowest)
     else:  # SELL
-        if is_sl_hit and worst_exit_price > 0:
-            highest = min(highest, worst_exit_price)
+        if best_exit_price > 0:
+            lowest = min(lowest, best_exit_price)
+        if worst_exit_price > 0:
+            highest = max(highest, worst_exit_price)
         price_mfe = max(0.0, entry_price - lowest)
         price_mae = max(0.0, highest - entry_price)
 
-    if risk_distance and risk_distance > 0:
-        mfe_r = round(price_mfe / risk_distance, 2)
-        mae_r = round(price_mae / risk_distance, 2)
-        if is_sl_hit and mae_r > 1.0:
-            actual_fill_r = round(abs(entry_price - worst_exit_price) / risk_distance, 2)
-            mae_r = actual_fill_r
-    else:
-        mfe_r = None
-        mae_r = None
-
+    mfe_r = round(price_mfe / risk_distance, 2)
+    mae_r = round(price_mae / risk_distance, 2)
     return mfe_r, mae_r
 
 
@@ -319,7 +317,7 @@ def fetch_reconstructed_trades(all_history: bool = False):
         for idx, part in enumerate(all_partials, start=1):
             sign = "+" if part["net_pnl"] >= 0 else ""
             part_dt = broker_time_to_ny(part["time"])
-            time_str = part_dt.strftime("%H:%M:%S")
+            time_str = part_dt.strftime("%Y-%m-%d %H:%M:%S")
             p_str = f"[{idx}] {part['volume']:.2f}L @ {part['price']:.5g} @ {time_str} ({sign}${part['net_pnl']:.2f}, {part['reason']})"
             breakdown_parts.append(p_str)
         partials_text = " | ".join(breakdown_parts)
@@ -361,12 +359,14 @@ def fetch_reconstructed_trades(all_history: bool = False):
 
         if c["direction"] == "BUY":
             worst_exit = min(part["price"] for part in all_partials)
+            best_exit = max(part["price"] for part in all_partials)
         else:
             worst_exit = max(part["price"] for part in all_partials)
+            best_exit = min(part["price"] for part in all_partials)
 
         mfe_r, mae_r = calculate_mae_mfe(
             c["symbol"], c["direction"], weighted_entry, initial_sl,
-            open_ts, close_ts, worst_exit, is_sl_hit
+            open_ts, close_ts, worst_exit, is_sl_hit, best_exit
         )
 
         capture_eff = None
@@ -846,7 +846,7 @@ def self_heal_database(conn):
     now_iso = datetime.now(timezone.utc).isoformat()
 
     partial_pattern = re.compile(
-        r"\[(\d+)\]\s+([\d.]+)L?\s+@\s+([\d.]+)(?:\s+@\s+([\d:]+))?\s*\(([+-]?\$?[\d.]+)?(?:,\s*([^)]+))?\)",
+        r"\[(\d+)\]\s+([\d.]+)L?\s+@\s+([\d.]+)(?:\s+@\s+(?:(\d{4}-\d{2}-\d{2})\s+)?([\d:]+))?\s*\(([+-]?\$?[\d.]+)?(?:,\s*([^)]+))?\)",
         re.IGNORECASE,
     )
 
@@ -906,21 +906,38 @@ def self_heal_database(conn):
         ]
 
         if matches:
+            cur_date_str = open_str[:10] if len(open_str) >= 10 else "2026-01-01"
+            prev_leg_dt = datetime.fromisoformat(open_str) if len(open_str) >= 19 else None
+            tz_suffix = open_str[19:] if len(open_str) >= 19 else ""
+
             for idx, m in enumerate(matches, start=1):
                 qty = float(m[1])
                 price = float(m[2])
-                time_part = m[3]
-                pnl_str = m[4].replace("$", "").replace("+", "").replace(",", "") if m[4] else "0"
+                explicit_date = m[3]
+                time_part = m[4]
+                pnl_str = m[5].replace("$", "").replace("+", "").replace(",", "") if m[5] else "0"
                 try:
                     pnl_val = float(pnl_str)
                 except ValueError:
                     pnl_val = 0.0
-                reason = m[5].strip() if m[5] else "TP"
+                reason = m[6].strip() if m[6] else "TP"
 
                 if time_part and len(open_str) >= 19:
-                    date_prefix = open_str[:10]
-                    tz_suffix = open_str[19:]
-                    exec_time = f"{date_prefix}T{time_part}{tz_suffix}"
+                    if explicit_date:
+                        cur_date_str = explicit_date
+                    candidate_iso = f"{cur_date_str}T{time_part}{tz_suffix}"
+                    try:
+                        cand_dt = datetime.fromisoformat(candidate_iso)
+                        # If this partial's clock time is earlier than the entry or previous partial leg,
+                        # the trade held overnight past midnight — advance calendar date until >= prev_leg_dt!
+                        while prev_leg_dt is not None and cand_dt < prev_leg_dt - timedelta(seconds=30):
+                            cand_dt += timedelta(days=1)
+                            cur_date_str = cand_dt.strftime("%Y-%m-%d")
+                            candidate_iso = f"{cur_date_str}T{time_part}{tz_suffix}"
+                        prev_leg_dt = cand_dt
+                    except Exception:
+                        pass
+                    exec_time = candidate_iso
                 else:
                     exec_time = close_str
 

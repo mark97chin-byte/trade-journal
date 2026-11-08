@@ -1220,20 +1220,55 @@ export function RichEditor({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
+  // Track /api/attachments/<id> URLs present in the editor so deleting an attachment image
+  // in the editor also deletes its orphaned row from the SQLite `attachments` table on save.
+  const extractAttachmentIds = useCallback((htmlStr: string): Set<string> => {
+    const ids = new Set<string>();
+    if (!htmlStr) return ids;
+    const matches = htmlStr.matchAll(/\/api\/attachments\/([a-zA-Z0-9_-]+)/g);
+    for (const m of matches) {
+      if (m[1]) ids.add(m[1]);
+    }
+    return ids;
+  }, []);
+
+  const knownAttachmentIdsRef = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    const initialIds = extractAttachmentIds(value || "");
+    initialIds.forEach((id) => knownAttachmentIdsRef.current.add(id));
+  }, [value, extractAttachmentIds]);
+
   const emitChange = useCallback((immediate = false) => {
     const editor = contentRef.current;
     if (!editor || readOnly) return;
-    setIsEditorEmpty(checkEditorIsEmpty(editor));
-
-    // Immediately write to localStorage Write-Ahead Log on every keystroke (0ms, cannot be lost!)
-    const currentHtmlNow = editor.innerHTML;
-    if (currentHtmlNow !== undefined && ownerId && ownerId !== "inline-note") {
-      writeLocalJournalDraft(ownerId, currentHtmlNow);
-    }
 
     const flushHtml = () => {
-      const html = contentRef.current?.innerHTML;
-      if (html === undefined || readOnly) return;
+      const el = contentRef.current;
+      if (!el || readOnly) return;
+      setIsEditorEmpty((prevEmpty) => {
+        const nextEmpty = checkEditorIsEmpty(el);
+        return prevEmpty === nextEmpty ? prevEmpty : nextEmpty;
+      });
+      const html = el.innerHTML;
+      if (html === undefined) return;
+
+      // Write to localStorage Write-Ahead Log
+      if (ownerId && ownerId !== "inline-note") {
+        writeLocalJournalDraft(ownerId, html);
+      }
+
+      // Check if any /api/attachments/<id> image was deleted from the editor
+      const currentAttIds = extractAttachmentIds(html);
+      if (knownAttachmentIdsRef.current.size > 0) {
+        for (const oldId of Array.from(knownAttachmentIdsRef.current)) {
+          if (!currentAttIds.has(oldId)) {
+            knownAttachmentIdsRef.current.delete(oldId);
+            void fetch(`/api/attachments/${encodeURIComponent(oldId)}`, { method: "DELETE" }).catch(() => {});
+          }
+        }
+      }
+      currentAttIds.forEach((id) => knownAttachmentIdsRef.current.add(id));
+
       if (html !== lastEmittedRef.current) {
         lastEmittedRef.current = html;
         onChangeRef.current(html);
@@ -1248,25 +1283,38 @@ export function RichEditor({
       flushHtml();
     } else {
       if (emitTimerRef.current) clearTimeout(emitTimerRef.current);
-      emitTimerRef.current = setTimeout(flushHtml, 50);
+      // 320ms debounce while actively typing prevents serializing multi-MB base64 images on every keystroke
+      emitTimerRef.current = setTimeout(flushHtml, 320);
     }
-  }, [readOnly, checkEditorIsEmpty, ownerId]);
+  }, [readOnly, checkEditorIsEmpty, ownerId, extractAttachmentIds]);
 
-  // Flush any pending keystrokes if RichEditor unmounts for any reason
+  // Guarantee zero lost keystrokes on tab switch, window close, or component unmount
   useEffect(() => {
-    return () => {
+    const flushNow = () => {
       if (emitTimerRef.current) {
         clearTimeout(emitTimerRef.current);
         emitTimerRef.current = null;
       }
       const finalHtml = contentRef.current?.innerHTML;
-      if (finalHtml !== undefined && !readOnly && finalHtml !== lastEmittedRef.current) {
-        lastEmittedRef.current = finalHtml;
+      if (finalHtml !== undefined && !readOnly) {
         if (ownerId && ownerId !== "inline-note") {
           writeLocalJournalDraft(ownerId, finalHtml);
         }
-        onChangeRef.current(finalHtml);
+        if (finalHtml !== lastEmittedRef.current) {
+          lastEmittedRef.current = finalHtml;
+          onChangeRef.current(finalHtml);
+        }
       }
+    };
+    const onVisChange = () => {
+      if (document.visibilityState === "hidden") flushNow();
+    };
+    window.addEventListener("beforeunload", flushNow);
+    document.addEventListener("visibilitychange", onVisChange);
+    return () => {
+      window.removeEventListener("beforeunload", flushNow);
+      document.removeEventListener("visibilitychange", onVisChange);
+      flushNow();
     };
   }, [readOnly, ownerId]);
 
@@ -4346,8 +4394,20 @@ export function RichEditor({
           suppressContentEditableWarning
           data-placeholder={placeholder}
           onInput={() => {
-            ensureLineBlocks();
-            emitChange();
+            const sel = window.getSelection();
+            const anchor = sel?.anchorNode;
+            const anchorEl =
+              anchor?.nodeType === Node.ELEMENT_NODE
+                ? (anchor as HTMLElement)
+                : anchor?.parentElement;
+            if (
+              !contentRef.current?.children.length ||
+              anchorEl?.closest("blockquote, .tz-quote") ||
+              anchor === contentRef.current
+            ) {
+              ensureLineBlocks();
+            }
+            emitChange(false);
           }}
           onMouseUp={rememberSelection}
           onKeyUp={rememberSelection}
@@ -5114,7 +5174,9 @@ function renderMarkdownOrHtml(raw: string): string {
     );
 }
 
-export function Markdown({
+const EDITOR_STYLE_HTML = { __html: EDITOR_CSS };
+
+export const Markdown = React.memo(function Markdown({
   value,
   content,
   source,
@@ -5129,13 +5191,13 @@ export function Markdown({
     text ??
     (typeof children === "string" ? children : "");
 
-  if (!raw || !String(raw).trim()) {
-    return null;
-  }
+  const rawStr = String(raw || "");
+  const htmlObj = React.useMemo(() => {
+    if (!rawStr.trim()) return null;
+    return { __html: renderMarkdownOrHtml(rawStr) };
+  }, [rawStr]);
 
-  const html = renderMarkdownOrHtml(String(raw));
-
-  const handlePreviewClick = (e: React.MouseEvent<HTMLDivElement>) => {
+  const handlePreviewClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const target = e.target as HTMLElement;
     if (target.classList.contains("tz-toggle-btn")) {
       e.preventDefault();
@@ -5157,18 +5219,22 @@ export function Markdown({
         }
       }
     }
-  };
+  }, []);
+
+  if (!htmlObj) {
+    return null;
+  }
 
   return (
     <>
-      <style dangerouslySetInnerHTML={{ __html: EDITOR_CSS }} />
+      <style dangerouslySetInnerHTML={EDITOR_STYLE_HTML} />
       <div
         onClick={handlePreviewClick}
         className={`tz-rich-content text-sm ${className}`}
-        dangerouslySetInnerHTML={{ __html: html }}
+        dangerouslySetInnerHTML={htmlObj}
       />
     </>
   );
-}
+});
 
 export default RichEditor;

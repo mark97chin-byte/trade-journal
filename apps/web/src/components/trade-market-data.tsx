@@ -224,7 +224,15 @@ export function TradeMarketData({
   const [provider, setProvider] = useState("");
   const [symbol, setSymbol] = useState(trade.symbol);
   const [dataset, setDataset] = useState("");
-  const [resolution, setResolution] = useState<Resolution>(isStandalone ? "15m" : "1m");
+  const [resolution, setResolution] = useState<Resolution>(() => {
+    if (isStandalone) return "15m";
+    if (trade.openedAt && trade.closedAt) {
+      const durHours = (Date.parse(trade.closedAt) - Date.parse(trade.openedAt)) / 3_600_000;
+      if (durHours > 14) return "15m";
+      if (durHours > 4) return "5m";
+    }
+    return "1m";
+  });
   const [paddingDays, setPaddingDays] = useState<number>(5);
   const [forwardDays, setForwardDays] = useState<number>(2);
   const [showAllForwardBars, setShowAllForwardBars] = useState<boolean>(isStandalone);
@@ -937,9 +945,43 @@ export function HistoricalReplay({
     bars: Array<{ time: number; open: number; high: number; low: number; close: number }>;
   }>({ tradeKey: "", bars: [] });
 
+  const [, setOneMinLoadedTick] = useState(0);
   if (history.resolution === "1m" && history.bars.length > 0) {
     oneMinBarsRef.current = { tradeKey: trade.key, bars: history.bars };
   }
+
+  useEffect(() => {
+    if (
+      history.resolution === "1m" ||
+      oneMinBarsRef.current.tradeKey === trade.key ||
+      trade.key.startsWith("missed_") ||
+      trade.key.startsWith("sim_")
+    ) {
+      return;
+    }
+    let cancelled = false;
+    fetch(`/api/trades/${encodeURIComponent(trade.key)}/market-data`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        provider: history.provider,
+        symbol: history.symbol,
+        resolution: "1m",
+        paddingDays: 1,
+      }),
+    })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => {
+        if (!cancelled && d?.bars?.length) {
+          oneMinBarsRef.current = { tradeKey: trade.key, bars: d.bars };
+          setOneMinLoadedTick((t) => t + 1);
+        }
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [trade.key, history.resolution, history.provider, history.symbol]);
 
   const effectiveExecutions = useMemo(
     () =>

@@ -118,6 +118,12 @@ export function JournalEntryEditor({
   const [reviewContent, setReviewContent] = useState(
     initialEntry.reviewContent || ""
   );
+  // Settled snapshots for Review Companion so typing in the main editor never re-renders the Companion mid-keystroke
+  const [companionPrepContent, setCompanionPrepContent] = useState(initialEntry.content);
+  const [companionReviewContent, setCompanionReviewContent] = useState(
+    initialEntry.reviewContent || ""
+  );
+  const lastKeystrokeAtRef = useRef<number>(0);
   const [lessonsLearned, setLessonsLearned] = useState(
     initialEntry.lessonsLearned || ""
   );
@@ -345,6 +351,8 @@ export function JournalEntryEditor({
     setTitle(initialEntry.title);
     setContent(initialEntry.content);
     setReviewContent(initialEntry.reviewContent || "");
+    setCompanionPrepContent(initialEntry.content);
+    setCompanionReviewContent(initialEntry.reviewContent || "");
     setLessonsLearned(initialEntry.lessonsLearned || "");
     setNotionUrl(
       initialEntry.notionUrl ||
@@ -809,6 +817,8 @@ export function JournalEntryEditor({
           setTitle(e.title);
           setContent(e.content || "");
           setReviewContent(e.reviewContent || "");
+          setCompanionPrepContent(e.content || "");
+          setCompanionReviewContent(e.reviewContent || "");
           setLessonsLearned(e.lessonsLearned || "");
           contentRefState.current = e.content || "";
           reviewContentRefState.current = e.reviewContent || "";
@@ -924,6 +934,8 @@ export function JournalEntryEditor({
 
           lastSavedSnapshotRef.current = snapToSave;
           isDirtyRef.current = false;
+          setCompanionPrepContent(curPrep);
+          setCompanionReviewContent(curRev);
 
           if (!isSilentLifecycle) {
             if (Array.isArray(data.revisions)) {
@@ -1021,22 +1033,13 @@ export function JournalEntryEditor({
 
   useEffect(() => {
     const interval = setInterval(() => {
-      const { curPrep, curRev } = captureLiveTabHtml();
-      const liveSnap = JSON.stringify({
-        title: titleRef.current,
-        content: curPrep,
-        reviewContent: curRev,
-        lessonsLearned: lessonsRef.current,
-        checklistJson: JSON.stringify(checklistRef.current),
-        scoresJson: JSON.stringify(scoresRef.current),
-      });
-      if (isDirtyRef.current || liveSnap !== lastSavedSnapshotRef.current) {
-        isDirtyRef.current = true;
-        void executeSaveRequest({ syncNotion: false, isAutoSave: true });
-      }
+      // Never interrupt active typing; wait until user has paused for at least 2.5s
+      if (Date.now() - lastKeystrokeAtRef.current < 2500) return;
+      if (!isDirtyRef.current) return;
+      void executeSaveRequest({ syncNotion: false, isAutoSave: true });
     }, 5000);
     return () => clearInterval(interval);
-  }, [captureLiveTabHtml, executeSaveRequest]);
+  }, [executeSaveRequest]);
 
   const flushUnsavedImmediately = useCallback(
     (isBrowserClosing = false) => {
@@ -1608,7 +1611,11 @@ export function JournalEntryEditor({
                 key={`${editorKey}-${activeTab}`}
                 editorRef={noteEditorRef}
                 value={activeTab === "review" ? reviewContent : content}
-                onChange={activeTab === "review" ? setReviewContent : setContent}
+                onChange={(val) => {
+                  lastKeystrokeAtRef.current = Date.now();
+                  if (activeTab === "review") setReviewContent(val);
+                  else setContent(val);
+                }}
                 minHeight={480}
                 ownerType={range.periodType}
                 ownerId={
@@ -1623,8 +1630,8 @@ export function JournalEntryEditor({
                     endDate={range.endDate}
                     anchorDate={range.anchorDate}
                     currentSlug={initialEntry.slug}
-                    currentPrepContent={content}
-                    currentReviewContent={reviewContent}
+                    currentPrepContent={companionPrepContent}
+                    currentReviewContent={companionReviewContent}
                     onSyncCurrentEntryEdit={(tab, nextHtml) => {
                       if (tab === "review") {
                         setReviewContent(nextHtml);
@@ -1777,8 +1784,8 @@ export function JournalEntryEditor({
               endDate={range.endDate}
               anchorDate={range.anchorDate}
               currentSlug={initialEntry.slug}
-              currentPrepContent={content}
-              currentReviewContent={reviewContent}
+              currentPrepContent={companionPrepContent}
+              currentReviewContent={companionReviewContent}
               onSyncCurrentEntryEdit={(tab, nextHtml) => {
                 if (tab === "review") setReviewContent(nextHtml);
                 else setContent(nextHtml);

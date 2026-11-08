@@ -177,7 +177,11 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
     if (rawExecutions && rawExecutions.length > 0) return rawExecutions;
 
     const notes = trade.partials_breakdown || trade.notes || "";
-    const matches = [...notes.matchAll(/\[(\d+)\]\s+([\d.]+)L?\s+@\s+([\d.]+)(?:\s+@\s+([\d:]+))?\s*\(([+-]?\$?[\d.]+)?(?:,\s*([^)]+))?\)/gi)];
+    const matches = [
+      ...notes.matchAll(
+        /\[(\d+)\]\s+([\d.]+)L?\s+@\s+([\d.]+)(?:\s+@\s+(?:(\d{4}-\d{2}-\d{2})\s+)?([\d:]+))?\s*\(([+-]?\$?[\d.]+)?(?:,\s*([^)]+))?\)/gi
+      ),
+    ];
     if (!matches.length) return rawExecutions;
 
     const isShort = trade.direction === "short";
@@ -185,6 +189,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
     const closeMs = trade.closedAt ? Date.parse(trade.closedAt) : openMs;
     const dur = Math.max(0, closeMs - openMs);
     const step = matches.length > 1 ? dur / matches.length : 0;
+    const tzSuffix = trade.openedAt.length >= 19 ? trade.openedAt.slice(19) : "Z";
 
     const list: ExecutionRow[] = [
       {
@@ -198,18 +203,30 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
       },
     ];
 
+    let prevLegMs = openMs;
+    let curDatePrefix = trade.openedAt.slice(0, 10);
+
     matches.forEach((m, idx) => {
       const q = parseFloat(m[2]!);
       const p = parseFloat(m[3]!);
-      const timeStr = m[4]; // optional HH:MM:SS
-      const pnlRaw = m[5] ? parseFloat(m[5].replace(/[+$,]/g, "")) : 0;
-      const reason = m[6] || "TP";
+      const explicitDate = m[4];
+      const timeStr = m[5];
+      const pnlRaw = m[6] ? parseFloat(m[6].replace(/[+$,]/g, "")) : 0;
+      const reason = m[7] || "TP";
 
       let legTime: string;
       if (timeStr && trade.openedAt) {
-        const datePrefix = trade.openedAt.slice(0, 10);
-        const parsed = Date.parse(`${datePrefix}T${timeStr}Z`);
-        legTime = Number.isFinite(parsed) ? new Date(parsed).toISOString() : new Date(openMs + step * (idx + 1)).toISOString();
+        if (explicitDate) curDatePrefix = explicitDate;
+        let parsed = Date.parse(`${curDatePrefix}T${timeStr}${tzSuffix}`);
+        if (Number.isFinite(parsed)) {
+          while (parsed < prevLegMs - 30_000) {
+            parsed += 86_400_000;
+          }
+          prevLegMs = parsed;
+          legTime = new Date(parsed).toISOString();
+        } else {
+          legTime = new Date(openMs + step * (idx + 1)).toISOString();
+        }
       } else {
         legTime = new Date(openMs + step * (idx + 1)).toISOString();
       }
@@ -312,7 +329,8 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
             .sort((a, b) => Date.parse(a.executedAt) - Date.parse(b.executedAt));
 
           // Time to TP1 (first partial scale-out)
-          const firstExitMs = exitLegs.length > 1 ? Date.parse(exitLegs[0]!.executedAt) : null;
+          const validPostEntryExits = exitLegs.filter((e) => Date.parse(e.executedAt) >= Date.parse(trade.openedAt));
+          const firstExitMs = validPostEntryExits.length > 1 ? Date.parse(validPostEntryExits[0]!.executedAt) : null;
           const timeToTp1Ms =
             firstExitMs && Number.isFinite(firstExitMs)
               ? Math.max(0, firstExitMs - Date.parse(trade.openedAt))
@@ -345,40 +363,78 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
               ? Number(((trade.netPnl / fullHoldPnl) * 100).toFixed(1))
               : 100;
 
-          // Live MFE R / MAE R fallback from loaded marketResult candles if stopLoss is set
-          let displayMfeR = trade.mfeR ?? null;
+          // Infer 1R price distance (from explicit Stop Loss, or from Realized R & Avg Exit distance)
+          const explicitRiskPts =
+            trade.stopLoss && trade.stopLoss > 0
+              ? Math.abs(trade.avgEntry - trade.stopLoss)
+              : null;
+          const inferredRiskPts =
+            explicitRiskPts && explicitRiskPts > 0
+              ? explicitRiskPts
+              : trade.realizedR && Math.abs(trade.realizedR) > 0.01 && Math.abs(avgMove) > 0
+              ? Math.abs(avgMove) / Math.abs(trade.realizedR)
+              : null;
+
+          // Compute best favorable excursion across actual partial exit fills (floor for MFE R)
+          let minMfeFromFills: number | null = null;
+          if (inferredRiskPts && inferredRiskPts > 0 && exitLegs.length > 0) {
+            const favMoves = exitLegs.map((e) => {
+              const rawP = (e as any).rawMt5Price ?? e.price;
+              return isShort
+                ? Math.max(0, trade.avgEntry - rawP)
+                : Math.max(0, rawP - trade.avgEntry);
+            });
+            const maxFillFav = Math.max(...favMoves, 0);
+            if (maxFillFav > 0) {
+              minMfeFromFills = Number((maxFillFav / inferredRiskPts).toFixed(2));
+            }
+          }
+
+          let displayMfeR =
+            trade.mfeR != null && minMfeFromFills != null
+              ? Math.max(trade.mfeR, minMfeFromFills)
+              : trade.mfeR ?? minMfeFromFills;
           let displayMaeR = trade.maeR ?? null;
-          if (
-            (displayMfeR === null || displayMaeR === null) &&
-            marketResult?.bars?.length &&
-            trade.stopLoss &&
-            trade.stopLoss > 0
-          ) {
+
+          // Refine MFE R and MAE R using loaded 1m candles during the trade window
+          if (marketResult?.bars?.length && inferredRiskPts && inferredRiskPts > 0) {
             const openT = Date.parse(trade.openedAt);
             const closeT = trade.closedAt ? Date.parse(trade.closedAt) : Date.now();
             const tBars = marketResult.bars.filter(
               (b) => b.time >= openT - 60_000 && b.time <= closeT + 60_000
             );
-            const riskPts = Math.abs(trade.avgEntry - trade.stopLoss);
-            if (tBars.length > 0 && riskPts > 0) {
+            if (tBars.length > 0) {
+              const entryBar = tBars[0]!;
+              const refEntry =
+                Math.abs(entryBar.open - trade.avgEntry) > inferredRiskPts * 0.5
+                  ? (entryBar.open + entryBar.close) / 2
+                  : trade.avgEntry;
               const hi = Math.max(...tBars.map((b) => b.high));
               const lo = Math.min(...tBars.map((b) => b.low));
               const favPts = isShort
-                ? Math.max(0, trade.avgEntry - lo)
-                : Math.max(0, hi - trade.avgEntry);
+                ? Math.max(0, refEntry - lo)
+                : Math.max(0, hi - refEntry);
               const advPts = isShort
-                ? Math.max(0, hi - trade.avgEntry)
-                : Math.max(0, trade.avgEntry - lo);
-              if (displayMfeR === null) displayMfeR = Number((favPts / riskPts).toFixed(2));
-              if (displayMaeR === null) displayMaeR = Number((advPts / riskPts).toFixed(2));
+                ? Math.max(0, hi - refEntry)
+                : Math.max(0, refEntry - lo);
+              const candleMfeR = Number((favPts / inferredRiskPts).toFixed(2));
+              const candleMaeR = Number((advPts / inferredRiskPts).toFixed(2));
+              displayMfeR = Math.max(displayMfeR ?? 0, candleMfeR, minMfeFromFills ?? 0);
+              if (displayMaeR === null || displayMaeR === 0) {
+                displayMaeR = candleMaeR;
+              }
             }
           }
 
           const displayCaptureEff =
-            trade.captureEff ??
-            (trade.realizedR != null && displayMfeR != null && displayMfeR > 0
-              ? Number(((trade.realizedR / displayMfeR) * 100).toFixed(1))
-              : null);
+            trade.realizedR != null && displayMfeR != null && displayMfeR > 0
+              ? Number(Math.min(100, Math.max(0, (trade.realizedR / displayMfeR) * 100)).toFixed(1))
+              : trade.captureEff ?? null;
+
+          // Multi-day check for the top Date & Time pills
+          const isMultiDay = Boolean(kzExit && kzExit.dateDMY !== kzEntry.dateDMY);
+          const calendarDaysSpan =
+            computedDurMs != null ? Math.max(1, Math.round(computedDurMs / 86_400_000)) : 1;
 
           return (
             <Card className="border-border/70 bg-[#12141c]">
@@ -403,14 +459,17 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                       {trade.status}
                     </Badge>
 
-                    {/* Day of Week, Date (DD-MM-YYYY) & NY Entry -> Exit Time */}
+                    {/* Day of Week, Date (DD-MM-YYYY) & NY Entry -> Exit Time (Supports Multi-Day Span) */}
                     <div className="flex flex-wrap items-center gap-1.5 pl-2 border-l border-border/50">
                       <span className="rounded-md border border-border/70 bg-secondary/40 px-2.5 py-1 font-mono text-xs font-semibold text-foreground">
-                        {kzEntry.dayShort}, {kzEntry.dateDMY}
+                        {isMultiDay && kzExit
+                          ? `${kzEntry.dayShort}, ${kzEntry.dateDMY} → ${kzExit.dayShort}, ${kzExit.dateDMY}`
+                          : `${kzEntry.dayShort}, ${kzEntry.dateDMY}`}
                       </span>
                       <span className="rounded-md border border-border/70 bg-secondary/40 px-2.5 py-1 font-mono text-xs text-muted-foreground">
-                        {kzEntry.timeHM}
-                        {kzExit ? ` → ${kzExit.timeHM}` : ""} NY
+                        {isMultiDay && kzExit
+                          ? `${kzEntry.timeHM} (${kzEntry.dateDMY.slice(0, 5)}) → ${kzExit.timeHM} (${kzExit.dateDMY.slice(0, 5)}) NY (+${calendarDaysSpan}d)`
+                          : `${kzEntry.timeHM}${kzExit ? ` → ${kzExit.timeHM}` : ""} NY`}
                       </span>
                       <span
                         className={`rounded-md border px-2.5 py-1 text-xs font-semibold ${

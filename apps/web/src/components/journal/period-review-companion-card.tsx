@@ -151,6 +151,19 @@ const fmtCurrency = (val: number) => {
   return formatted;
 };
 
+
+/**
+ * Fast O(1) check for whether an HTML string has visible content or images,
+ * without running a global `/<[^>]+>/g` regex across multi-MB base64 `<img src="data:...">` strings!
+ */
+function hasNonEmptyHtml(html: string | null | undefined): boolean {
+  if (!html) return false;
+  const s = String(html);
+  if (s.length > 2048) return true; // Any HTML > 2KB has substantive blocks or images
+  if (/<img\b/i.test(s)) return true;
+  return s.replace(/<[^>]+>/g, "").replace(/&nbsp;/gi, " ").trim().length > 0;
+}
+
 function escapeHtml(text: string): string {
   return text
     .replace(/&/g, "&amp;")
@@ -180,7 +193,7 @@ function classifyTradeOutcome(trade: JournalTrade | null): "win" | "loss" | "bre
   return trade.netPnl > 0 ? "win" : "loss";
 }
 
-export function PeriodReviewCompanionCard({
+export const PeriodReviewCompanionCard = React.memo(function PeriodReviewCompanionCard({
   periodType,
   startDate,
   endDate,
@@ -369,13 +382,13 @@ export function PeriodReviewCompanionCard({
     );
   }, [visibleSubEntries, selectedSlug]);
 
-  // Reset inline editor draft when switching sub-entry or sub-tab
+  // Reset inline editor draft only when switching sub-entry or sub-tab
   useEffect(() => {
-    if (!activeSubEntry) return;
+    if (!activeSubEntry || isEditingPage) return;
     const raw =
       noteSubTab === "prep" ? activeSubEntry.content || "" : activeSubEntry.reviewContent || "";
     setEditDraftHtml(raw);
-  }, [activeSubEntry?.slug, noteSubTab, activeSubEntry?.content, activeSubEntry?.reviewContent]);
+  }, [activeSubEntry?.slug, noteSubTab, isEditingPage]);
 
   const handleSaveSubEntryPage = async () => {
     if (!activeSubEntry) return;
@@ -758,8 +771,7 @@ export function PeriodReviewCompanionCard({
             {visibleSubEntries.map((sub) => {
               const active = activeSubEntry?.slug === sub.slug;
               const hasText = Boolean(
-                (sub.content && sub.content.replace(/<[^>]+>/g, "").trim()) ||
-                  (sub.reviewContent && sub.reviewContent.replace(/<[^>]+>/g, "").trim())
+                hasNonEmptyHtml(sub.content) || hasNonEmptyHtml(sub.reviewContent)
               );
               return (
                 <button
@@ -922,8 +934,7 @@ export function PeriodReviewCompanionCard({
                     }
                   />
                 ) : noteSubTab === "prep" ? (
-                  activeSubEntry.content &&
-                  activeSubEntry.content.replace(/<[^>]+>/g, "").trim() ? (
+                  hasNonEmptyHtml(activeSubEntry.content) ? (
                     <Markdown content={activeSubEntry.content} className="!p-0" />
                   ) : (
                     <div className="py-10 text-center text-muted-foreground italic text-[11px]">
@@ -931,8 +942,7 @@ export function PeriodReviewCompanionCard({
                       <strong>Edit Page</strong> above to write directly here.
                     </div>
                   )
-                ) : activeSubEntry.reviewContent &&
-                  activeSubEntry.reviewContent.replace(/<[^>]+>/g, "").trim() ? (
+                ) : hasNonEmptyHtml(activeSubEntry.reviewContent) ? (
                   <Markdown content={activeSubEntry.reviewContent} className="!p-0" />
                 ) : (
                   <div className="py-10 text-center text-muted-foreground italic text-[11px]">
@@ -1174,16 +1184,14 @@ export function PeriodReviewCompanionCard({
                     minHeight={200}
                   />
                 ) : tradeNoteSubTab === "setup" ? (
-                  activeTradeNotes.notes &&
-                  activeTradeNotes.notes.replace(/<[^>]+>/g, "").trim() ? (
+                  hasNonEmptyHtml(activeTradeNotes.notes) ? (
                     <Markdown content={activeTradeNotes.notes} className="!p-0" />
                   ) : (
                     <div className="py-6 text-center text-muted-foreground italic text-[11px]">
                       No Setup/Execution notes recorded for this trade.
                     </div>
                   )
-                ) : activeTradeNotes.reviewNotes &&
-                  activeTradeNotes.reviewNotes.replace(/<[^>]+>/g, "").trim() ? (
+                ) : hasNonEmptyHtml(activeTradeNotes.reviewNotes) ? (
                   <Markdown content={activeTradeNotes.reviewNotes} className="!p-0" />
                 ) : (
                   <div className="py-6 text-center text-muted-foreground italic text-[11px]">
@@ -1519,16 +1527,14 @@ export function PeriodReviewCompanionCard({
                         minHeight={180}
                       />
                     ) : missedNoteSubTab === "setup" ? (
-                      activeMissedNotes.notes &&
-                      activeMissedNotes.notes.replace(/<[^>]+>/g, "").trim() ? (
+                      hasNonEmptyHtml(activeMissedNotes.notes) ? (
                         <Markdown content={activeMissedNotes.notes} className="!p-0" />
                       ) : (
                         <div className="py-4 text-center text-muted-foreground italic text-[11px]">
                           No setup notes recorded for this missed opportunity.
                         </div>
                       )
-                    ) : activeMissedNotes.reviewNotes &&
-                      activeMissedNotes.reviewNotes.replace(/<[^>]+>/g, "").trim() ? (
+                    ) : hasNonEmptyHtml(activeMissedNotes.reviewNotes) ? (
                       <Markdown content={activeMissedNotes.reviewNotes} className="!p-0" />
                     ) : (
                       <div className="py-4 text-center text-muted-foreground italic text-[11px]">
@@ -1856,4 +1862,4 @@ export function PeriodReviewCompanionCard({
       )}
     </div>
   );
-}
+});

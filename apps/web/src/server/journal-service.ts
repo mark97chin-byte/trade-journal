@@ -1,3 +1,4 @@
+import { pruneOrphanAttachments } from "@/server/attachment-gc";
 import Database from "better-sqlite3";
 import path from "path";
 import fs from "fs";
@@ -694,6 +695,17 @@ export async function saveJournalEntry(
         review_notion_url = COALESCE(excluded.review_notion_url, journal_entries.review_notion_url),
         updated_at = excluded.updated_at`
     ).run(updated);
+
+    // If an image was removed from content or review_content, prune orphaned attachments
+    if (
+      existing &&
+      ((String(existing.content || "").includes("<img") && !nextContent.includes("<img")) ||
+        (String(existing.review_content || "").includes("<img") && !nextReviewContent.includes("<img")) ||
+        String(existing.content || "").length - nextContent.length > 120 ||
+        String(existing.review_content || "").length - nextReviewContent.length > 120)
+    ) {
+      pruneOrphanAttachments(db);
+    }
 
     return updated;
   } finally {
