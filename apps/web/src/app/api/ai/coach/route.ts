@@ -49,6 +49,15 @@ export interface GoalStep {
   done: boolean;
 }
 
+export interface ReportReflectionQuestion {
+  id: string;
+  category: "htf_ltf_alignment" | "contradiction_probe" | "execution_sizing" | "psychology";
+  contextSummary: string;
+  question: string;
+  answer: string;
+  appendedTo?: string[];
+}
+
 export interface ReportActionItem {
   id: string;
   text: string;
@@ -195,6 +204,9 @@ function ensureCoachTables(db: Database.Database) {
   `);
   try {
     db.exec(`ALTER TABLE ai_coach_reports ADD COLUMN action_items_json TEXT DEFAULT '[]'`);
+  } catch {}
+  try {
+    db.exec(`ALTER TABLE ai_coach_reports ADD COLUMN reflection_questions_json TEXT DEFAULT '[]'`);
   } catch {}
   try {
     db.exec(`ALTER TABLE trader_goals ADD COLUMN steps_json TEXT DEFAULT '[]'`);
@@ -1170,12 +1182,38 @@ function buildBehavioralTelemetryAndJournals(
 
   let allTrades: any[] = [];
   try {
+    const rawTradeExtras = new Map<string, any>();
+    try {
+      const tCols = new Set(
+        (db.prepare("PRAGMA table_info(trades)").all() as Array<{ name: string }>).map((c) => c.name)
+      );
+      const sel = [
+        "key",
+        "account_id",
+        "notes",
+        ...(tCols.has("review_notes") ? ["review_notes"] : []),
+        ...(tCols.has("realized_r") ? ["realized_r"] : []),
+        ...(tCols.has("planned_r") ? ["planned_r"] : []),
+        ...(tCols.has("mfe_r") ? ["mfe_r"] : []),
+        ...(tCols.has("mae_r") ? ["mae_r"] : []),
+        ...(tCols.has("risk_percent") ? ["risk_percent"] : []),
+      ];
+      const rawRows = db.prepare(`SELECT ${sel.join(", ")} FROM trades`).all() as any[];
+      for (const r of rawRows) {
+        rawTradeExtras.set(String(r.key), r);
+      }
+    } catch {}
+
     const qRes = queryTrades({});
     allTrades = (qRes.trades || []).map((t: any) => {
+      const extra = rawTradeExtras.get(String(t.key)) || {};
       const dayStr = String(t.openedAt || "").slice(0, 10);
-      const tradeUrl = `/trades?symbol=${encodeURIComponent(t.symbol)}&from=${dayStr}&to=${dayStr}`;
+      const tradeUrl = `/trades/${encodeURIComponent(t.key)}`;
+      const setupDigest = htmlToStructuredDigest(extra.notes || t.notes || "");
+      const reviewDigest = htmlToStructuredDigest(extra.review_notes || "");
       return {
         key: t.key,
+        accountId: t.accountId || extra.account_id || "mt5-main",
         symbol: t.symbol,
         direction: t.direction,
         opened_at: t.openedAt || "",
@@ -1183,8 +1221,19 @@ function buildBehavioralTelemetryAndJournals(
         quantity: Number(t.quantity || 1),
         net_pnl: Number(t.netPnl || 0),
         gross_pnl: Number(t.grossPnl ?? t.netPnl ?? 0),
-        realized_r: t.realizedR ?? null,
-        notes: t.notes || "",
+        realized_r:
+          typeof extra.realized_r === "number"
+            ? extra.realized_r
+            : t.realizedR ?? null,
+        planned_r: typeof extra.planned_r === "number" ? extra.planned_r : null,
+        mfe_r: typeof extra.mfe_r === "number" ? extra.mfe_r : null,
+        mae_r: typeof extra.mae_r === "number" ? extra.mae_r : null,
+        risk_percent: typeof extra.risk_percent === "number" ? extra.risk_percent : null,
+        notes: setupDigest.cleanText,
+        review_notes: reviewDigest.cleanText,
+        review_qa: reviewDigest.qaReflections,
+        hasSubstantiveReview:
+          reviewDigest.cleanText.length >= 25 || reviewDigest.qaReflections.length > 0,
         tags: t.annotations?.tags || [],
         mistakes: t.annotations?.mistakes || [],
         playbook: t.annotations?.playbook || "",
@@ -1222,8 +1271,16 @@ function buildBehavioralTelemetryAndJournals(
   let initialAccountBalance = Number(settings.accountBalanceOverride || 0);
   if (initialAccountBalance <= 0) {
     try {
-      const accRows = db.prepare(`SELECT initial_balance FROM accounts`).all() as any[];
-      const sumInit = accRows.reduce((acc, r) => acc + Number(r.initial_balance || 0), 0);
+      const activeAcctIds = new Set(allTrades.map((t) => t.accountId).filter(Boolean));
+      const accRows = db.prepare(`SELECT id, initial_balance FROM accounts`).all() as any[];
+      const relevantAccs =
+        activeAcctIds.size > 0
+          ? accRows.filter((r) => activeAcctIds.has(r.id))
+          : accRows.slice(0, 1);
+      const sumInit = (relevantAccs.length > 0 ? relevantAccs : accRows.slice(0, 1)).reduce(
+        (acc, r) => acc + Number(r.initial_balance || 0),
+        0
+      );
       if (sumInit > 0) initialAccountBalance = sumInit;
     } catch {}
   }
@@ -1235,10 +1292,16 @@ function buildBehavioralTelemetryAndJournals(
   for (const t of allTrades) {
     const eqBeforeTrade = Math.max(runningEquity, initialAccountBalance * 0.25);
     const capRiskUsd = estimateTradeCapitalRiskedUsd(t, symbolRiskPerUnitMap, inferredFull1RUsd);
-    const isExactRisk = Number(t.net_pnl || 0) < 0 || (t.realized_r !== null && t.realized_r !== undefined);
+    const isExactRisk =
+      typeof t.risk_percent === "number" ||
+      Number(t.net_pnl || 0) < 0 ||
+      (t.realized_r !== null && t.realized_r !== undefined);
     t.equityAtTrade = Math.round(eqBeforeTrade);
     t.estimated1RUsd = capRiskUsd;
-    t.accountRiskPct = Math.round(((capRiskUsd / eqBeforeTrade) * 100) * 100) / 100;
+    t.accountRiskPct =
+      typeof t.risk_percent === "number" && t.risk_percent > 0
+        ? Math.round(t.risk_percent * 100) / 100
+        : Math.round(((capRiskUsd / eqBeforeTrade) * 100) * 100) / 100;
     t.accountPnlPct = Math.round(((Number(t.net_pnl || 0) / eqBeforeTrade) * 100) * 100) / 100;
     t.riskTier =
       t.accountRiskPct < targetRiskPct * 0.72
@@ -1542,25 +1605,79 @@ function buildBehavioralTelemetryAndJournals(
         processRating: hasSubstantiveText ? j.rating : null,
         lessonsLearned: hasSubstantiveText ? (j.lessons_learned || "") : "",
         qaReflections: filteredReflections,
-        prepSummary: hasSubstantiveText ? prepDigest.cleanText.slice(0, 1100) : "",
-        reviewSummary: hasSubstantiveText ? revDigest.cleanText.slice(0, 1500) : "",
+        prepSummary: hasSubstantiveText ? prepDigest.cleanText.slice(0, 6000) : "",
+        reviewSummary: hasSubstantiveText ? revDigest.cleanText.slice(0, 6000) : "",
         updatedAt: j.updated_at || "",
       };
     })
     .filter((j) => !j.isTemplateOnly || j.startDate <= todayIso)
     .sort((a, b) => b.startDate.localeCompare(a.startDate) || b.slug.localeCompare(a.slug));
 
+  // Cross-link Trade-Level Reviews (`trades.review_notes` & `trades.notes`) into their Daily Journal entry
+  // so reviewing a trade on the Trade page is recognized as completing that day's reflection loop!
+  for (const t of allTrades) {
+    const tDay = String(t.opened_at || "").slice(0, 10);
+    if (!tDay) continue;
+    const tradeRevText = String(t.review_notes || "").trim();
+    const tradeSetupText = String(t.notes || "").trim();
+    if (!tradeRevText && !tradeSetupText) continue;
+
+    const matchingDayJ = allParsedJournals.find((j) => j.slug === tDay);
+    if (matchingDayJ) {
+      if (tradeRevText.length >= 20) {
+        matchingDayJ.hasReview = true;
+        matchingDayJ.isTemplateOnly = false;
+        matchingDayJ.reviewCharLen = (matchingDayJ.reviewCharLen || 0) + tradeRevText.length;
+        const header = `[Post-Trade Review from ${t.symbol} ${String(t.direction).toUpperCase()} (${t.realized_r != null ? `${t.realized_r}R` : `$${t.net_pnl}`})]: `;
+        matchingDayJ.reviewSummary = `${matchingDayJ.reviewSummary ? matchingDayJ.reviewSummary + " | " : ""}${header}${tradeRevText}`.slice(0, 2200);
+        if (Array.isArray(t.review_qa) && t.review_qa.length > 0) {
+          matchingDayJ.qaReflections = [...(matchingDayJ.qaReflections || []), ...t.review_qa];
+        }
+      }
+      if (tradeSetupText.length >= 20 && !matchingDayJ.hasPrep) {
+        matchingDayJ.hasPrep = true;
+        matchingDayJ.isTemplateOnly = false;
+        matchingDayJ.prepCharLen = (matchingDayJ.prepCharLen || 0) + tradeSetupText.length;
+        matchingDayJ.prepSummary = `${matchingDayJ.prepSummary ? matchingDayJ.prepSummary + " | " : ""}[Trade Setup Notes]: ${tradeSetupText}`.slice(0, 1500);
+      }
+    }
+  }
+
+  // Include ALL overlapping Higher-Timeframe (Year / Quarter / Month), Weekly, and Daily journals
+  // so HTF macro context (Monthly/Quarterly) and daily/weekly notes are NEVER sliced off!
   const windowJournals = allParsedJournals.filter(
     (j) => j.endDate >= cutoffIso && j.startDate <= targetPeriodEnd
   );
   const substantiveWindowJournals = windowJournals.filter((j) => !j.isTemplateOnly);
 
+  const htfContextJournals = allParsedJournals.filter(
+    (j) =>
+      !j.isTemplateOnly &&
+      ["year", "quarter", "month"].includes(j.periodType) &&
+      j.endDate >= cutoffIso &&
+      j.startDate <= targetPeriodEnd
+  );
+  const weeklyWindowJournals = substantiveWindowJournals.filter((j) => j.periodType === "week");
+  const dailyWindowJournals = substantiveWindowJournals.filter((j) => j.periodType === "day");
+
+  const combinedHierarchicalJournals = (() => {
+    const seen = new Set<string>();
+    const out: any[] = [];
+    for (const j of [...htfContextJournals, ...weeklyWindowJournals, ...dailyWindowJournals]) {
+      if (!seen.has(j.slug)) {
+        seen.add(j.slug);
+        out.push(j);
+      }
+    }
+    return out;
+  })();
+
   const selectedJournals =
     customScope?.selectedJournalSlugs && customScope.selectedJournalSlugs.length > 0
       ? allParsedJournals.filter((j) => customScope.selectedJournalSlugs!.includes(j.slug))
-      : substantiveWindowJournals.length > 0
-      ? substantiveWindowJournals.slice(0, 12)
-      : allParsedJournals.filter((j) => !j.isTemplateOnly && j.startDate <= targetPeriodEnd).slice(0, 10);
+      : combinedHierarchicalJournals.length > 0
+      ? combinedHierarchicalJournals.slice(0, 28)
+      : allParsedJournals.filter((j) => !j.isTemplateOnly && j.startDate <= targetPeriodEnd).slice(0, 16);
 
   const fourPeriodNetPnl = trades.reduce((acc, t) => acc + Number(t.net_pnl || 0), 0);
   const fourPeriodWins = trades.filter((t) => Number(t.net_pnl || 0) > 0).length;
@@ -1662,11 +1779,11 @@ function buildBehavioralTelemetryAndJournals(
   const targetPeriodTradesMd =
     targetPeriodTrades.length > 0
       ? [
-          `| Exact Date | Trade Link | Side | Qty (Lots) | Net P&L ($) | Acct P&L % | Acct Risk % | Risk Tier |`,
+          `| Exact Date | Trade Link | Side | Qty (Lots) | Net P&L ($) | Realized R / Optimal R | Acct Risk % | Trade Review Completed? |`,
           `|---|---|---|---|---|---|---|---|`,
           ...targetPeriodTrades.map(
             (t: any) =>
-              `| **${String(t.opened_at).slice(0, 10)}** | [${t.symbol} ${t.direction}](${t.tradeUrl}) | ${String(t.direction).toUpperCase()} | ${t.quantity} | **$${Number(t.net_pnl).toFixed(2)}** | ${t.accountPnlPct}% | ${t.accountRiskPct}% | ${t.riskTier} |`
+              `| **${String(t.opened_at).slice(0, 10)}** | [${t.symbol} ${t.direction}](${t.tradeUrl}) | ${String(t.direction).toUpperCase()} | ${t.quantity} | **$${Number(t.net_pnl).toFixed(2)}** | ${t.realized_r != null ? `${t.realized_r > 0 ? "+" : ""}${t.realized_r}R` : "—"} (MFE: ${t.mfe_r != null ? `+${t.mfe_r}R` : "—"}) | ${t.accountRiskPct}% (${t.riskTier}) | ${t.hasSubstantiveReview ? `Yes (${String(t.review_notes || "").length}c): "${String(t.review_notes || "").slice(0, 260)}..."` : "No"} |`
           ),
         ].join(String.fromCharCode(10))
       : `*(ZERO trades were executed during Target Period ${targetBucket?.periodLabel || horizon}: ${targetPeriodStart} to ${targetPeriodEnd})*`;
@@ -1873,7 +1990,8 @@ function buildBehavioralTelemetryAndJournals(
       const hasNoAnnotations =
         (!Array.isArray(t.mistakes) || t.mistakes.length === 0) &&
         (!Array.isArray(t.tags) || t.tags.length === 0) &&
-        !String(t.notes || "").trim();
+        !String(t.notes || "").trim() &&
+        !String(t.review_notes || "").trim();
       const dateStr = String(t.opened_at || "").slice(0, 10);
       const shortDate = dateStr.slice(5).replace("-", "/"); // e.g. 10/16
       const mentionedByDate =
@@ -1923,6 +2041,30 @@ function buildBehavioralTelemetryAndJournals(
         ? `Uniform process score of ${ratingsList[0]}% across ${ratingsList.length} rated journals.`
         : null,
   };
+
+  // Build Complete Trade-by-Trade Setup Notes, Post-Trade Reviews & Optimal R (MFE) Digest
+  telemetry.tradeReviewsDigestMd =
+    trades.length > 0
+      ? trades
+          .map((t: any) => {
+            const dStr = String(t.opened_at || "").slice(0, 16).replace("T", " ");
+            const rStr = t.realized_r != null ? `${t.realized_r > 0 ? "+" : ""}${t.realized_r}R` : "N/A";
+            const planRStr = t.planned_r != null ? `${t.planned_r}R` : "N/A";
+            const mfeStr = t.mfe_r != null ? `+${t.mfe_r}R` : "N/A";
+            const maeStr = t.mae_r != null ? `-${t.mae_r}R` : "N/A";
+            const setupTxt = String(t.notes || "").trim() || "(No written setup notes on trade page — check linked Daily/Weekly journal)";
+            const revTxt = String(t.review_notes || "").trim() || "(No post-trade review written on trade page)";
+            return [
+              `#### TRADE [${t.symbol} ${String(t.direction).toUpperCase()} on ${dStr}](${t.tradeUrl}) (Key: ${t.key})`,
+              `- **Execution & Risk**: Qty ${t.quantity}L | Net P&L: $${Number(t.net_pnl).toFixed(2)} (${t.accountPnlPct}% Acct) | Risked: ${t.accountRiskPct}% Acct ($${t.estimated1RUsd}) | Tier: ${t.riskTier}`,
+              `- **R-Multiple & Optimal R Telemetry**: Planned R: ${planRStr} | Realized R: **${rStr}** | Optimal R (MFE): **${mfeStr}** | Max Heat (MAE): ${maeStr}`,
+              `- **Tags / Mistakes / Playbook**: Playbook: ${t.playbook || "None"} | Tags: ${(t.tags || []).join(", ") || "None"} | Mistakes: ${(t.mistakes || []).join(", ") || "None"}`,
+              `- **Trade Setup & Execution Notes**: ${setupTxt.slice(0, 2500)}`,
+              `- **Post-Trade Review & Reflection Q&A**: ${revTxt.slice(0, 3500)}`,
+            ].join("\n");
+          })
+          .join("\n\n")
+      : "*(No trades executed in this window)*";
 
   // Match trade strictly to exact day slug or exact containing ISO week so Oct 1 NEVER maps to week-2026-10-05!
   telemetry.sayDoAlignmentMap = trades.slice(-12).map((t) => {
@@ -2021,6 +2163,79 @@ function buildBehavioralTelemetryAndJournals(
     })),
     recentTradesSample: trades.slice(-25),
   };
+}
+
+
+function extractFallbackReflectionQuestions(
+  markdown: string,
+  telemetry: any,
+  parsedJournals: any[],
+  tradesSample: any[]
+): ReportReflectionQuestion[] {
+  const out: ReportReflectionQuestion[] = [];
+
+  // 1. Check for HTF (Monthly/Quarterly) vs LTF (Weekly/Daily) sentiment or narrative shifts
+  const htfJournals = parsedJournals.filter((j) => ["month", "quarter"].includes(j.periodType));
+  const ltfJournals = parsedJournals.filter((j) => ["week", "day"].includes(j.periodType));
+  if (htfJournals.length > 0 && ltfJournals.length > 0) {
+    const htf = htfJournals[0];
+    const ltf = ltfJournals[0];
+    out.push({
+      id: `rq_htf_${Date.now()}_0`,
+      category: "htf_ltf_alignment",
+      contextSummary: `Comparing Higher-Timeframe [${htf.humanLabel}](${htf.journalUrl}) against [${ltf.humanLabel}](${ltf.journalUrl}).`,
+      question: `How does your current ${ltf.periodType} directional bias and key level selection align with (or intentionally trade a counter-trend retracement/purge within) your ${htf.humanLabel} macro draw on liquidity? What specific price signature confirms this alignment?`,
+      answer: "",
+      appendedTo: [],
+    });
+  }
+
+  // 2. Check for Realized R vs Optimal R (MFE) scaling tension on winning trades
+  const mfeTrades = (tradesSample || []).filter(
+    (t) => Number(t.net_pnl) > 0 && t.realized_r != null && t.mfe_r != null && t.mfe_r > t.realized_r * 1.4
+  );
+  if (mfeTrades.length > 0) {
+    const topT = mfeTrades[mfeTrades.length - 1];
+    out.push({
+      id: `rq_mfe_${Date.now()}_1`,
+      category: "execution_sizing",
+      contextSummary: `On ${topT.symbol} ${String(topT.direction).toUpperCase()} (${String(topT.opened_at).slice(0, 10)}), Realized R was +${topT.realized_r}R while Optimal R (MFE) reached +${topT.mfe_r}R.`,
+      question: `Price expanded to +${topT.mfe_r}R while your weighted exit locked in +${topT.realized_r}R. What specific market structure signature (e.g., M5/M15 swing structure or opposing FVG) would give you the conviction to hold a larger runner past 2R on high-velocity expansions?`,
+      answer: "",
+      appendedTo: [],
+    });
+  }
+
+  // 3. Check for sizing / probe trades or post-loss sizing shifts
+  const probeTrades = (tradesSample || []).filter(
+    (t) => typeof t.accountRiskPct === "number" && t.accountRiskPct < (telemetry?.targetRiskPct || 1) * 0.5
+  );
+  if (probeTrades.length > 0) {
+    const pt = probeTrades[probeTrades.length - 1];
+    out.push({
+      id: `rq_size_${Date.now()}_2`,
+      category: "contradiction_probe",
+      contextSummary: `${pt.symbol} ${String(pt.direction).toUpperCase()} on ${String(pt.opened_at).slice(0, 10)} was sized at ${pt.accountRiskPct}% account risk.`,
+      question: `What prompted deploying ${pt.accountRiskPct}% risk on ${pt.symbol} (${String(pt.opened_at).slice(0, 10)})? Was there a specific confirmation missing that justified reduced sizing, or was it hesitation on a valid A+ setup?`,
+      answer: "",
+      appendedTo: [],
+    });
+  }
+
+  // 4. Linguistic crutch / selectivity probe if "consolidation" or "low probability" appeared
+  if (Array.isArray(telemetry?.linguisticCrutches) && telemetry.linguisticCrutches.length > 0) {
+    const topCrutch = telemetry.linguisticCrutches[0];
+    out.push({
+      id: `rq_psych_${Date.now()}_3`,
+      category: "psychology",
+      contextSummary: `The phrase "${topCrutch.phrase}" appeared ${topCrutch.count} time(s) across your journals in this window.`,
+      question: `Looking back at the sessions you labeled "${topCrutch.phrase}", were they objectively outside your playbook parameters, or were there valid displacements where hesitation kept you on the sidelines?`,
+      answer: "",
+      appendedTo: [],
+    });
+  }
+
+  return out.slice(0, 5);
 }
 
 function extractFallbackActionItems(markdown: string, horizon: GoalHorizon): ReportActionItem[] {
@@ -2253,8 +2468,24 @@ ${activeGoals.length > 0 ? activeGoals.map((g) => {
   return `ID: ${g.id} | [${g.horizon.toUpperCase()}] "${g.title}" | Progress: ${g.progress_pct}% | Target Metric: "${g.target_metric}"${stepsSummary}`;
 }).join(String.fromCharCode(10)) : "No active goals defined yet—propose concrete Weekly, Monthly, and Quarterly goals."}
 
-=== 4. SUBSTANTIVE JOURNAL ENTRIES IN WINDOW (${parsedJournals.length} ENTRIES) ===
-${parsedJournals.length > 0 ? parsedJournals.map((j: any) => `### JOURNAL [${j.humanLabel}](${j.journalUrl}) (Slug: ${j.slug} | Range: ${j.startDate} to ${j.endDate})\n- Process Score: ${j.processRating ?? "Unscored"}% | Sub-scores: ${JSON.stringify(j.scores)}\n- Key Takeaway: ${j.lessonsLearned || "None recorded"}\n- Self-Reflection Quotes: ${JSON.stringify(j.qaReflections.slice(0, 10))}${j.prepSummary ? `\n- Prep Notes: ${j.prepSummary}` : ""}${j.reviewSummary ? `\n- Review Notes: ${j.reviewSummary}` : ""}`).join("\n\n") : "No substantive written journal entries in this date window."}
+=== 4A. HIGHER-TIMEFRAME (HTF) MACRO JOURNALS (MONTHLY / QUARTERLY / YEARLY CONTEXT) ===
+${(() => {
+  const htfList = parsedJournals.filter((j: any) => ["year", "quarter", "month"].includes(j.periodType));
+  return htfList.length > 0
+    ? htfList.map((j: any) => `### HTF JOURNAL [${j.humanLabel}](${j.journalUrl}) (Slug: ${j.slug} | Period: ${j.periodType.toUpperCase()} | Range: ${j.startDate} to ${j.endDate})\n- Process Score: ${j.processRating ?? "Unscored"}% | Key Takeaway: ${j.lessonsLearned || "None recorded"}\n- Self-Reflection Quotes: ${JSON.stringify(j.qaReflections.slice(0, 12))}${j.prepSummary ? `\n- HTF Macro Plan / Prep Notes: ${j.prepSummary}` : ""}${j.reviewSummary ? `\n- HTF Review Notes: ${j.reviewSummary}` : ""}`).join("\n\n")
+    : "No Higher-Timeframe (Monthly/Quarterly) journals recorded for this window.";
+})()}
+
+=== 4B. WEEKLY & DAILY JOURNALS IN WINDOW (${parsedJournals.filter((j: any) => ["week", "day"].includes(j.periodType)).length} ENTRIES) ===
+${(() => {
+  const ltfList = parsedJournals.filter((j: any) => ["week", "day"].includes(j.periodType));
+  return ltfList.length > 0
+    ? ltfList.map((j: any) => `### JOURNAL [${j.humanLabel}](${j.journalUrl}) (Slug: ${j.slug} | Period: ${j.periodType.toUpperCase()} | Range: ${j.startDate} to ${j.endDate})\n- Process Score: ${j.processRating ?? "Unscored"}% | Sub-scores: ${JSON.stringify(j.scores)}\n- Key Takeaway: ${j.lessonsLearned || "None recorded"}\n- Self-Reflection Quotes: ${JSON.stringify(j.qaReflections.slice(0, 12))}${j.prepSummary ? `\n- Prep / Forecast Notes: ${j.prepSummary}` : ""}${j.reviewSummary ? `\n- Review Notes (Includes Linked Trade Reviews): ${j.reviewSummary}` : ""}`).join("\n\n")
+    : "No Weekly or Daily journals recorded in this window.";
+})()}
+
+=== 4C. COMPLETE TRADE-BY-TRADE SETUP NOTES & POST-TRADE REVIEWS (FROM TRADES DATABASE) ===
+${telemetry.tradeReviewsDigestMd}
 
 === INSTRUCTIONS (STRICT ANTI-HALLUCINATION PROTOCOL) ===
 Write a complete, candid, deeply insightful report in Markdown with these exact 5 sections.
@@ -2268,8 +2499,11 @@ Include these 5 sections (and complete all 5 sections + the closing JSON block):
    First, reproduce this exact Server-Verified table verbatim:
 ${telemetry.verifiedPeriodTableMd}
    Then analyze the trajectory across those exact rows, including trade counts, win rate, Net P&L, and Account % Risk tiers.
-2. **Say–Do Alignment & Execution Asymmetry**:
-   Cross-examine the written journals in Section 4 against the exact verified trades in Section 1B/1C (\`sayDoAlignmentMap\`). Call out Same-Day Multi-Trade Clusters (e.g. multiple losses on the same day/symbol) and Orphan Trades (trades with zero notes/tags/mistakes). Include clickable Markdown links!
+2. **Top-Down HTF-to-LTF Narrative Alignment, Say–Do Alignment & Socratic Contradiction Inquiry**:
+   - **Compare Lower-Timeframe (Weekly & Daily) Notes Against Higher-Timeframe (Monthly & Quarterly) Context**: Check how the Weekly and Daily plans in Section 4B align with the Monthly and Quarterly macro plans in Section 4A, and how executed trades + Post-Trade Reviews in Section 4C align with both.
+   - **IMPORTANT — TRADE REVIEW COMPLETION RULE**: If a trade has a completed **Post-Trade Review** in Section 4C (\`trades.review_notes\`), credit the trader for completing the reflection loop on that trade/day! Do NOT claim a trade's review questions are unanswered if Section 4C shows a completed Post-Trade Review.
+   - **SOCRATIC INQUIRY PRINCIPLE (DO NOT AUTOMATICALLY LABEL SHIFTS AS MISTAKES)**: When you notice a directional shift or apparent contradiction between timeframes (for example, the Monthly Macro Plan is bullish, but the Weekly synthesis shifts bearish; or a forecast says "stay patient" while a small probe is taken; or a trader scales out early due to fast-price nervousness while Optimal R / MFE goes much further), DO NOT dogmatically tell the trader they are "wrong" or "violating their plan." In multi-timeframe trading, weekly/daily shifts often reflect valid intermediate-term retracements, liquidity purges, or SMT signatures. Instead, **ask Socratic, thought-provoking questions** inviting the trader to ponder and clarify: *What specific price signatures prompted the shift? Were those signatures valid under their model, and are they framing the move as a retracement or a structural reversal?* Include clickable Markdown links!
+   - Also populate 3 to 5 of these specific Socratic questions in the \`"reflectionQuestions"\` array inside the closing JSON block so the trader can answer or dismiss them interactively.
 3. **Emotional Baggage, Blind Spots & Avoidance Forensics**:
    Examine:
    - **Spectator Analyst vs. Executor Identity**: High Prep-to-Review ratio (writing market commentary while leaving post-trade self-reflection blank).
@@ -2287,6 +2521,13 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
       "status": "on_track | slipping | breached | completed",
       "progressPct": 75,
       "evidenceNote": "1-sentence specific citation"
+    }
+  ],
+  "reflectionQuestions": [
+    {
+      "category": "htf_ltf_alignment | contradiction_probe | execution_sizing | psychology",
+      "contextSummary": "1-sentence citation of the specific HTF-vs-LTF shift, contradiction, or execution tension observed (citing exact journal slug or trade)",
+      "question": "Direct Socratic question asking the trader to ponder why they made this shift/decision, what price signatures drove it, and whether it was valid"
     }
   ],
   "actionItems": [
@@ -2328,7 +2569,7 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
     const thinkingMode = customScope?.thinkingMode || "balanced";
     const maxOut =
       customScope?.maxOutputTokens ||
-      (thinkingMode === "fast" ? 4096 : thinkingMode === "balanced" ? 5120 : 6144);
+      (thinkingMode === "fast" ? 8192 : thinkingMode === "balanced" ? 12288 : 16384);
 
     let latestStreamedText = "";
     let latestStreamedReasoning = "";
@@ -2395,6 +2636,7 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
       let suggestedGoals: any[] = [];
       let goalAudits: any[] = [];
       let actionItems: ReportActionItem[] = [];
+      let reflectionQuestions: ReportReflectionQuestion[] = [];
 
       const jsonMatch = rawMarkdown.match(/```json\s*([\s\S]*?)```/i);
       if (jsonMatch?.[1]) {
@@ -2402,6 +2644,18 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
           const parsedJson = JSON.parse(jsonMatch[1].trim());
           if (Array.isArray(parsedJson.suggestedGoals)) suggestedGoals = parsedJson.suggestedGoals;
           if (Array.isArray(parsedJson.goalAudits)) goalAudits = parsedJson.goalAudits;
+          if (Array.isArray(parsedJson.reflectionQuestions)) {
+            reflectionQuestions = parsedJson.reflectionQuestions
+              .map((rq: any, idx: number) => ({
+                id: `rq_${Date.now()}_${idx}`,
+                category: rq.category || "contradiction_probe",
+                contextSummary: String(rq.contextSummary || rq.context || ""),
+                question: String(rq.question || rq.text || "").trim(),
+                answer: "",
+                appendedTo: [],
+              }))
+              .filter((rq: ReportReflectionQuestion) => Boolean(rq.question));
+          }
           if (Array.isArray(parsedJson.actionItems)) {
             actionItems = parsedJson.actionItems
               .map((ai: any, idx: number) => ({
@@ -2441,6 +2695,14 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
       if (actionItems.length === 0) {
         actionItems = extractFallbackActionItems(rawMarkdown, horizon);
       }
+      if (reflectionQuestions.length === 0) {
+        reflectionQuestions = extractFallbackReflectionQuestions(
+          rawMarkdown,
+          telemetry,
+          parsedJournals,
+          recentTradesSample
+        );
+      }
 
       if (suggestedGoals.length === 0 && actionItems.length > 0) {
         suggestedGoals = actionItems.slice(0, 3).map((ai, idx) => ({
@@ -2450,6 +2712,45 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
           whyItMatters: "Derived from longitudinal audit action plan",
           targetMetric: ai.targetMetric,
         }));
+      }
+
+      if (suggestedGoals.length === 0) {
+        suggestedGoals = [
+          {
+            horizon: "weekly",
+            periodLabel: "Next Week",
+            title: "Complete Post-Trade Review & R-Multiple telemetry on 100% of executed setups",
+            whyItMatters: "Closes the feedback loop between pre-session preparation and post-trade execution review.",
+            targetMetric: "0 unreviewed trades and 0 dust/probe positions outside plan",
+            steps: [
+              "Log pre-session invalidation and target levels before entering any position",
+              "Complete the Post-Trade Review questionnaire on the same day a trade closes",
+              "Avoid sub-0.1% probe trades when the written daily plan calls for staying flat",
+            ],
+          },
+          {
+            horizon: "monthly",
+            periodLabel: "Current Month",
+            title: `Normalize risk deployment toward standard ${telemetry.targetRiskPct || 0.5}%–1.0% on A+ confirmed setups`,
+            whyItMatters: "Prevents post-loss under-sizing from eroding positive expectancy on high-conviction setups.",
+            targetMetric: "100% of A+ setups sized within planned risk tier",
+            steps: [
+              "Define exact stop loss price before entry so 1R dollar risk is consistent",
+              "Hold runner partials past 2R when HTF displacement confirms expansion",
+            ],
+          },
+          {
+            horizon: "quarterly",
+            periodLabel: "Current Quarter",
+            title: "Maintain 1:1 Prep-to-Review balance & eliminate Orphan Trades across the quarter",
+            whyItMatters: "Converts market analysis into measurable execution edge and optimal R capture.",
+            targetMetric: "0 orphan trades & 100% weekly review completion",
+            steps: [
+              "Complete every Weekly Review and Trade Review before Sunday session open",
+              "Track Optimal R (MFE R) vs Realized R to refine partial take-profit scaling",
+            ],
+          },
+        ];
       }
 
       const nowIso = new Date().toISOString();
@@ -2480,6 +2781,7 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
             suggested_goals_json = ?,
             accountability_json = ?,
             action_items_json = ?,
+            reflection_questions_json = ?,
             model_used = ?
         WHERE id = ?
       `).run(
@@ -2491,10 +2793,12 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
           verifiedTradesLedgerMd: undefined,
           verifiedPlaybookTableMd: undefined,
           journalCompletionMatrixMd: undefined,
+          tradeReviewsDigestMd: undefined,
         }),
         JSON.stringify(suggestedGoals),
         JSON.stringify(goalAudits),
         JSON.stringify(actionItems),
+        JSON.stringify(reflectionQuestions),
         aiRes.model || "koboldcpp",
         reportId
       );
@@ -3065,6 +3369,16 @@ export async function GET(req: NextRequest) {
           parsedActions.length > 0
             ? parsedActions
             : extractFallbackActionItems(r.summary_md || "", (r.horizon as GoalHorizon) || "weekly");
+        const parsedQuestions: ReportReflectionQuestion[] = (() => {
+          try {
+            const arr = JSON.parse(r.reflection_questions_json || "[]");
+            if (Array.isArray(arr) && arr.length > 0) return arr;
+          } catch {}
+          const tel = (() => {
+            try { return JSON.parse(r.telemetry_json || "{}"); } catch { return {}; }
+          })();
+          return extractFallbackReflectionQuestions(r.summary_md || "", tel, [], []);
+        })();
         return {
           id: r.id,
           horizon: r.horizon,
@@ -3076,6 +3390,7 @@ export async function GET(req: NextRequest) {
           suggestedGoals: JSON.parse(r.suggested_goals_json || "[]"),
           accountability: JSON.parse(r.accountability_json || "[]"),
           actionItems: finalActions,
+          reflectionQuestions: parsedQuestions,
           modelUsed: r.model_used,
           createdAt: r.created_at,
         };
@@ -3406,7 +3721,8 @@ export async function POST(req: NextRequest) {
       const href = String(body.href || "").trim();
       if (href.startsWith("/journal")) {
         const u = new URL(href, "http://localhost");
-        const slug = u.searchParams.get("slug") || "";
+        const pathSlug = decodeURIComponent(u.pathname.replace(/^\/journal\/?/, "").trim());
+        const slug = u.searchParams.get("slug") || pathSlug || "";
         const jRow = db
           .prepare(
             `SELECT slug, period_type, title, content, review_content, lessons_learned, rating, scores_json, updated_at
@@ -3438,40 +3754,395 @@ export async function POST(req: NextRequest) {
 
       if (href.startsWith("/trades")) {
         const u = new URL(href, "http://localhost");
+        const pathKey = decodeURIComponent(u.pathname.replace(/^\/trades\/?/, "").trim());
         const symbol = u.searchParams.get("symbol") || "";
         const fromDate = u.searchParams.get("from") || "";
         const toDate = u.searchParams.get("to") || fromDate;
         const qRes = queryTrades({});
         const matching = (qRes.trades || []).filter((t: any) => {
+          if (pathKey && t.key === pathKey) return true;
           const d = String(t.openedAt || "").slice(0, 10);
           const symMatch = !symbol || t.symbol === symbol;
           const dateMatch = !fromDate || (d >= fromDate && d <= toDate);
-          return symMatch && dateMatch;
+          return Boolean((symbol || fromDate) && symMatch && dateMatch);
         });
         return NextResponse.json({
           ok: true,
           evidenceType: "trades",
           href,
-          symbol,
+          symbol: symbol || matching[0]?.symbol || pathKey,
           fromDate,
-          trades: matching.map((t: any) => ({
-            key: t.key,
-            symbol: t.symbol,
-            direction: t.direction,
-            openedAt: t.openedAt,
-            closedAt: t.closedAt,
-            quantity: t.quantity,
-            netPnl: t.netPnl,
-            realizedR: t.realizedR,
-            notes: (t.notes || "").replace(/<[^>]+>/g, " ").trim(),
-            tags: t.annotations?.tags || [],
-            mistakes: t.annotations?.mistakes || [],
-            playbook: t.annotations?.playbook || "",
-          })),
+          trades: matching.map((t: any) => {
+            const extra =
+              (db
+                .prepare("SELECT notes, review_notes, realized_r, planned_r, mfe_r, mae_r FROM trades WHERE key = ?")
+                .get(t.key) as any) || {};
+            const setupDigest = htmlToStructuredDigest(extra.notes || t.notes || "");
+            const revDigest = htmlToStructuredDigest(extra.review_notes || "");
+            return {
+              key: t.key,
+              symbol: t.symbol,
+              direction: t.direction,
+              openedAt: t.openedAt,
+              closedAt: t.closedAt,
+              quantity: t.quantity,
+              netPnl: t.netPnl,
+              realizedR: extra.realized_r ?? t.realizedR,
+              mfeR: extra.mfe_r ?? null,
+              notes: setupDigest.cleanText,
+              reviewNotes: revDigest.cleanText,
+              tags: t.annotations?.tags || [],
+              mistakes: t.annotations?.mistakes || [],
+              playbook: t.annotations?.playbook || "",
+            };
+          }),
         });
       }
 
       return NextResponse.json({ ok: false, error: "Unsupported evidence link" }, { status: 400 });
+    }
+
+
+    // =========================================================================
+    // SOCRATIC REFLECTION QUESTIONS & UNIVERSAL APPEND MANAGER
+    // =========================================================================
+    if (action === "list_append_targets") {
+      const now = new Date();
+      const curMon = getMondayUtc(now);
+      const nextMon = new Date(curMon.getTime() + 7 * 86_400_000);
+      const nextMonIso = nextMon.toISOString().slice(0, 10);
+      const curMonIso = curMon.toISOString().slice(0, 10);
+
+      const weekTargets: Array<{ slug: string; label: string; badge?: string }> = [
+        {
+          slug: `week-${nextMonIso}`,
+          label: `Next Week · Weekly Journal (${formatWeekHumanLabel(nextMonIso)})`,
+          badge: "NEXT WEEK",
+        },
+        {
+          slug: `week-${curMonIso}`,
+          label: `Current Week · Weekly Journal (${formatWeekHumanLabel(curMonIso)})`,
+          badge: "CURRENT WEEK",
+        },
+      ];
+      for (let w = 1; w <= 8; w++) {
+        const m = new Date(curMon.getTime() - w * 7 * 86_400_000);
+        const mIso = m.toISOString().slice(0, 10);
+        weekTargets.push({
+          slug: `week-${mIso}`,
+          label: `Weekly Journal · ${formatWeekHumanLabel(mIso)}`,
+        });
+      }
+
+      const monthTargets: Array<{ slug: string; label: string; badge?: string }> = [];
+      for (let offset = -1; offset <= 6; offset++) {
+        const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - offset, 1));
+        const ym = d.toISOString().slice(0, 7);
+        const mName = d.toLocaleString("en-US", { month: "long", year: "numeric", timeZone: "UTC" });
+        monthTargets.push({
+          slug: `month-${ym}`,
+          label:
+            offset === -1
+              ? `Next Month · ${mName} (month-${ym})`
+              : offset === 0
+              ? `Current Month · ${mName} (month-${ym})`
+              : `Monthly Journal · ${mName} (month-${ym})`,
+          badge: offset === -1 ? "NEXT MONTH" : offset === 0 ? "CURRENT MONTH" : undefined,
+        });
+      }
+
+      const curQ = Math.floor(now.getUTCMonth() / 3) + 1;
+      const curY = now.getUTCFullYear();
+      const quarterYearTargets = [
+        { slug: `quarter-${curY}-Q${curQ}`, label: `Current Quarter · ${curY} Q${curQ}` },
+        {
+          slug: curQ === 4 ? `quarter-${curY + 1}-Q1` : `quarter-${curY}-Q${curQ + 1}`,
+          label: `Next Quarter · ${curQ === 4 ? `${curY + 1} Q1` : `${curY} Q${curQ + 1}`}`,
+        },
+        { slug: `year-${curY}`, label: `Yearly Journal · ${curY}` },
+      ];
+
+      const dayTargets: Array<{ slug: string; label: string }> = [];
+      for (let dOff = -1; dOff <= 10; dOff++) {
+        const d = new Date(now.getTime() - dOff * 86_400_000);
+        const dIso = d.toISOString().slice(0, 10);
+        const wkDay = d.toLocaleDateString("en-US", { weekday: "short", timeZone: "UTC" });
+        dayTargets.push({
+          slug: dIso,
+          label:
+            dOff === -1
+              ? `Tomorrow · ${wkDay} ${dIso}`
+              : dOff === 0
+              ? `Today · ${wkDay} ${dIso}`
+              : `Daily Journal · ${wkDay} ${dIso}`,
+        });
+      }
+
+      let tradeTargets: any[] = [];
+      try {
+        tradeTargets = db
+          .prepare(
+            `SELECT key, symbol, direction, opened_at, net_pnl, realized_r
+             FROM trades
+             ORDER BY opened_at DESC LIMIT 30`
+          )
+          .all()
+          .map((t: any) => ({
+            key: t.key,
+            label: `${String(t.opened_at || "").slice(0, 10)} · ${t.symbol} ${String(t.direction).toUpperCase()} ($${Number(t.net_pnl || 0).toFixed(2)}${t.realized_r != null ? ` / ${t.realized_r}R` : ""})`,
+          }));
+      } catch {}
+
+      let notebookTargets: any[] = [];
+      try {
+        notebookTargets = db
+          .prepare(
+            `SELECT id, title, updated_at FROM notes WHERE archived_at IS NULL ORDER BY updated_at DESC LIMIT 30`
+          )
+          .all()
+          .map((n: any) => ({
+            id: n.id,
+            label: `${n.title || "Untitled Note"} (${String(n.updated_at || "").slice(0, 10)})`,
+          }));
+      } catch {}
+
+      return NextResponse.json({
+        ok: true,
+        weekTargets,
+        monthTargets,
+        quarterYearTargets,
+        dayTargets,
+        tradeTargets,
+        notebookTargets,
+      });
+    }
+
+    if (
+      action === "save_reflection_question" ||
+      action === "delete_reflection_question" ||
+      action === "add_reflection_question"
+    ) {
+      const reportId = String(body.reportId || "");
+      const row = db
+        .prepare(`SELECT summary_md, telemetry_json, reflection_questions_json FROM ai_coach_reports WHERE id = ?`)
+        .get(reportId) as any;
+      if (!row) {
+        return NextResponse.json({ ok: false, error: "Report not found" }, { status: 404 });
+      }
+
+      let questions: ReportReflectionQuestion[] = [];
+      try {
+        questions = JSON.parse(row.reflection_questions_json || "[]");
+      } catch {}
+      if (!Array.isArray(questions) || questions.length === 0) {
+        let tel: any = {};
+        try { tel = JSON.parse(row.telemetry_json || "{}"); } catch {}
+        questions = extractFallbackReflectionQuestions(row.summary_md || "", tel, [], []);
+      }
+
+      if (action === "delete_reflection_question") {
+        const qId = String(body.questionId || "");
+        questions = questions.filter((q) => q.id !== qId);
+      } else if (action === "save_reflection_question") {
+        const qId = String(body.questionId || "");
+        const answer = body.answer !== undefined ? String(body.answer) : undefined;
+        const questionText = body.question !== undefined ? String(body.question).trim() : undefined;
+        questions = questions.map((q) =>
+          q.id === qId
+            ? {
+                ...q,
+                ...(answer !== undefined ? { answer } : {}),
+                ...(questionText ? { question: questionText } : {}),
+              }
+            : q
+        );
+      } else if (action === "add_reflection_question") {
+        const qText = String(body.question || "").trim();
+        if (qText) {
+          questions.push({
+            id: `rq_custom_${Date.now()}`,
+            category: body.category || "contradiction_probe",
+            contextSummary: String(body.contextSummary || "Custom Reflection Probe"),
+            question: qText,
+            answer: String(body.answer || ""),
+            appendedTo: [],
+          });
+        }
+      }
+
+      db.prepare(`UPDATE ai_coach_reports SET reflection_questions_json = ? WHERE id = ?`).run(
+        JSON.stringify(questions),
+        reportId
+      );
+      return NextResponse.json({ ok: true, reflectionQuestions: questions });
+    }
+
+    if (action === "append_reflections_to_target") {
+      const reportId = String(body.reportId || "");
+      const questionIds: string[] = Array.isArray(body.questionIds) ? body.questionIds : [];
+      const inlineItems: Array<{ question: string; answer: string; contextSummary?: string }> =
+        Array.isArray(body.items) ? body.items : [];
+      const targetKind: "journal" | "trade" | "notebook" = body.targetKind || "journal";
+      const targetId = String(body.targetId || "").trim();
+      const targetTab: "prep" | "review" | "setup" = body.targetTab || "review";
+
+      if (!targetId) {
+        return NextResponse.json({ ok: false, error: "Please select a destination to append to." }, { status: 400 });
+      }
+
+      const repRow = reportId
+        ? (db.prepare(`SELECT title, summary_md, telemetry_json, reflection_questions_json FROM ai_coach_reports WHERE id = ?`).get(reportId) as any)
+        : null;
+
+      let questions: ReportReflectionQuestion[] = [];
+      if (repRow) {
+        try {
+          questions = JSON.parse(repRow.reflection_questions_json || "[]");
+        } catch {}
+        if (!Array.isArray(questions) || questions.length === 0) {
+          let tel: any = {};
+          try { tel = JSON.parse(repRow.telemetry_json || "{}"); } catch {}
+          questions = extractFallbackReflectionQuestions(repRow.summary_md || "", tel, [], []);
+        }
+      }
+
+      // Sync any latest inline edits sent from the client
+      if (inlineItems.length > 0 && questionIds.length > 0) {
+        questions = questions.map((q) => {
+          const foundInline = (body.items || []).find((it: any) => it.id === q.id);
+          return foundInline
+            ? {
+                ...q,
+                question: String(foundInline.question ?? q.question),
+                answer: String(foundInline.answer ?? q.answer),
+              }
+            : q;
+        });
+      }
+
+      const selectedQs =
+        questionIds.length > 0
+          ? questions.filter((q) => questionIds.includes(q.id))
+          : inlineItems.map((it, i) => ({
+              id: `inline_${i}`,
+              category: "contradiction_probe" as const,
+              contextSummary: it.contextSummary || "",
+              question: it.question,
+              answer: it.answer,
+              appendedTo: [],
+            }));
+
+      if (selectedQs.length === 0) {
+        return NextResponse.json({ ok: false, error: "No reflection questions selected to append." }, { status: 400 });
+      }
+
+      const nowIso = new Date().toISOString();
+      const dateStamp = nowIso.slice(0, 10);
+      const esc = (s: string) =>
+        String(s || "")
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;");
+
+      const qaBlocksHtml = selectedQs
+        .map((q) => {
+          const ansHtml = (q.answer || "(To be reflected on)")
+            .trim()
+            .split("\n")
+            .map((line) => esc(line))
+            .join("<br/>");
+          const ctxLine = q.contextSummary
+            ? `<p style="font-size: 0.78rem; color: #94a3b8; margin-bottom: 2px;"><em>Context: ${esc(q.contextSummary)}</em></p>`
+            : "";
+          return `${ctxLine}<p><strong>🤔 ${esc(q.question)}</strong></p><blockquote class="tz-quote" data-notion-type="quote"><div>${ansHtml}</div></blockquote>`;
+        })
+        .join("<p><br/></p>");
+
+      const wrapperHtml = `<hr class="tz-divider" data-notion-type="divider" /><div class="tz-callout tz-color-purple_background" data-notion-type="callout" data-notion-color="purple_background" data-icon="🧠"><span class="tz-callout-icon" contenteditable="false">🧠</span><div class="tz-callout-content"><div><strong>AI Coach Socratic Reflection (${dateStamp}${repRow?.title ? ` · ${esc(repRow.title.slice(0, 48))}` : ""})</strong></div></div></div>${qaBlocksHtml}<p><br/></p>`;
+
+      let destinationBadge = "";
+      let destinationUrl = "";
+
+      if (targetKind === "journal") {
+        const { getJournalEntryWithTrades, saveJournalEntry } = await import("@/server/journal-service");
+        // Ensure target journal row exists (auto-populates default templates if Next Week / New Month doesn't exist yet!)
+        const { entry } = await getJournalEntryWithTrades(targetId);
+        const isReviewTab = targetTab === "review";
+        const existingHtml = isReviewTab ? entry.reviewContent || "" : entry.content || "";
+        const updatedHtml = `${existingHtml}${wrapperHtml}`;
+
+        await saveJournalEntry(
+          targetId,
+          isReviewTab ? { reviewContent: updatedHtml } : { content: updatedHtml }
+        );
+
+        const tabName = isReviewTab ? "Review" : "Prep / Notes";
+        destinationBadge = `${targetId} (${tabName})`;
+        destinationUrl = `/journal/${encodeURIComponent(targetId)}`;
+      } else if (targetKind === "trade") {
+        const tradeRow = db.prepare(`SELECT key, symbol, notes, review_notes FROM trades WHERE key = ?`).get(targetId) as any;
+        if (!tradeRow) {
+          return NextResponse.json({ ok: false, error: `Trade '${targetId}' not found.` }, { status: 404 });
+        }
+        const isReviewTab = targetTab === "review";
+        const colName = isReviewTab ? "review_notes" : "notes";
+        const existingHtml = (isReviewTab ? tradeRow.review_notes : tradeRow.notes) || "";
+        const updatedHtml = `${existingHtml}${wrapperHtml}`;
+        db.prepare(`UPDATE trades SET ${colName} = ? WHERE key = ?`).run(updatedHtml, targetId);
+
+        destinationBadge = `Trade ${tradeRow.symbol} (${isReviewTab ? "Trade Review" : "Setup Notes"})`;
+        destinationUrl = `/trades/${encodeURIComponent(targetId)}`;
+      } else if (targetKind === "notebook") {
+        let noteId = targetId;
+        if (noteId === "__new__") {
+          noteId = `note_${Date.now()}`;
+          const newTitle = String(body.newNoteTitle || `AI Coach Reflections (${dateStamp})`).trim();
+          db.prepare(
+            `INSERT INTO notes (id, folder_id, title, content, created_at, updated_at)
+             VALUES (?, 'my-notes', ?, ?, ?, ?)`
+          ).run(noteId, newTitle, wrapperHtml, nowIso, nowIso);
+          destinationBadge = `Notebook: ${newTitle}`;
+        } else {
+          const nRow = db.prepare(`SELECT id, title, content FROM notes WHERE id = ?`).get(noteId) as any;
+          if (!nRow) {
+            return NextResponse.json({ ok: false, error: "Notebook note not found." }, { status: 404 });
+          }
+          const updatedHtml = `${nRow.content || ""}${wrapperHtml}`;
+          db.prepare(`UPDATE notes SET content = ?, updated_at = ? WHERE id = ?`).run(
+            updatedHtml,
+            nowIso,
+            noteId
+          );
+          destinationBadge = `Notebook: ${nRow.title || "Note"}`;
+        }
+        destinationUrl = `/notebook`;
+      }
+
+      if (repRow) {
+        const selectedSet = new Set(selectedQs.map((q) => q.id));
+        questions = questions.map((q) => {
+          if (!selectedSet.has(q.id)) return q;
+          const prevList = Array.isArray(q.appendedTo) ? q.appendedTo : [];
+          return {
+            ...q,
+            appendedTo: prevList.includes(destinationBadge)
+              ? prevList
+              : [...prevList, destinationBadge],
+          };
+        });
+        db.prepare(`UPDATE ai_coach_reports SET reflection_questions_json = ? WHERE id = ?`).run(
+          JSON.stringify(questions),
+          reportId
+        );
+      }
+
+      return NextResponse.json({
+        ok: true,
+        destinationBadge,
+        destinationUrl,
+        reflectionQuestions: questions,
+        message: `Appended ${selectedQs.length} reflection(s) to ${destinationBadge}!`,
+      });
     }
 
     // PUSH ACTIVE GOALS & REPORT ACTION ITEMS DIRECTLY INTO CURRENT WEEKLY OR DAILY JOURNAL PREP TAB

@@ -377,6 +377,18 @@ function singleKoboldStreamCall(
             lastEmitMs = now;
             params.onDelta(accumulatedRaw, accumulatedReasoning);
           }
+          // Send a non-blocking keepalive ping to the Desktop Control Daemon every 45s while tokens stream
+          // so the daemon's 30-minute idle timer NEVER unloads the model mid-generation!
+          if (!(res as any)._lastDaemonPingMs || now - (res as any)._lastDaemonPingMs > 45_000) {
+            (res as any)._lastDaemonPingMs = now;
+            const daemonUrl = getControlDaemonUrl(baseUrl);
+            fetch(daemonUrl, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ action: "heartbeat" }),
+              signal: AbortSignal.timeout(2000),
+            }).catch(() => {});
+          }
         });
 
         res.on("end", () => {
@@ -463,6 +475,9 @@ export async function runKoboldAi(
   } else if (thinkingMode === "balanced") {
     systemPrompt +=
       "\n\nIMPORTANT: Keep your internal <think> reasoning concise (under 350 words) so you have plenty of token budget to complete all 5 report sections and the closing JSON block without cutting off.";
+  } else if (thinkingMode === "deep") {
+    systemPrompt +=
+      "\n\nIMPORTANT: Structure your internal <think> reasoning efficiently (under 1,000 words) and then write ALL 5 REQUIRED REPORT SECTIONS (1. Trajectory, 2. Say-Do Alignment, 3. Emotional Baggage & Linguistic Crutches, 4. Goal Accountability, 5. Action Protocol & Multi-Level Goals) followed by the closing ```json block.";
   }
 
   const maxTokens = Math.max(options.maxOutputTokens ?? persona.maxOutputTokens ?? 12288, 6144);
@@ -507,12 +522,14 @@ export async function runKoboldAi(
 
     const trimmedAns = combinedAnswer.trim();
     const hasClosingJson = /```json[\s\S]*?```/i.test(trimmedAns);
+    const hasSection3 = /(?:^|\n)\s*(?:#{1,4}|\*\*)?\s*3\./.test(trimmedAns);
+    const hasSection5 = /(?:^|\n)\s*(?:#{1,4}|\*\*)?\s*5\./.test(trimmedAns);
     const endsMidSentence =
       trimmedAns.length > 80 && !/[.!?>`\]}*]\s*$/.test(trimmedAns);
     const needsMore =
       firstPass.finishReason === "length" ||
       endsMidSentence ||
-      (options.persona === "coach" && !hasClosingJson && pass === 1);
+      (options.persona === "coach" && (!hasClosingJson || !hasSection3 || !hasSection5));
 
     if (!needsMore) break;
 
@@ -526,7 +543,7 @@ export async function runKoboldAi(
           {
             role: "user",
             content:
-              "Continue writing seamlessly from the exact word where you stopped above. Do NOT repeat any prior text. Complete the remaining report sections (including Section 4 Action Plan and Section 5 Multi-Level Goals) and finish with the closing ```json block.",
+              "/no_think\nContinue writing the Markdown report seamlessly from the exact word where you stopped above. Do NOT output <think> tags and do NOT repeat any prior text. Complete all remaining report sections (Section 3 Emotional Baggage, Blind Spots & Linguistic Crutches, Section 4 Goal Accountability Audit, and Section 5 Mental Game Action Protocol & Multi-Level Goals) and finish with the closing ```json block.",
           },
         ],
         {

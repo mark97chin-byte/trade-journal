@@ -25,7 +25,8 @@ Net P&L: ${trade.netPnl.toFixed(2)} (gross ${trade.grossPnl.toFixed(2)}, fees ${
 Avg entry ${trade.avgEntry} → avg exit ${trade.avgExit ?? "still open"}
 Planned stop: ${row.stopLoss ?? "none recorded"} | target: ${row.profitTarget ?? "none recorded"}
 Rating: ${row.rating ?? "unrated"} | tags: ${(trade.annotations?.tags ?? []).join(", ") || "none"} | mistakes: ${(trade.annotations?.mistakes ?? []).join(", ") || "none"}
-Notes: ${row.notes ?? "none"}
+Setup Notes: ${(row.notes ?? "none").replace(/<[^>]+>/g, " ").trim()}
+Post-Trade Review: ${(((row as any).review_notes || "") as string).replace(/<[^>]+>/g, " ").trim() || "none"}
 
 Fills:
 ${fills.map((fill) => `${fill.executedAt} ${fill.side} ${fill.quantity} @ ${fill.price}${fill.fee ? ` fee ${fill.fee}` : ""}`).join("\n")}`,

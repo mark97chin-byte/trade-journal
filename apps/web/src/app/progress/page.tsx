@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { ReviewExport } from "@/components/review-export";
 import { Markdown } from "@/components/rich-editor";
 import { AuditManagerModal } from "@/components/audit-manager-modal";
+import { SocraticReflectionManager, type ReportReflectionQuestion } from "@/components/socratic-reflection-manager";
 import { AiLogButton } from "@/components/ai-log-button";
 import { useApi, postJson } from "@/lib/use-api";
 import { scheduledRules, progressScore, type Routine, type RoutineCheck } from "@/lib/progress";
@@ -106,6 +107,7 @@ interface AiCoachReport {
     targetMetric: string;
   }>;
   actionItems: ReportActionItem[];
+  reflectionQuestions?: ReportReflectionQuestion[];
   modelUsed: string;
   createdAt: string;
 }
@@ -2367,6 +2369,13 @@ function Progress() {
                       <InteractiveCoachMarkdown value={activeReport.summaryMd} onInspectLink={handleInspectLink} />
                     </div>
 
+                    {/* SOCRATIC ALIGNMENT & CONTRADICTION PROBES + UNIVERSAL APPEND MANAGER */}
+                    <SocraticReflectionManager
+                      reportId={activeReport.id}
+                      initialQuestions={activeReport.reflectionQuestions || []}
+                      onUpdated={() => void fetchCoachData()}
+                    />
+
                     {/* AI RECOMMENDED MULTI-LEVEL GOALS (WITH PRE-BUILT MULTI-STEP CHECKLISTS) */}
                     {Array.isArray(activeReport.suggestedGoals) &&
                       activeReport.suggestedGoals.length > 0 && (
@@ -3683,8 +3692,15 @@ function Progress() {
                         </div>
                       )}
                       {t.notes && (
-                        <div className="rounded border border-border/40 bg-[#141722] p-2.5 text-muted-foreground">
-                          {t.notes}
+                        <div className="rounded border border-border/40 bg-[#141722] p-2.5 text-muted-foreground space-y-1">
+                          <div className="text-[10px] font-bold uppercase text-indigo-400">Setup &amp; Execution Notes</div>
+                          <div>{t.notes}</div>
+                        </div>
+                      )}
+                      {t.reviewNotes && (
+                        <div className="rounded border border-emerald-500/30 bg-emerald-950/15 p-2.5 text-foreground/90 space-y-1">
+                          <div className="text-[10px] font-bold uppercase text-emerald-400">Post-Trade Review &amp; Reflection Q&amp;A</div>
+                          <div>{t.reviewNotes}</div>
                         </div>
                       )}
                     </div>
