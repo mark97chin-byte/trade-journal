@@ -557,7 +557,7 @@ export function AiEngineSettingsCard() {
                 <input
                   type="number"
                   min={5}
-                  max={240}
+                  max={1440}
                   value={config.idleUnloadMinutes || 30}
                   onChange={(e) =>
                     setConfig({
@@ -565,7 +565,7 @@ export function AiEngineSettingsCard() {
                       idleUnloadMinutes: Number(e.target.value) || 30,
                     })
                   }
-                  className="w-12 rounded border border-border bg-background px-1 py-0.5 text-center font-mono text-xs text-foreground"
+                  className="w-14 rounded border border-border bg-background px-1 py-0.5 text-center font-mono text-xs text-foreground"
                 />
                 <span>mins idle</span>
               </div>
@@ -628,7 +628,7 @@ export function AiEngineSettingsCard() {
                   max="1"
                   value={temperature}
                   onChange={(e) => setTemperature(Number(e.target.value) || 0)}
-                  className="w-12 rounded border border-border bg-background px-1 py-0.5 text-center text-xs"
+                  className="w-14 rounded border border-border bg-background px-1 py-0.5 text-center text-xs"
                 />
               </div>
               <div className="flex items-center gap-1.5">
@@ -640,7 +640,7 @@ export function AiEngineSettingsCard() {
                   max="1"
                   value={topP}
                   onChange={(e) => setTopP(Number(e.target.value) || 0.05)}
-                  className="w-12 rounded border border-border bg-background px-1 py-0.5 text-center text-xs"
+                  className="w-14 rounded border border-border bg-background px-1 py-0.5 text-center text-xs"
                 />
               </div>
             </div>

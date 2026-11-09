@@ -239,6 +239,12 @@ export function AiSettings() {
             }
           }
           if (json.daemonState) {
+            if (typeof json.daemonState.idleUnloadMinutes === "number") {
+              setLocalSettings((prev) => ({
+                ...prev,
+                idleUnloadMinutes: json.daemonState.idleUnloadMinutes,
+              }));
+            }
             if (json.daemonState.strataModelsDir && !dirToScan) {
               setLocalSettings((prev) => ({
                 ...prev,
@@ -407,6 +413,24 @@ This will unload ${fromLabel} from VRAM first. Click OK to switch, or Cancel to 
     setBusy(true);
     setFeedback({});
     try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "control_kobold",
+          command: "save_state",
+          baseUrl: localSettings.baseUrl,
+          launchState: {
+            engineType: selectedSlot,
+            idleUnloadMinutes: localSettings.idleUnloadMinutes ?? 300,
+            autoSwitchOnDemand: localSettings.autoSwitchOnDemand ?? true,
+            gpuLayers: hwState.gpuLayers,
+            contextSize: hwState.contextSize,
+            quantKv: hwState.quantKv,
+            flashAttention: hwState.flashAttention,
+          },
+        }),
+      }).catch(() => {});
       await postJson(
         "/api/settings",
         {
@@ -644,16 +668,38 @@ This will unload ${fromLabel} from VRAM first. Click OK to switch, or Cancel to 
                   <span>Auto-unload after</span>
                   <input
                     type="number"
-                    min={5}
-                    max={240}
-                    value={localSettings.idleUnloadMinutes ?? 30}
-                    onChange={(e) =>
+                    min={0}
+                    max={1440}
+                    value={localSettings.idleUnloadMinutes ?? 300}
+                    onChange={(e) => {
+                      const val = Math.max(0, Number(e.target.value) || 0);
                       setLocalSettings((prev) => ({
                         ...prev,
-                        idleUnloadMinutes: Math.max(5, Number(e.target.value) || 30),
-                      }))
-                    }
-                    className="w-12 rounded border border-border bg-[#0d0f14] px-1.5 py-0.5 text-center font-mono text-xs text-foreground"
+                        idleUnloadMinutes: val,
+                      }));
+                      setHwState((prev) => ({
+                        ...prev,
+                        idleUnloadMinutes: val,
+                      }));
+                    }}
+                    onBlur={(e) => {
+                      const val = Math.max(0, Number(e.target.value) || 0);
+                      void fetch("/api/ai/coach", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({
+                          action: "control_kobold",
+                          command: "save_state",
+                          baseUrl: localSettings.baseUrl,
+                          launchState: {
+                            idleUnloadMinutes: val,
+                            autoSwitchOnDemand: localSettings.autoSwitchOnDemand ?? true,
+                          },
+                        }),
+                      }).catch(() => {});
+                    }}
+                    className="w-14 rounded border border-border bg-[#0d0f14] px-1.5 py-0.5 text-center font-mono text-xs text-foreground"
+                    title="Minutes of true inactivity before unloading VRAM (0 = Never auto-unload)"
                   />
                   <span>mins idle</span>
                 </div>

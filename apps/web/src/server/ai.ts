@@ -48,7 +48,7 @@ export const DEFAULT_LOCAL_AI_SETTINGS: LocalAiSettings = {
   mode: "local_kobold",
   activeEngineSlot: "strata_chat",
   autoSwitchOnDemand: true,
-  idleUnloadMinutes: 30,
+  idleUnloadMinutes: 300,
   baseUrl: process.env.KOBOLDCPP_URL || "http://100.75.201.34:5001",
   modelsDir: "~/koboldcpp/models",
   activeModelFile: "Qwen3.8-27B-Q4_K_M.gguf",
@@ -77,7 +77,7 @@ the trader knows. Keep it tight.`,
   },
   coach: {
     contextSize: 32768,
-    maxOutputTokens: 12288,
+    maxOutputTokens: 20480,
     temperature: 0.6,
     topP: 0.95,
     systemPrompt: `You are a longitudinal trading psychology and behavioral performance analyst.
@@ -385,7 +385,7 @@ function singleKoboldStreamCall(
             fetch(daemonUrl, {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ action: "heartbeat" }),
+              body: JSON.stringify({ action: "ping" }),
               signal: AbortSignal.timeout(2000),
             }).catch(() => {});
           }
@@ -547,7 +547,7 @@ export async function runKoboldAi(
           },
         ],
         {
-          maxTokens: 8192,
+          maxTokens: 12288,
           temperature,
           topP,
           reasoningEffort: "low",

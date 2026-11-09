@@ -395,7 +395,7 @@ export function AiModelOrchestratorCard() {
                       idleUnloadMinutes: Number(e.target.value) || 30,
                     })
                   }
-                  className="w-12 rounded border border-border bg-card px-1 py-0.5 text-center font-mono text-xs text-foreground"
+                  className="w-14 rounded border border-border bg-card px-1 py-0.5 text-center font-mono text-xs text-foreground"
                 />{" "}
                 mins idle
               </span>

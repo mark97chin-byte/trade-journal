@@ -1605,8 +1605,8 @@ function buildBehavioralTelemetryAndJournals(
         processRating: hasSubstantiveText ? j.rating : null,
         lessonsLearned: hasSubstantiveText ? (j.lessons_learned || "") : "",
         qaReflections: filteredReflections,
-        prepSummary: hasSubstantiveText ? prepDigest.cleanText.slice(0, 6000) : "",
-        reviewSummary: hasSubstantiveText ? revDigest.cleanText.slice(0, 6000) : "",
+        prepSummary: hasSubstantiveText ? prepDigest.cleanText.slice(0, 8000) : "",
+        reviewSummary: hasSubstantiveText ? revDigest.cleanText.slice(0, 8000) : "",
         updatedAt: j.updated_at || "",
       };
     })
@@ -2059,8 +2059,8 @@ function buildBehavioralTelemetryAndJournals(
               `- **Execution & Risk**: Qty ${t.quantity}L | Net P&L: $${Number(t.net_pnl).toFixed(2)} (${t.accountPnlPct}% Acct) | Risked: ${t.accountRiskPct}% Acct ($${t.estimated1RUsd}) | Tier: ${t.riskTier}`,
               `- **R-Multiple & Optimal R Telemetry**: Planned R: ${planRStr} | Realized R: **${rStr}** | Optimal R (MFE): **${mfeStr}** | Max Heat (MAE): ${maeStr}`,
               `- **Tags / Mistakes / Playbook**: Playbook: ${t.playbook || "None"} | Tags: ${(t.tags || []).join(", ") || "None"} | Mistakes: ${(t.mistakes || []).join(", ") || "None"}`,
-              `- **Trade Setup & Execution Notes**: ${setupTxt.slice(0, 2500)}`,
-              `- **Post-Trade Review & Reflection Q&A**: ${revTxt.slice(0, 3500)}`,
+              `- **Trade Setup & Execution Notes**: ${setupTxt.slice(0, 4500)}`,
+              `- **Post-Trade Review & Reflection Q&A**: ${revTxt.slice(0, 5000)}`,
             ].join("\n");
           })
           .join("\n\n")
@@ -2569,7 +2569,7 @@ At the very end, append a JSON block wrapped in \`\`\`json ... \`\`\` with this 
     const thinkingMode = customScope?.thinkingMode || "balanced";
     const maxOut =
       customScope?.maxOutputTokens ||
-      (thinkingMode === "fast" ? 8192 : thinkingMode === "balanced" ? 12288 : 16384);
+      (thinkingMode === "fast" ? 8192 : thinkingMode === "balanced" ? 14336 : 20480);
 
     let latestStreamedText = "";
     let latestStreamedReasoning = "";
@@ -3502,6 +3502,9 @@ export async function POST(req: NextRequest) {
       const daemonUrl = getControlDaemonUrl(baseUrl);
       const command: "start" | "stop" | "save_state" = body.command || "start";
       const launchState = body.launchState || {};
+      if (launchState.idleUnloadMinutes !== undefined) {
+        saveLocalAiSettings({ idleUnloadMinutes: Number(launchState.idleUnloadMinutes) });
+      }
 
       if (launchState.modelFile) {
         if (launchState.engineType === "strata_chat") {
