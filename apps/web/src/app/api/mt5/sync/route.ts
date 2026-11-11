@@ -261,18 +261,50 @@ async function runRemoteSyncOnDevice(
   stagingDbPath: string
 ): Promise<{ ok: boolean; log: string }> {
   const isWin = targetDev.osType === "windows";
-  const repo = targetDev.repoPath || (isWin ? "trade-journal-dev" : "~/trade-journal-dev");
+  const rawRepo = (targetDev.repoPath || (isWin ? "trade-journal-dev" : "~/trade-journal-dev")).trim();
   const sshHost = targetDev.sshTarget;
 
+  // Locate the authoritative mt5_notion_sync_wine.py on the Tablet to keep desktops in sync
+  const localPyCandidates = [
+    path.resolve(process.cwd(), "mt5_notion_sync_wine.py"),
+    path.resolve(process.cwd(), "..", "..", "mt5_notion_sync_wine.py"),
+    path.resolve(process.env.HOME || "", "trade-journal-dev", "mt5_notion_sync_wine.py"),
+    path.resolve(process.env.HOME || "", "trade-journal", "mt5_notion_sync_wine.py"),
+  ];
+  const localPyScript = localPyCandidates.find((p) => fs.existsSync(p)) || null;
+
   let remoteCmd = "";
-  let remoteDbPath = "";
+  let remoteDbCandidates: string[] = [];
 
   if (isWin) {
-    remoteCmd = `cd /d "%USERPROFILE%\\${repo}" && if exist sync-mt5.bat (call sync-mt5.bat --no-push) else (python mt5_notion_sync_wine.py --no-push)`;
-    remoteDbPath = `${sshHost}:trade-journal-dev/apps/web/data/journal.db`;
+    const cleanWinRepo = rawRepo.replace(/^~[\\/]+/, "");
+    // 1. Push latest mt5_notion_sync_wine.py to Windows so Windows never runs outdated Python code
+    if (localPyScript) {
+      await execShell(
+        `scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${localPyScript}" "${sshHost}:F:/trade-journal-dev/trade-journal/mt5_notion_sync_wine.py"`,
+        15_000
+      );
+    }
+    // 2. Wipe any stale/broken local staging journal.db on Windows (both F: and C:) before extracting live MT5 deals
+    const cleanWinDbCmd = `del /f /q "F:\\trade-journal-dev\\trade-journal\\apps\\web\\data\\journal.db*" "%USERPROFILE%\\trade-journal-dev\\data\\journal.db*" >nul 2>&1`;
+    remoteCmd = `${cleanWinDbCmd} & if exist "F:\\trade-journal-dev\\trade-journal\\sync-mt5.bat" (cd /d "F:\\trade-journal-dev\\trade-journal" && call sync-mt5.bat --no-push) else if exist "%USERPROFILE%\\${cleanWinRepo}\\sync-mt5.bat" (cd /d "%USERPROFILE%\\${cleanWinRepo}" && call sync-mt5.bat --no-push) else (cd /d "F:\\trade-journal-dev\\trade-journal" && python mt5_notion_sync_wine.py --no-push)`;
+    remoteDbCandidates = [
+      `${sshHost}:trade-journal-dev/data/journal.db`,
+      `${sshHost}:F:/trade-journal-dev/trade-journal/apps/web/data/journal.db`,
+      `${sshHost}:trade-journal-dev/apps/web/data/journal.db`,
+    ];
   } else {
-    remoteCmd = `cd "${repo}" && ./sync-mt5.sh --no-push`;
-    remoteDbPath = `${sshHost}:${repo}/apps/web/data/journal.db`;
+    if (localPyScript) {
+      await execShell(
+        `scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${localPyScript}" "${sshHost}:${rawRepo}/mt5_notion_sync_wine.py"`,
+        15_000
+      );
+    }
+    remoteCmd = `cd ${rawRepo} && rm -f apps/web/data/journal.db* data/journal.db* && ./sync-mt5.sh --no-push`;
+    remoteDbCandidates = [
+      `${sshHost}:${rawRepo}/apps/web/data/journal.db`,
+      `${sshHost}:${rawRepo}/data/journal.db`,
+    ];
   }
 
   const fullSshCmd = `ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 ${sshHost} "${remoteCmd}"`;
@@ -284,20 +316,25 @@ async function runRemoteSyncOnDevice(
     };
   }
 
-  const scpCmd = `scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${remoteDbPath}" "${stagingDbPath}"`;
-  let scpRes = await execShell(scpCmd, 30_000);
-
-  if (scpRes.code !== 0) {
-    const altRemoteDb = isWin
-      ? `${sshHost}:trade-journal-dev/data/journal.db`
-      : `${sshHost}:${repo}/data/journal.db`;
-    scpRes = await execShell(`scp -o BatchMode=yes "${altRemoteDb}" "${stagingDbPath}"`, 30_000);
-    if (scpRes.code !== 0) {
-      return {
-        ok: false,
-        log: `${execRes.stdout}\n[SCP Error] Failed to retrieve journal.db: ${scpRes.stderr}`,
-      };
+  let scpOk = false;
+  let lastScpErr = "";
+  for (const candidate of remoteDbCandidates) {
+    const scpRes = await execShell(
+      `scp -o BatchMode=yes -o StrictHostKeyChecking=accept-new "${candidate}" "${stagingDbPath}"`,
+      30_000
+    );
+    if (scpRes.code === 0 && fs.existsSync(stagingDbPath) && fs.statSync(stagingDbPath).size > 0) {
+      scpOk = true;
+      break;
     }
+    lastScpErr = scpRes.stderr || scpRes.stdout;
+  }
+
+  if (!scpOk) {
+    return {
+      ok: false,
+      log: `${execRes.stdout}\n[SCP Error] Failed to retrieve journal.db: ${lastScpErr}`,
+    };
   }
 
   return {
@@ -306,77 +343,140 @@ async function runRemoteSyncOnDevice(
   };
 }
 
+function createPreSyncBackup(targetDbPath: string) {
+  try {
+    if (!fs.existsSync(targetDbPath)) return;
+    const backupDir = path.join(path.dirname(targetDbPath), "backups");
+    fs.mkdirSync(backupDir, { recursive: true });
+    const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dest = path.join(backupDir, `journal.pre_sync_${stamp}.db`);
+    fs.copyFileSync(targetDbPath, dest);
+
+    const files = fs
+      .readdirSync(backupDir)
+      .filter((f) => f.startsWith("journal.pre_sync_") && f.endsWith(".db"))
+      .sort()
+      .reverse();
+    for (const oldFile of files.slice(5)) {
+      try {
+        fs.unlinkSync(path.join(backupDir, oldFile));
+      } catch {}
+    }
+  } catch {}
+}
+
 function mergeStagingDb(targetDbPath: string, stagingDbPath: string): { tradesMerged: number; accountsSynced: number } {
+  createPreSyncBackup(targetDbPath);
+
   const conn = new Database(targetDbPath);
   try {
     conn.exec("PRAGMA wal_checkpoint(PASSIVE);");
     conn.exec(`ATTACH DATABASE '${stagingDbPath}' AS stg;`);
 
-    // 1. Automatically create any new MT5 accounts (e.g. Stage 2 prop firm or new account login)
-    let accountsSynced = 0;
-    try {
-      const stgAccounts = conn.prepare("SELECT * FROM stg.accounts").all() as any[];
-      const importCols = (conn.prepare("PRAGMA main.table_info(accounts)").all() as Array<{ name: string }>).map(
+    const getSharedCols = (tableName: string): string[] => {
+      const mainCols = (conn.prepare(`PRAGMA main.table_info(${tableName})`).all() as Array<{ name: string }>).map(
         (c) => c.name
       );
-      for (const acc of stgAccounts) {
-        const exists = conn.prepare("SELECT id FROM main.accounts WHERE id = ?").get(acc.id);
-        if (!exists && importCols.length > 0) {
-          const validKeys = Object.keys(acc).filter((k) => importCols.includes(k));
-          const placeholders = validKeys.map(() => "?").join(", ");
-          conn
-            .prepare(`INSERT OR IGNORE INTO main.accounts (${validKeys.join(", ")}) VALUES (${placeholders})`)
-            .run(...validKeys.map((k) => acc[k]));
-          accountsSynced += 1;
-        }
+      const stgCols = new Set(
+        (conn.prepare(`PRAGMA stg.table_info(${tableName})`).all() as Array<{ name: string }>).map((c) => c.name)
+      );
+      return mainCols.filter((c) => stgCols.has(c));
+    };
+
+    // 1. Multi-Account MT5 Resolution:
+    //    - If stg has 'mt5-main' (Login #2853845) or a new 'mt5-<login>' account, auto-create it if not present!
+    //    - Never force a different MT5 account's trades into 'mt5-main'.
+    let accountsSynced = 0;
+    try {
+      const sharedAccCols = getSharedCols("accounts");
+      if (sharedAccCols.length > 0) {
+        const beforeAccs = (conn.prepare("SELECT COUNT(*) as c FROM main.accounts").get() as any)?.c || 0;
+        const colList = sharedAccCols.join(", ");
+        conn.exec(`
+          INSERT OR IGNORE INTO main.accounts (${colList})
+          SELECT ${colList} FROM stg.accounts;
+        `);
+        const afterAccs = (conn.prepare("SELECT COUNT(*) as c FROM main.accounts").get() as any)?.c || 0;
+        accountsSynced = Math.max(0, afterAccs - beforeAccs);
       }
     } catch {}
 
-    // 2. Upsert executions without wiping historical accounts
-    conn.exec(`
-      INSERT OR REPLACE INTO main.executions
-      SELECT * FROM stg.executions;
-    `);
-
-    const rows = conn
-      .prepare(`
-        SELECT key, opened_at, closed_at, avg_entry, avg_exit, quantity,
-               gross_pnl, net_pnl, execution_ids_json, exits_json,
-               partials_breakdown, realized_r, mae_r, mfe_r, capture_eff,
-               notion_page_id, notion_url
-        FROM stg.trades
-      `)
-      .all() as any[];
-
-    const upd = conn.prepare(`
-      UPDATE main.trades
-      SET
-        opened_at = ?, closed_at = ?, avg_entry = ?, avg_exit = ?, quantity = ?,
-        gross_pnl = ?, net_pnl = ?, execution_ids_json = ?, exits_json = ?,
-        partials_breakdown = ?, realized_r = COALESCE(?, realized_r),
-        mae_r = COALESCE(?, mae_r), mfe_r = COALESCE(?, mfe_r),
-        capture_eff = COALESCE(?, capture_eff), notion_page_id = COALESCE(?, notion_page_id),
-        notion_url = COALESCE(?, notion_url)
-      WHERE key = ?
-    `);
-
-    for (const r of rows) {
-      upd.run(
-        r.opened_at, r.closed_at, r.avg_entry, r.avg_exit, r.quantity,
-        r.gross_pnl, r.net_pnl, r.execution_ids_json, r.exits_json,
-        r.partials_breakdown, r.realized_r, r.mae_r, r.mfe_r,
-        r.capture_eff, r.notion_page_id, r.notion_url, r.key
-      );
+    // 2. Schema-agnostic upsert of executions (preserves each execution's account_id)
+    const sharedExecCols = getSharedCols("executions");
+    if (sharedExecCols.length > 0) {
+      const execColList = sharedExecCols.join(", ");
+      conn.exec(`
+        INSERT OR REPLACE INTO main.executions (${execColList})
+        SELECT ${execColList} FROM stg.executions;
+      `);
     }
 
-    conn.exec(`
-      INSERT OR IGNORE INTO main.trades
-      SELECT * FROM stg.trades;
-    `);
+    // 3. Schema-agnostic, account-scoped signature-deduplicated merge of trades
+    const sharedTradeCols = getSharedCols("trades");
+    const stgTrades = conn.prepare("SELECT * FROM stg.trades").all() as any[];
+
+    const mainTrades = conn
+      .prepare("SELECT key, account_id, symbol, direction, opened_at, closed_at, quantity, avg_entry, net_pnl FROM main.trades")
+      .all() as any[];
+
+    // Include account_id in signature so same-account duplicates are blocked while separate MT5 accounts stay independent
+    const makeSig = (r: any) =>
+      `${String(r.account_id || "mt5-main").trim()}|${String(r.symbol || "").trim()}|${String(r.direction || "").trim().toLowerCase()}|${String(r.opened_at || "").slice(0, 16)}|${Number(r.quantity || 0).toFixed(2)}|${Number(r.net_pnl || 0).toFixed(2)}`;
+
+    const existingByKey = new Set(mainTrades.map((t) => String(t.key)));
+    const existingKeyBySig = new Map<string, string>();
+    for (const t of mainTrades) {
+      existingKeyBySig.set(makeSig(t), String(t.key));
+    }
+
+    const telemetryUpdateCols = [
+      "account_id", "opened_at", "closed_at", "status", "avg_entry", "avg_exit", "quantity", "open_quantity",
+      "gross_pnl", "fees", "net_pnl", "execution_count", "execution_ids_json", "exits_json",
+      "duration_ms", "partials_breakdown", "exit_reason", "tickets", "risk_percent"
+    ].filter((c) => sharedTradeCols.includes(c));
+
+    const coalesceCols = ["realized_r", "planned_r", "mae_r", "mfe_r", "capture_eff", "notion_page_id", "notion_url"]
+      .filter((c) => sharedTradeCols.includes(c));
+
+    const tx = conn.transaction(() => {
+      for (const stgRow of stgTrades) {
+        const sig = makeSig(stgRow);
+        const targetKey = existingByKey.has(String(stgRow.key))
+          ? String(stgRow.key)
+          : existingKeyBySig.get(sig) || null;
+
+        if (targetKey) {
+          const setClauses: string[] = [];
+          const params: any[] = [];
+          for (const col of telemetryUpdateCols) {
+            setClauses.push(`${col} = ?`);
+            params.push(stgRow[col]);
+          }
+          for (const col of coalesceCols) {
+            setClauses.push(`${col} = COALESCE(?, ${col})`);
+            params.push(stgRow[col]);
+          }
+          if (setClauses.length > 0) {
+            params.push(targetKey);
+            conn.prepare(`UPDATE main.trades SET ${setClauses.join(", ")} WHERE key = ?`).run(...params);
+          }
+        } else {
+          const insertCols = sharedTradeCols.filter((c) => stgRow[c] !== undefined);
+          const placeholders = insertCols.map(() => "?").join(", ");
+          const values = insertCols.map((c) => stgRow[c]);
+          conn
+            .prepare(`INSERT OR IGNORE INTO main.trades (${insertCols.join(", ")}) VALUES (${placeholders})`)
+            .run(...values);
+          existingByKey.add(String(stgRow.key));
+          existingKeyBySig.set(sig, String(stgRow.key));
+        }
+      }
+    });
+    tx();
 
     conn.exec("DETACH DATABASE stg;");
     conn.exec("PRAGMA wal_checkpoint(TRUNCATE);");
-    return { tradesMerged: rows.length, accountsSynced };
+    return { tradesMerged: stgTrades.length, accountsSynced };
   } finally {
     conn.close();
   }
