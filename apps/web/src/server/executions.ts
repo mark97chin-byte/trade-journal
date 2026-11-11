@@ -226,7 +226,9 @@ export const deleteExecutionsForTrades = (accountId: string, executionIds: strin
   db.delete(executions)
     .where(and(eq(executions.accountId, accountId), inArray(executions.id, executionIds)))
     .run();
-  rebuildAccount(accountId);
+  if (!accountId.toLowerCase().startsWith("mt5")) {
+    rebuildAccount(accountId);
+  }
 };
 
 export const listExecutions = (accountId: string, ids?: string[]) => {

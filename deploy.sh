@@ -12,12 +12,17 @@ pnpm build
 
 echo ""
 echo "========================================================"
-echo "[2/4] Syncing build artifacts to tablet..."
+echo "[2/4] Syncing build artifacts & MT5 sync scripts to tablet..."
 echo "========================================================"
 rsync -avz --delete \
   --exclude="cache/" \
   -e "ssh -p $PORT" \
   apps/web/.next/ "$TABLET_USER@$TABLET_IP:~/trade-journal/apps/web/.next/"
+
+# Also sync the latest MT5 extractor script so the Tablet can auto-update Windows/Linux nodes
+rsync -avz \
+  -e "ssh -p $PORT" \
+  mt5_notion_sync_wine.py sync-mt5.sh "$TABLET_USER@$TABLET_IP:~/trade-journal/"
 
 echo ""
 echo "========================================================"

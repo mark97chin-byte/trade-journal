@@ -14,6 +14,22 @@ export const rebuildAccount = (accountId: string): void => {
   const account = db.select().from(accounts).where(eq(accounts.id, accountId)).get();
   if (!account) return;
 
+  // Never run legacy CSV FIFO round-trip reconstruction on MT5 accounts;
+  // MT5 trades are grouped by native position_id and self-healed by the MT5 sync engine.
+  if (
+    accountId.toLowerCase().startsWith("mt5") ||
+    (account.broker || "").toLowerCase().includes("mt5") ||
+    (account.name || "").toLowerCase().includes("mt5")
+  ) {
+    return;
+  }
+  try {
+    const hasMt5Trades = (db as any).$client
+      .prepare("SELECT 1 FROM trades WHERE account_id = ? AND (key LIKE '%.raw_%' OR partials_breakdown IS NOT NULL) LIMIT 1")
+      .get(accountId);
+    if (hasMt5Trades) return;
+  } catch {}
+
   const rows = db.select().from(executions).where(eq(executions.accountId, accountId)).all();
   const executionInputs: Execution[] = rows.map((row) => ({
     id: row.id,

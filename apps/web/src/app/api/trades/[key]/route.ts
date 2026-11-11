@@ -270,6 +270,34 @@ export const DELETE = handler(async (_request: Request, { params }: Params) => {
   const { key } = await params;
   const row = getTradeByKey(key);
   if (!row) return bad("Trade not found", 404);
-  deleteExecutionsForTrades(row.accountId, JSON.parse(row.executionIdsJson) as string[]);
+
+  const rawClient = (db as any).$client;
+  const execIds: string[] = (() => {
+    try {
+      const parsed = JSON.parse(row.executionIdsJson || "[]");
+      return Array.isArray(parsed) ? parsed.map(String) : [];
+    } catch {
+      return [];
+    }
+  })();
+
+  const tx = rawClient.transaction(() => {
+    for (const eid of execIds) {
+      rawClient.prepare("DELETE FROM executions WHERE account_id = ? AND id = ?").run(row.accountId, eid);
+    }
+    rawClient.prepare("DELETE FROM executions WHERE account_id = ? AND id LIKE ?").run(row.accountId, `exec_${key}_%`);
+    try {
+      rawClient.prepare("DELETE FROM trade_rule_checks WHERE trade_key = ?").run(key);
+    } catch {}
+    try {
+      rawClient.prepare("DELETE FROM trade_excursions WHERE trade_key = ?").run(key);
+    } catch {}
+    try {
+      rawClient.prepare("DELETE FROM attachments WHERE owner_id = ?").run(key);
+    } catch {}
+    rawClient.prepare("DELETE FROM trades WHERE key = ?").run(key);
+  });
+  tx();
+
   return ok({ deleted: true });
 });

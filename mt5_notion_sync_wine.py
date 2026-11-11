@@ -549,91 +549,155 @@ def wipe_notion_trades_database():
 
 
 
-def resolve_or_create_mt5_account(conn, acct_login, acct_server, acct_currency, acct_balance, sample_cluster_ids):
-    """
-    Safely maps the logged-in MT5 account to SQLite `accounts`:
-    - Preserves 'mt5-main' ("MetaTrader 5 Account") for your existing account so zero current trades are affected.
-    - Automatically creates a new account row `mt5-<login>` when you switch to a new MT5 login (e.g. Stage 2 prop firm).
-    """
+def ensure_core_sync_tables(conn):
+    """Ensure accounts, trades, and executions tables exist on a fresh staging DB before any queries run."""
     cur = conn.cursor()
     cur.execute("""
-        CREATE TABLE IF NOT EXISTS journal_kv_settings (
-            key TEXT PRIMARY KEY,
-            value_json TEXT NOT NULL
-        )
+        CREATE TABLE IF NOT EXISTS accounts (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            broker TEXT NOT NULL DEFAULT '',
+            kind TEXT NOT NULL DEFAULT 'sync',
+            currency TEXT NOT NULL DEFAULT 'USD',
+            initial_balance REAL NOT NULL DEFAULT 100000,
+            profit_calc_method TEXT NOT NULL DEFAULT 'fifo',
+            credentials_enc TEXT,
+            auto_sync INTEGER NOT NULL DEFAULT 0,
+            last_sync_at TEXT,
+            ibkr_sync_time_zone TEXT,
+            snapshot_json TEXT,
+            archived_at TEXT,
+            created_at TEXT NOT NULL
+        );
     """)
-    row = cur.execute("SELECT value_json FROM journal_kv_settings WHERE key = 'mt5_login_account_map'").fetchone()
-    login_map = {}
-    if row and row[0]:
-        try:
-            login_map = json.loads(row[0])
-        except Exception:
-            login_map = {}
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS executions (
+            id TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            side TEXT NOT NULL,
+            quantity REAL NOT NULL,
+            price REAL NOT NULL,
+            fee REAL NOT NULL DEFAULT 0,
+            executed_at TEXT NOT NULL,
+            asset_class TEXT,
+            source TEXT NOT NULL DEFAULT 'sync',
+            import_metadata_json TEXT,
+            content_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        );
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS trades (
+            key TEXT PRIMARY KEY,
+            account_id TEXT NOT NULL,
+            symbol TEXT NOT NULL,
+            asset_class TEXT,
+            direction TEXT NOT NULL,
+            status TEXT NOT NULL,
+            opened_at TEXT NOT NULL,
+            closed_at TEXT,
+            quantity REAL NOT NULL,
+            open_quantity REAL NOT NULL DEFAULT 0,
+            avg_entry REAL NOT NULL,
+            avg_exit REAL,
+            gross_pnl REAL NOT NULL,
+            fees REAL NOT NULL DEFAULT 0,
+            net_pnl REAL NOT NULL,
+            execution_count INTEGER NOT NULL DEFAULT 2,
+            execution_ids_json TEXT NOT NULL DEFAULT '[]',
+            exits_json TEXT NOT NULL DEFAULT '[]',
+            duration_ms INTEGER,
+            notes TEXT,
+            tags_json TEXT,
+            mistakes_json TEXT,
+            playbook_id TEXT,
+            rating INTEGER,
+            stop_loss REAL,
+            profit_target REAL,
+            reviewed_at TEXT,
+            notion_page_id TEXT,
+            notion_url TEXT,
+            partials_breakdown TEXT,
+            realized_r REAL,
+            planned_r REAL,
+            mae_r REAL,
+            mfe_r REAL,
+            capture_eff REAL,
+            risk_percent REAL,
+            exit_reason TEXT,
+            tickets TEXT,
+            review_notes TEXT DEFAULT ''
+        );
+    """)
+    conn.commit()
 
-    login_str = str(acct_login or "").strip()
-    if not login_str or login_str == "0":
-        return "mt5-main"
 
-    if login_str in login_map:
-        mapped_id = login_map[login_str]
-        return mapped_id
-
-    # Check if any sample trade from this MT5 login already exists under 'mt5-main'
-    existing_main_count = cur.execute("SELECT COUNT(*) FROM trades WHERE account_id = 'mt5-main'").fetchone()[0]
-    overlap_with_main = False
-    if sample_cluster_ids:
-        placeholders = ",".join("?" for _ in sample_cluster_ids[:25])
-        overlap_rows = cur.execute(
-            f"SELECT COUNT(*) FROM trades WHERE account_id = 'mt5-main' AND key IN ({placeholders})",
-            sample_cluster_ids[:25],
-        ).fetchone()[0]
-        overlap_with_main = overlap_rows > 0
-
-    if overlap_with_main or (existing_main_count == 0 and not login_map):
-        login_map[login_str] = "mt5-main"
-        cur.execute(
-            "INSERT INTO journal_kv_settings (key, value_json) VALUES ('mt5_login_account_map', ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
-            (json.dumps(login_map),),
-        )
-        conn.commit()
-        print(f"[MT5 Account] Mapped MT5 Login #{login_str} ({acct_server}) -> existing 'mt5-main'")
-        return "mt5-main"
-
-    # Otherwise, this is a brand-new MT5 account (e.g. Prop Firm Stage 2 or new evaluation)!
-    new_acct_id = f"mt5-{login_str}"
-    acct_name = f"MT5 #{login_str}" + (f" ({acct_server})" if acct_server else "")
+def resolve_or_create_mt5_account(conn, mt5_login, mt5_server, mt5_currency="USD", mt5_balance=100000.0, sample_cluster_ids=None):
+    """
+    Deterministically map the active MT5 login to a journal account_id:
+    - Login #2853845 (or existing mt5-main trades) -> 'mt5-main'
+    - Any other MT5 login #<N> -> 'mt5-<N>' (auto-created in accounts table)
+    """
+    ensure_core_sync_tables(conn)
+    cur = conn.cursor()
     now_iso = datetime.now(timezone.utc).isoformat()
+    login_str = str(mt5_login or "").strip()
+    server_str = str(mt5_server or "MT5").strip()
 
-    # Inspect accounts table columns dynamically so insert matches schema
-    acct_cols = [r[1] for r in cur.execute("PRAGMA table_info(accounts)").fetchall()]
-    exists = cur.execute("SELECT id FROM accounts WHERE id = ?", (new_acct_id,)).fetchone()
-    if not exists and acct_cols:
-        insert_map = {
-            "id": new_acct_id,
-            "name": acct_name,
-            "broker": "MT5",
-            "kind": "manual",
-            "currency": acct_currency or "USD",
-            "initial_balance": float(acct_balance or 100000.0),
-            "profit_calculation": "FIFO",
-            "created_at": now_iso,
-            "updated_at": now_iso,
-        }
-        valid_k = [k for k in insert_map.keys() if k in acct_cols]
-        ph = ",".join("?" for _ in valid_k)
-        cur.execute(
-            f"INSERT OR IGNORE INTO accounts ({','.join(valid_k)}) VALUES ({ph})",
-            [insert_map[k] for k in valid_k],
-        )
-        print(f"[MT5 Account] Auto-created NEW Account '{acct_name}' (id={new_acct_id}, balance={acct_balance})!")
+    # 1. Check if an account for this exact login already exists by ID or metadata
+    deterministic_id = "mt5-main" if login_str in ("2853845", "0", "") else f"mt5-{login_str}"
 
-    login_map[login_str] = new_acct_id
+    rows = cur.execute("SELECT id, name, broker, snapshot_json FROM accounts").fetchall()
+    for r_id, r_name, r_broker, r_snap in rows:
+        if r_id == deterministic_id:
+            print(f"[MT5 Account] Mapped MT5 Login #{login_str} ({server_str}) -> existing '{r_id}'")
+            return r_id
+        if login_str and login_str != "0" and (login_str in str(r_id) or login_str in str(r_name) or login_str in str(r_snap or "")):
+            print(f"[MT5 Account] Mapped MT5 Login #{login_str} ({server_str}) -> matched '{r_id}'")
+            return r_id
+
+    # 2. If sample_cluster_ids match existing trades in any account (e.g. mt5-main), reuse that account_id
+    if sample_cluster_ids:
+        try:
+            ph = ",".join(["?"] * len(sample_cluster_ids[:20]))
+            found = cur.execute(
+                f"SELECT account_id FROM trades WHERE key IN ({ph}) LIMIT 1",
+                sample_cluster_ids[:20]
+            ).fetchone()
+            if found and found[0]:
+                matched_acc = found[0]
+                print(f"[MT5 Account] Mapped MT5 Login #{login_str} ({server_str}) -> trade-matched '{matched_acc}'")
+                return matched_acc
+        except sqlite3.Error:
+            pass
+
+    # 3. Create or upsert the account row for deterministic_id
+    acc_name = "MT5 Main Account" if deterministic_id == "mt5-main" else f"MT5 #{login_str} ({server_str})"
+    snap_json = json.dumps({"mt5_login": login_str, "mt5_server": server_str, "balance": mt5_balance})
+
+    # Round initial balance to nearest sensible prop tier if close (e.g. 100k, 50k, 200k)
+    init_bal = 100000.0
+    if mt5_balance and mt5_balance > 0:
+        for tier in (5000, 10000, 25000, 50000, 100000, 200000, 300000, 400000):
+            if abs(mt5_balance - tier) / tier < 0.25:
+                init_bal = float(tier)
+                break
+        else:
+            init_bal = round(float(mt5_balance), 2)
+
     cur.execute(
-        "INSERT INTO journal_kv_settings (key, value_json) VALUES ('mt5_login_account_map', ?) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json",
-        (json.dumps(login_map),),
+        """
+        INSERT OR IGNORE INTO accounts (
+            id, name, broker, kind, currency, initial_balance,
+            profit_calc_method, auto_sync, last_sync_at, snapshot_json, created_at
+        ) VALUES (?, ?, ?, 'sync', ?, ?, 'fifo', 1, ?, ?, ?)
+        """,
+        (deterministic_id, acc_name, server_str or "MT5", mt5_currency or "USD", init_bal, now_iso, snap_json, now_iso),
     )
     conn.commit()
-    return new_acct_id
+    print(f"[MT5 Account] Mapped MT5 Login #{login_str} ({server_str}) -> '{deterministic_id}' ({acc_name})")
+    return deterministic_id
 
 
 def save_to_sqlite(conn, trade, notion_page_id=None, notion_url=None, account_id="mt5-main"):
@@ -1110,11 +1174,55 @@ if __name__ == "__main__":
         print(f"[History Range] Earliest trade: {sorted_by_date[0]['open_time']} | Latest: {sorted_by_date[-1]['open_time']}")
 
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    db_conn = sqlite3.connect(DB_PATH)
-    _sample_cids = [t["cluster_id"] for t in trade_ideas]
-    active_account_id = resolve_or_create_mt5_account(
-        db_conn, _mt5_login, _mt5_server, _mt5_currency, _mt5_balance, _sample_cids
-    )
+
+    # Always remove leftover -wal / -shm files on the desktop staging DB before connecting
+    for suffix in ("-wal", "-shm"):
+        wal_file = DB_PATH + suffix
+        if os.path.exists(wal_file):
+            try:
+                os.remove(wal_file)
+            except OSError:
+                pass
+
+    def open_clean_staging_db():
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute("SELECT name FROM sqlite_master LIMIT 1;").fetchall()
+        return conn
+
+    try:
+        db_conn = open_clean_staging_db()
+        _sample_cids = [t["cluster_id"] for t in trade_ideas]
+        active_account_id = resolve_or_create_mt5_account(
+            db_conn, _mt5_login, _mt5_server, _mt5_currency, _mt5_balance, _sample_cids
+        )
+    except sqlite3.DatabaseError as db_err:
+        print(f"[Staging DB] Resetting corrupted local desktop staging file ({db_err})...")
+        try:
+            db_conn.close()
+        except Exception:
+            pass
+        for suffix in ("", "-wal", "-shm"):
+            f_path = DB_PATH + suffix
+            if os.path.exists(f_path):
+                try:
+                    os.remove(f_path)
+                except OSError:
+                    pass
+        db_conn = sqlite3.connect(DB_PATH)
+        _sample_cids = [t["cluster_id"] for t in trade_ideas]
+        active_account_id = resolve_or_create_mt5_account(
+            db_conn, _mt5_login, _mt5_server, _mt5_currency, _mt5_balance, _sample_cids
+        )
+
+    # Cache any known Notion links in local staging DB before resetting the staging tables
+    local_notion_cache = {}
+    if not do_wipe:
+        try:
+            for r in db_conn.execute("SELECT key, notion_page_id, notion_url FROM trades WHERE notion_page_id IS NOT NULL;").fetchall():
+                if r[0] and r[1]:
+                    local_notion_cache[r[0]] = {"id": r[1], "url": r[2]}
+        except Exception:
+            pass
 
     if do_wipe:
         print("[Wipe] Clearing local SQLite trades and executions tables...")
@@ -1122,9 +1230,21 @@ if __name__ == "__main__":
         db_conn.execute("DELETE FROM trades;")
         db_conn.commit()
         wipe_notion_trades_database()
+    else:
+        # Stateless staging: clear old desktop staging rows so only the current lookback window
+        # is staged and sent to the Tablet (the Tablet preserves all older historical trades)
+        try:
+            db_conn.execute("DELETE FROM executions;")
+            db_conn.execute("DELETE FROM trades;")
+            db_conn.commit()
+        except Exception:
+            pass
 
     schema = get_database_properties(NOTION_TRADES_DB_ID)
     existing = {} if do_wipe else get_existing_cluster_ids()
+    for k, v in local_notion_cache.items():
+        if k not in existing:
+            existing[k] = v
 
     synced_notion_count = 0
     try:
