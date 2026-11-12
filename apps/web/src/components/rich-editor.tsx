@@ -997,6 +997,41 @@ export function RichEditor({
   const [fontFamily, setFontFamily] = useState<string>("Arial");
   const [fontSize, setFontSize] = useState<number>(15);
   const [fullscreen, setFullscreen] = useState<boolean>(false);
+  const [stickyTopPx, setStickyTopPx] = useState<number>(0);
+
+  useEffect(() => {
+    if (fullscreen || readOnly) {
+      setStickyTopPx(0);
+      return;
+    }
+    const updateOffset = () => {
+      const ed = contentRef.current;
+      if (!ed) return;
+      // If RichEditor is inside a nested scrollable container, stick to top: 0 of that container
+      let parent = ed.parentElement;
+      while (parent && parent !== document.body && parent !== document.documentElement) {
+        const oy = window.getComputedStyle(parent).overflowY;
+        if ((oy === "auto" || oy === "scroll") && parent.scrollHeight > parent.clientHeight) {
+          setStickyTopPx(0);
+          return;
+        }
+        parent = parent.parentElement;
+      }
+      // Otherwise, if the page has a sticky FilterBar at the top, dock flush below it
+      const filterBar = document.querySelector<HTMLElement>(".journal-filter-bar");
+      if (filterBar && filterBar.offsetParent !== null) {
+        const pos = window.getComputedStyle(filterBar).position;
+        if (pos === "sticky" || pos === "fixed") {
+          setStickyTopPx(Math.round(filterBar.getBoundingClientRect().height));
+          return;
+        }
+      }
+      setStickyTopPx(0);
+    };
+    updateOffset();
+    window.addEventListener("resize", updateOffset);
+    return () => window.removeEventListener("resize", updateOffset);
+  }, [fullscreen, readOnly]);
   const [isMounted, setIsMounted] = useState<boolean>(false);
 
   useEffect(() => {
@@ -2856,7 +2891,7 @@ export function RichEditor({
       >
         {/* TOP TOOLBAR (STICKY SO IT ALWAYS FOLLOWS SCROLL) */}
         {!readOnly && (
-          <div className={`${fullscreen ? "sticky top-0 z-40" : "sticky top-14 z-30"} shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c]/95 backdrop-blur-md px-2.5 py-1.5 text-xs rounded-t-xl`}>
+          <div style={{ top: fullscreen ? 0 : `${stickyTopPx}px` }} className={`sticky ${fullscreen ? "z-40" : "z-30"} shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c] px-2.5 py-1.5 text-xs rounded-t-xl shadow-md`}>
             <div className="flex flex-wrap items-center gap-1">
               {/* 1. Block / Heading / Toggle Heading Selector */}
               <div className="relative">
