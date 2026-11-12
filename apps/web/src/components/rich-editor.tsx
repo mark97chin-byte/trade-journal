@@ -2856,7 +2856,7 @@ export function RichEditor({
       >
         {/* TOP TOOLBAR (STICKY SO IT ALWAYS FOLLOWS SCROLL) */}
         {!readOnly && (
-          <div className="sticky top-0 z-40 shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c]/95 backdrop-blur-md px-2.5 py-1.5 text-xs rounded-t-xl">
+          <div className={`${fullscreen ? "sticky top-0 z-40" : "sticky top-14 z-30"} shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c]/95 backdrop-blur-md px-2.5 py-1.5 text-xs rounded-t-xl`}>
             <div className="flex flex-wrap items-center gap-1">
               {/* 1. Block / Heading / Toggle Heading Selector */}
               <div className="relative">

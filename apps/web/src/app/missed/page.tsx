@@ -114,7 +114,7 @@ function MissedTradesDirectory() {
   }, [urlIdParam, router]);
 
   const [calendarMonth, setCalendarMonth] = useState<string>(() =>
-    new Date().toISOString().slice(0, 7)
+    utcIsoToNyInput(new Date().toISOString()).slice(0, 7)
   );
   const [selectedDateFilter, setSelectedDateFilter] = useState<string | null>(null);
   const [search, setSearch] = useState("");
@@ -124,7 +124,7 @@ function MissedTradesDirectory() {
   const [directionFilter, setDirectionFilter] = useState<string>("all");
   const [newSymbolInput, setNewSymbolInput] = useState("NAS100");
   const [newDateInput, setNewDateInput] = useState(() =>
-    new Date().toISOString().slice(0, 10)
+    utcIsoToNyInput(new Date().toISOString()).slice(0, 10)
   );
   const [creating, setCreating] = useState(false);
 

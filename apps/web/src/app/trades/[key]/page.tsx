@@ -593,7 +593,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
         })()}
 
         {/* 2. DYNAMIC RESIZABLE 2-COLUMN LAYOUT */}
-        <div className="flex flex-col lg:flex-row gap-0 relative items-stretch min-h-[600px]">
+        <div className="flex flex-col lg:flex-row gap-0 relative z-0 items-stretch min-h-[600px]">
           {/* LEFT COLUMN: JOURNAL (RICH EDITOR, RULES, TAGS, AI) */}
           {!leftCollapsed && (
             <div
@@ -601,7 +601,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                 width: rightCollapsed ? "100%" : `${leftWidth}%`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pr-0 lg:pr-3 min-w-[280px]"
+              className="space-y-4 pr-0 lg:pr-3 min-w-[280px] relative z-0"
             >
               <AnnotationsCard key={trade.key} trade={trade} onPatch={patch} />
               <TradePeriodCompanion openedAt={trade.openedAt} />
@@ -661,7 +661,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                 width: leftCollapsed ? "100%" : `calc(${100 - leftWidth}% - 8px)`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pl-0 lg:pl-3 min-w-[340px]"
+              className="space-y-4 pl-0 lg:pl-3 min-w-[340px] relative z-0"
             >
               <TradeMarketData trade={trade} executions={executions} onResultChange={setMarketResult} />
 
@@ -964,6 +964,9 @@ function AnnotationsCard({
   onPatch: (body: Record<string, unknown>) => Promise<void>;
 }) {
   const [activeNoteTab, setActiveNoteTab] = useState<"setup" | "review">("setup");
+  const activeNoteTabRef = useRef<"setup" | "review">(activeNoteTab);
+  activeNoteTabRef.current = activeNoteTab;
+
   const [notes, setNotes] = useState(() => cleanLegacyTradeNotes(trade.notes));
   const [reviewNotes, setReviewNotes] = useState(
     () => trade.review_notes || trade.reviewNotes || ""
@@ -979,8 +982,14 @@ function AnnotationsCard({
     (trade as any).notionUrl || (trade as any).notion_url || null
   );
   const [syncMsg, setSyncMsg] = useState<string | null>(null);
+  const [statusTone, setStatusTone] = useState<"saved" | "unsaved" | "working" | "notion" | "error">("saved");
   const [isPulling, setIsPulling] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [isManualSaving, setIsManualSaving] = useState(false);
+  const [saveBtnFlash, setSaveBtnFlash] = useState(false);
+  const [notionBtnFlash, setNotionBtnFlash] = useState(false);
+  const [pullBtnFlash, setPullBtnFlash] = useState(false);
+
   const [matchingDrafts, setMatchingDrafts] = useState<Array<any>>([]);
   const [sameDayTradeCount, setSameDayTradeCount] = useState<number>(1);
   const [dismissedDraftBanner, setDismissedDraftBanner] = useState(false);
@@ -1006,10 +1015,121 @@ function AnnotationsCard({
     "/api/playbooks"
   );
   const {
-    save: debounced,
+    save: rawDebounced,
     status: saveStatus,
-    flush,
-  } = useAutosave(`/api/trades/${encodeURIComponent(trade.key)}`, "PATCH", () => void onPatch({}));
+    flush: rawFlush,
+  } = useAutosave(`/api/trades/${encodeURIComponent(trade.key)}`, "PATCH");
+
+  const pendingPatchRef = useRef<Record<string, unknown>>({});
+  const isDirtyPatchRef = useRef<boolean>(false);
+  const savedNotesRef = useRef<string>(notes);
+  const savedReviewNotesRef = useRef<string>(reviewNotes);
+
+  const debounced = (patchObj: Record<string, unknown>) => {
+    pendingPatchRef.current = { ...pendingPatchRef.current, ...patchObj };
+    isDirtyPatchRef.current = true;
+    setStatusTone("unsaved");
+    setSyncMsg("Unsaved changes...");
+    rawDebounced(patchObj);
+  };
+
+  const captureLiveEditorIntoPatch = (): Record<string, unknown> => {
+    const liveHtml = noteEditor.current?.getHtml?.();
+    const extra: Record<string, unknown> = {};
+    if (typeof liveHtml === "string") {
+      if (activeNoteTabRef.current === "review") {
+        if (liveHtml !== savedReviewNotesRef.current) {
+          setReviewNotes(liveHtml);
+          extra.reviewNotes = liveHtml;
+        }
+      } else {
+        if (liveHtml !== savedNotesRef.current) {
+          setNotes(liveHtml);
+          extra.notes = liveHtml;
+        }
+      }
+    }
+    return extra;
+  };
+
+  const flush = async (manualClick = false) => {
+    const liveExtra = captureLiveEditorIntoPatch();
+    const combined = { ...pendingPatchRef.current, ...liveExtra };
+    isDirtyPatchRef.current = false;
+    pendingPatchRef.current = {};
+
+    if (manualClick) setIsManualSaving(true);
+    setStatusTone("working");
+    setSyncMsg("Saving...");
+
+    try {
+      if (Object.keys(combined).length > 0) {
+        await fetch(`/api/trades/${encodeURIComponent(trade.key)}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(combined),
+        });
+        if (typeof combined.notes === "string") savedNotesRef.current = combined.notes;
+        if (typeof combined.reviewNotes === "string") savedReviewNotesRef.current = combined.reviewNotes;
+      }
+      await rawFlush();
+      setStatusTone("saved");
+      setSyncMsg("Saved");
+      if (manualClick) {
+        setSaveBtnFlash(true);
+        setTimeout(() => setSaveBtnFlash(false), 2200);
+      }
+    } catch {
+      setStatusTone("error");
+      setSyncMsg("Save failed");
+    } finally {
+      if (manualClick) setIsManualSaving(false);
+    }
+  };
+
+  useEffect(() => {
+    if (saveStatus === "Saving…") {
+      setStatusTone("working");
+      setSyncMsg("Saving...");
+    } else if (saveStatus === "Saved") {
+      isDirtyPatchRef.current = false;
+      pendingPatchRef.current = {};
+      savedNotesRef.current = notes;
+      savedReviewNotesRef.current = reviewNotes;
+      setStatusTone((prev) => (prev === "notion" ? "notion" : "saved"));
+      setSyncMsg((prev) => (prev === "Synced to Notion" || prev === "Pulled from Notion" ? prev : "Saved"));
+    } else if (saveStatus && /error|fail/i.test(saveStatus)) {
+      setStatusTone("error");
+      setSyncMsg(saveStatus);
+    }
+  }, [saveStatus, notes, reviewNotes]);
+
+  // Guaranteed save flush when flipping to another page or closing tab (captures live RichEditor DOM!)
+  useEffect(() => {
+    const flushOnLeave = () => {
+      const liveExtra = captureLiveEditorIntoPatch();
+      const bodyToFlush = { ...pendingPatchRef.current, ...liveExtra };
+      if (isDirtyPatchRef.current || Object.keys(bodyToFlush).length > 0) {
+        isDirtyPatchRef.current = false;
+        pendingPatchRef.current = {};
+        try {
+          fetch(`/api/trades/${encodeURIComponent(trade.key)}`, {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(bodyToFlush),
+            keepalive: true,
+          }).catch(() => {});
+        } catch {}
+      }
+    };
+    window.addEventListener("pagehide", flushOnLeave);
+    window.addEventListener("beforeunload", flushOnLeave);
+    return () => {
+      window.removeEventListener("pagehide", flushOnLeave);
+      window.removeEventListener("beforeunload", flushOnLeave);
+      flushOnLeave();
+    };
+  }, [trade.key]);
 
   const { data: configData } = useApi<{
     config?: {
@@ -1025,7 +1145,6 @@ function AnnotationsCard({
 
     let didPopulate = false;
 
-    // 1. Auto-populate Setup & Execution Notes if empty
     if (!notes.trim() && defaultTemplates.trade_setup) {
       const tpl = templates.find((t) => t.id === defaultTemplates.trade_setup);
       if (tpl?.content && tpl.content.trim()) {
@@ -1035,7 +1154,6 @@ function AnnotationsCard({
       }
     }
 
-    // 2. Auto-populate Post-Trade Review if empty
     if (!reviewNotes.trim() && defaultTemplates.trade_review) {
       const tpl = templates.find((t) => t.id === defaultTemplates.trade_review);
       if (tpl?.content && tpl.content.trim()) {
@@ -1048,24 +1166,36 @@ function AnnotationsCard({
     if (didPopulate) {
       autoPopulatedRef.current = true;
     }
-  }, [configData, notes, reviewNotes, debounced]);
+  }, [configData, notes, reviewNotes]);
 
   // Support Ctrl+S / Cmd+S keyboard shortcut to save immediately
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
         e.preventDefault();
-        void flush();
-        setSyncMsg("Saved");
-        setTimeout(() => setSyncMsg(null), 2000);
+        void flush(true);
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [flush]);
+  });
+
+  const handlePatchWithFeedback = async (body: Record<string, unknown>) => {
+    setStatusTone("working");
+    setSyncMsg("Saving...");
+    try {
+      await onPatch(body);
+      setStatusTone("saved");
+      setSyncMsg("Saved");
+    } catch {
+      setStatusTone("error");
+      setSyncMsg("Save failed");
+    }
+  };
 
   const handlePullFromNotion = async () => {
     setIsPulling(true);
+    setStatusTone("working");
     setSyncMsg("Pulling from Notion...");
     try {
       const res = await fetch(`/api/trades/${encodeURIComponent(trade.key)}/notion`);
@@ -1079,27 +1209,42 @@ function AnnotationsCard({
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
       if (typeof data.notes === "string") {
         setNotes(data.notes);
+        savedNotesRef.current = data.notes;
       }
       if (data.notionUrl) setNotionUrl(data.notionUrl);
+      setStatusTone("notion");
       setSyncMsg("Pulled from Notion");
+      setPullBtnFlash(true);
+      setTimeout(() => {
+        setPullBtnFlash(false);
+        setStatusTone("saved");
+        setSyncMsg("Saved");
+      }, 3200);
       void onPatch({});
     } catch (err: any) {
+      setStatusTone("error");
       setSyncMsg(err?.message || "Error pulling from Notion");
     } finally {
       setIsPulling(false);
-      setTimeout(() => setSyncMsg(null), 3500);
     }
   };
 
-  const handleSyncToNotion = async () => {
+  const handleSyncToNotion = async (): Promise<string | null> => {
     setIsSyncing(true);
+    setStatusTone("working");
     setSyncMsg("Syncing to Notion...");
     try {
-      await flush();
+      const liveExtra = captureLiveEditorIntoPatch();
+      const latestNotes = typeof liveExtra.notes === "string" ? liveExtra.notes : notes;
+      const latestRev = typeof liveExtra.reviewNotes === "string" ? liveExtra.reviewNotes : reviewNotes;
+      await flush(false);
+      setStatusTone("working");
+      setSyncMsg("Syncing to Notion...");
+
       const res = await fetch(`/api/trades/${encodeURIComponent(trade.key)}/notion`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ notes, reviewNotes }),
+        body: JSON.stringify({ notes: latestNotes, reviewNotes: latestRev }),
       });
       const rawText = await res.text();
       let data: any = {};
@@ -1109,13 +1254,41 @@ function AnnotationsCard({
         throw new Error(`Server returned status ${res.status}: ${rawText.slice(0, 100)}`);
       }
       if (!res.ok) throw new Error(data.error || `Error ${res.status}`);
+      const resolvedUrl = data.notionUrl || notionUrl || null;
       if (data.notionUrl) setNotionUrl(data.notionUrl);
+      setStatusTone("notion");
       setSyncMsg("Synced to Notion");
+      setNotionBtnFlash(true);
+      setTimeout(() => {
+        setNotionBtnFlash(false);
+        setStatusTone("saved");
+        setSyncMsg("Saved");
+      }, 3200);
+      return resolvedUrl;
     } catch (err: any) {
+      setStatusTone("error");
       setSyncMsg(err?.message || "Error syncing to Notion");
+      return null;
     } finally {
       setIsSyncing(false);
-      setTimeout(() => setSyncMsg(null), 3500);
+    }
+  };
+
+  const handleOpenInNotion = async () => {
+    if (notionUrl) {
+      if (isDirtyPatchRef.current) {
+        void flush(false);
+      }
+      window.open(notionUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    const newWin = window.open("about:blank", "_blank");
+    const createdUrl = await handleSyncToNotion();
+    if (createdUrl) {
+      if (newWin) newWin.location.href = createdUrl;
+      else window.open(createdUrl, "_blank", "noopener,noreferrer");
+    } else if (newWin) {
+      newWin.close();
     }
   };
 
@@ -1125,30 +1298,58 @@ function AnnotationsCard({
       .map((item) => item.trim())
       .filter(Boolean);
 
+  const displayStatusText = syncMsg || saveStatus || "Saved";
+
   return (
     <Card className="border-border/70">
       <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
         <CardTitle className="text-sm font-bold">Journal this trade</CardTitle>
 
-        {/* Unified Notion + Save Action Bar (Matches Daily Journal) */}
+        {/* Unified Notion + Save Action Bar (Matches Daily Journal & Missed Trades) */}
         <div className="flex flex-wrap items-center gap-1.5">
-          {(syncMsg || saveStatus) && (
-            <span className="mr-1 text-[11px] font-medium text-muted-foreground" role="status">
-              {syncMsg || saveStatus}
-            </span>
-          )}
+          <span
+            role="status"
+            className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold transition-all ${
+              statusTone === "error"
+                ? "border-rose-500/40 bg-rose-500/15 text-rose-400"
+                : statusTone === "unsaved"
+                ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
+                : statusTone === "working"
+                ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
+                : statusTone === "notion"
+                ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300 shadow-2xs"
+                : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+            }`}
+          >
+            {statusTone === "working" ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : statusTone === "unsaved" ? (
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+            ) : statusTone === "error" ? (
+              <span>⚠</span>
+            ) : (
+              <span>✓</span>
+            )}
+            <span>{displayStatusText}</span>
+          </span>
 
-          {notionUrl && (
-            <a
-              href={notionUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary"
-            >
-              <span>Open in Notion</span>
+          <button
+            type="button"
+            disabled={isSyncing}
+            onClick={() => void handleOpenInNotion()}
+            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+            title={notionUrl ? "Open linked Notion page" : "Create & open Notion page for this trade"}
+          >
+            {notionUrl && (
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" title="Linked to Notion" />
+            )}
+            <span>{notionUrl ? "Open in Notion" : "Create & Open in Notion"}</span>
+            {isSyncing && !notionUrl ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
               <ExternalLink className="h-3 w-3 opacity-70" />
-            </a>
-          )}
+            )}
+          </button>
 
           <button
             type="button"
@@ -1162,43 +1363,64 @@ function AnnotationsCard({
 
           <button
             type="button"
-            onClick={handlePullFromNotion}
+            onClick={() => void handlePullFromNotion()}
             disabled={isPulling || isSyncing}
-            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+            className={`inline-flex h-7 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+              pullBtnFlash
+                ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300 font-semibold"
+                : "border-border bg-secondary/40 text-foreground hover:bg-secondary"
+            }`}
           >
             {isPulling ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
               <Download className="h-3 w-3 opacity-80" />
             )}
-            <span>Pull from Notion</span>
+            <span>{pullBtnFlash ? "✓ Pulled!" : "Pull from Notion"}</span>
           </button>
 
           <button
             type="button"
-            onClick={handleSyncToNotion}
+            onClick={() => void handleSyncToNotion()}
             disabled={isPulling || isSyncing}
-            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground transition-colors hover:bg-secondary disabled:opacity-50"
+            className={`inline-flex h-7 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-medium transition-colors disabled:opacity-50 ${
+              notionBtnFlash
+                ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300 font-semibold"
+                : "border-border bg-secondary/40 text-foreground hover:bg-secondary"
+            }`}
           >
             {isSyncing ? (
               <Loader2 className="h-3 w-3 animate-spin" />
             ) : (
               <UploadCloud className="h-3 w-3 opacity-80" />
             )}
-            <span>Sync to Notion</span>
+            <span>
+              {isSyncing
+                ? "Syncing..."
+                : notionBtnFlash
+                ? "✓ Synced to Notion!"
+                : "Sync to Notion"}
+            </span>
           </button>
 
           <button
             type="button"
-            onClick={() => {
-              void flush();
-              setSyncMsg("Saved");
-              setTimeout(() => setSyncMsg(null), 2000);
-            }}
-            className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary px-2.5 text-[11px] font-semibold text-foreground shadow-2xs transition-colors hover:bg-secondary/80"
+            disabled={isManualSaving}
+            onClick={() => void flush(true)}
+            className={`inline-flex h-7 items-center gap-1.5 rounded-lg border px-2.5 text-[11px] font-semibold shadow-2xs transition-colors ${
+              saveBtnFlash
+                ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300"
+                : "border-border bg-secondary text-foreground hover:bg-secondary/80"
+            }`}
           >
-            <Save className="h-3 w-3 opacity-80" />
-            <span>Save (Ctrl+S)</span>
+            {isManualSaving ? (
+              <Loader2 className="h-3 w-3 animate-spin" />
+            ) : (
+              <Save className="h-3 w-3 opacity-80" />
+            )}
+            <span>
+              {isManualSaving ? "Saving..." : saveBtnFlash ? "✓ Saved!" : "Save (Ctrl+S)"}
+            </span>
           </button>
         </div>
       </CardHeader>
@@ -1208,22 +1430,25 @@ function AnnotationsCard({
           onOpenChange={setMatcherModalOpen}
           preselectedTradeKey={trade.key}
           onCompleted={(msg) => {
+            setStatusTone("saved");
             setSyncMsg(msg);
             fetchMatchingNotebookDrafts();
-            // Reload fresh notes/reviewNotes from trade API
             fetch(`/api/trades/${encodeURIComponent(trade.key)}`)
               .then((r) => r.json())
               .then((d) => {
                 if (d?.trade) {
-                  setNotes(cleanLegacyTradeNotes(d.trade.notes));
-                  setReviewNotes(d.trade.review_notes || d.trade.reviewNotes || "");
+                  const cleaned = cleanLegacyTradeNotes(d.trade.notes);
+                  const rev = d.trade.review_notes || d.trade.reviewNotes || "";
+                  setNotes(cleaned);
+                  setReviewNotes(rev);
+                  savedNotesRef.current = cleaned;
+                  savedReviewNotesRef.current = rev;
                 }
               });
             void onPatch({});
           }}
         />
 
-        {/* SMART MATCHING NOTEBOOK DRAFT NOTIFICATION BANNER (WITH CONFIRMATION) */}
         {!dismissedDraftBanner && matchingDrafts.length > 0 && (
           <div className="rounded-xl border border-indigo-500/40 bg-indigo-950/25 p-3 space-y-2 text-xs">
             <div className="flex items-start justify-between gap-2">
@@ -1259,9 +1484,7 @@ function AnnotationsCard({
                     const draft = matchingDrafts[0];
                     if (
                       !window.confirm(
-                        `Confirm moving Notebook draft "${draft.title}" into ${trade.symbol} ${trade.direction.toUpperCase()}?
-
-The draft will be archived and automatically deleted in 14 days.`
+                        `Confirm moving Notebook draft "${draft.title}" into ${trade.symbol} ${trade.direction.toUpperCase()}?\n\nThe draft will be archived and automatically deleted in 14 days.`
                       )
                     ) {
                       return;
@@ -1283,12 +1506,17 @@ The draft will be archived and automatically deleted in 14 days.`
                     });
                     const out = await res.json();
                     if (out.ok) {
+                      setStatusTone("saved");
                       setSyncMsg("Moved Notebook draft & archived!");
                       fetchMatchingNotebookDrafts();
                       const tRes = await fetch(`/api/trades/${encodeURIComponent(trade.key)}`).then((r) => r.json());
                       if (tRes?.trade) {
-                        setNotes(cleanLegacyTradeNotes(tRes.trade.notes));
-                        setReviewNotes(tRes.trade.review_notes || tRes.trade.reviewNotes || "");
+                        const cleaned = cleanLegacyTradeNotes(tRes.trade.notes);
+                        const rev = tRes.trade.review_notes || tRes.trade.reviewNotes || "";
+                        setNotes(cleaned);
+                        setReviewNotes(rev);
+                        savedNotesRef.current = cleaned;
+                        savedReviewNotesRef.current = rev;
                       }
                       void onPatch({});
                     }
@@ -1312,14 +1540,13 @@ The draft will be archived and automatically deleted in 14 days.`
           </div>
         )}
 
-        <div className="flex items-center justify-between">
-          <TradeRating value={trade.rating} onChange={(rating) => onPatch({ rating })} />
-          <label className="flex items-center gap-2 text-xs">
+        <div className="flex items-center justify-end">
+          <label className="flex items-center gap-2 text-xs cursor-pointer select-none">
             <Checkbox
               checked={trade.reviewedAt !== null}
-              onCheckedChange={(checked) => void onPatch({ reviewed: checked === true })}
+              onCheckedChange={(checked) => void handlePatchWithFeedback({ reviewed: checked === true })}
             />
-            Reviewed
+            <span className="font-medium text-foreground">Reviewed</span>
           </label>
         </div>
 
@@ -1362,7 +1589,7 @@ The draft will be archived and automatically deleted in 14 days.`
           <label className="text-[11px] text-muted-foreground">Playbook</label>
           <Select
             value={trade.playbookId ?? "none"}
-            onValueChange={(val) => void onPatch({ playbookId: val === "none" ? null : val })}
+            onValueChange={(val) => void handlePatchWithFeedback({ playbookId: val === "none" ? null : val })}
           >
             <SelectTrigger className="h-8 text-xs">
               <SelectValue placeholder="No playbook" />
@@ -1393,7 +1620,11 @@ The draft will be archived and automatically deleted in 14 days.`
             <div className="flex items-center gap-1 rounded-xl bg-[#0d0f14] p-1 border border-border/60">
               <button
                 type="button"
-                onClick={() => setActiveNoteTab("setup")}
+                onClick={() => {
+                  const liveExtra = captureLiveEditorIntoPatch();
+                  if (Object.keys(liveExtra).length > 0) debounced(liveExtra);
+                  setActiveNoteTab("setup");
+                }}
                 className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
                   activeNoteTab === "setup"
                     ? "bg-secondary text-foreground border border-border shadow"
@@ -1404,7 +1635,11 @@ The draft will be archived and automatically deleted in 14 days.`
               </button>
               <button
                 type="button"
-                onClick={() => setActiveNoteTab("review")}
+                onClick={() => {
+                  const liveExtra = captureLiveEditorIntoPatch();
+                  if (Object.keys(liveExtra).length > 0) debounced(liveExtra);
+                  setActiveNoteTab("review");
+                }}
                 className={`rounded-lg px-2.5 py-1 text-xs font-semibold transition ${
                   activeNoteTab === "review"
                     ? "bg-secondary text-foreground border border-border shadow"

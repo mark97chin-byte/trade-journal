@@ -173,10 +173,12 @@ export function pruneOrphanAttachments(existingDb?: Database.Database): {
           // Also delete if it was an inline Notion/editor image for this trade that was deleted from notes
           isOrphan = true;
         }
-      } else if (oType === "note") {
-        if (!validNoteIds.has(oId)) isOrphan = true;
-      } else if (oType === "missed") {
-        if (!validMissedIds.has(oId)) isOrphan = true;
+      } else if (oType === "note" || oType === "notes") {
+        // Inline images in notes are always referenced in HTML when active; if unreferenced, prune orphan
+        isOrphan = true;
+      } else if (oType === "missed" || oType === "missed_trade" || oType === "missed_trades") {
+        // Inline images in missed_trades are always referenced in notes/review_notes HTML when active; if unreferenced, prune orphan
+        isOrphan = true;
       } else if (oType === "playbook" && !validPlaybookIds.has(oId)) {
         isOrphan = true;
       }

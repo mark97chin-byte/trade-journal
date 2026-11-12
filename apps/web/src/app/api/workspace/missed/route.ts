@@ -1,3 +1,5 @@
+import { getJournalConfig } from "@/server/journal-service";
+import { pruneOrphanAttachments } from "@/server/attachment-gc";
 import { NextRequest, NextResponse } from "next/server";
 import Database from "better-sqlite3";
 import path from "path";
@@ -214,17 +216,7 @@ export async function GET() {
     try {
       ensureMissedTradesSchema(db);
       migrateLegacyMissedIds(db);
-      // Automatically prune blank $0 orphan drafts that were never populated with an entry price or notes
-      try {
-        db.prepare(
-          `DELETE FROM missed_trades
-           WHERE (entry IS NULL OR entry = 0)
-             AND (stop IS NULL OR stop = 0)
-             AND (target IS NULL OR target = 0)
-             AND TRIM(COALESCE(notes, '')) = ''
-             AND TRIM(COALESCE(review_notes, '')) = ''`
-        ).run();
-      } catch {}
+      // Preserve in-progress missed trade drafts across navigation
 
       const rows = db
         .prepare(`SELECT * FROM missed_trades ORDER BY observed_at DESC`)
@@ -267,11 +259,13 @@ export async function POST(req: NextRequest) {
         const existing = db
           .prepare(`SELECT * FROM missed_trades WHERE id = ?`)
           .get(id) as any;
-        const token = process.env.NOTION_TOKEN || "";
+        const fallbackCfg = getNotionConfig("trades" as any);
+        const token = process.env.NOTION_TOKEN || fallbackCfg?.token || "";
         const dbId = (
           process.env.NOTION_MISSED_DATABASE_ID ||
           process.env.NOTION_TRADES_DATABASE_ID ||
           process.env.NOTION_DATABASE_ID ||
+          fallbackCfg?.databaseId ||
           ""
         ).replace(/-/g, "");
 
@@ -381,7 +375,22 @@ export async function POST(req: NextRequest) {
               ? body.rulesFollowedJson
               : JSON.stringify(body.rulesFollowedJson)
             : existing?.rules_followed_json ?? "[]",
-        notes: body.notes !== undefined ? body.notes : existing?.notes ?? "",
+        notes: (() => {
+          const rawN = body.notes !== undefined ? body.notes : existing?.notes ?? "";
+          if (!existing && (!rawN || rawN === "<p></p>" || rawN === "<p><br></p>")) {
+            try {
+              const jCfg = getJournalConfig() as any;
+              const tpls: any[] = jCfg?.templates || [];
+              const defId = jCfg?.defaultTemplates?.missed_prep || jCfg?.defaultTemplates?.trade_setup;
+              const matched =
+                (defId ? tpls.find((t: any) => t.id === defId) : null) ||
+                tpls.find((t: any) => String(t.name || "").toLowerCase() === "trade entry");
+              const html = String(matched?.content ?? matched?.html ?? "").trim();
+              if (html) return html;
+            } catch {}
+          }
+          return rawN;
+        })(),
         review_notes:
           body.reviewNotes !== undefined ? body.reviewNotes : existing?.review_notes ?? "",
         rating: body.rating !== undefined ? body.rating : existing?.rating ?? null,
@@ -438,13 +447,17 @@ export async function POST(req: NextRequest) {
           rating = excluded.rating`
       ).run(rowData);
 
+      try { pruneOrphanAttachments(db); } catch {}
+
       // Handle Notion Push if requested
       if (body.syncNotion) {
-        const token = process.env.NOTION_TOKEN || "";
+        const fallbackCfg = getNotionConfig("trades" as any);
+        const token = process.env.NOTION_TOKEN || fallbackCfg?.token || "";
         const dbId = (
           process.env.NOTION_MISSED_DATABASE_ID ||
           process.env.NOTION_TRADES_DATABASE_ID ||
           process.env.NOTION_DATABASE_ID ||
+          fallbackCfg?.databaseId ||
           ""
         ).replace(/-/g, "");
 
@@ -613,6 +626,7 @@ export async function DELETE(req: NextRequest) {
         const archivedAt = restore ? null : new Date().toISOString();
         db.prepare(`UPDATE missed_trades SET archived_at = ? WHERE id = ?`).run(archivedAt, id);
       }
+      try { pruneOrphanAttachments(db); } catch {}
       return NextResponse.json({ ok: true });
     } finally {
       db.close();

@@ -331,11 +331,26 @@ export async function POST(req: NextRequest) {
         (c) => c.name
       );
 
+      const datePrefix = (note.updated_at || nowIso).slice(0, 10);
+      const existingOnDate = db
+        .prepare("SELECT id FROM missed_trades WHERE id LIKE ?")
+        .all(`${datePrefix}-%`) as Array<{ id: string }>;
+      let maxNum = 0;
+      for (const r of existingOnDate) {
+        const m = r.id.match(/-(\d+)$/);
+        if (m) maxNum = Math.max(maxNum, parseInt(m[1]!, 10));
+      }
+      const cleanMissedId = `${datePrefix}-${maxNum + 1}`;
       const insertData: Record<string, any> = {
-        id: missedId,
+        id: cleanMissedId,
         symbol,
         direction,
+        observed_at: note.updated_at || nowIso,
+        exit_at: note.updated_at || nowIso,
+        outcome: "WIN",
+        miss_reason: setup || "Hesitation / Fear",
         notes: `<h4>${note.title || "Missed Trade Draft"}</h4>\n${note.content || ""}`,
+        created_at: nowIso,
       };
       if (mCols.includes("setup")) insertData.setup = setup || note.title || "Notebook Draft";
       if (mCols.includes("missed_at")) insertData.missed_at = note.updated_at || nowIso;
@@ -364,7 +379,7 @@ export async function POST(req: NextRequest) {
 
       return NextResponse.json({
         ok: true,
-        missedId,
+        missedId: cleanMissedId,
         message: `Moved "${note.title}" to Missed Trades (${symbol} ${direction.toUpperCase()}) and archived draft (auto-deletes in 14 days).`,
       });
     }

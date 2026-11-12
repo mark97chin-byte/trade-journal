@@ -532,33 +532,7 @@ function LoadedMissedSetupWorkspace({
     }
   });
 
-  // Sync entryIso and exitIso to the candle where price actually triggered Entry on this date
-  useEffect(() => {
-    if (!marketResult?.bars?.length) return;
-    const entryP = parseFloat(entryStr);
-    if (!entryP || entryP <= 0) return;
-
-    const bars = marketResult.bars;
-    const openMs = Date.parse(entryIso);
-
-    // Look for the candle near openMs where price traded at entryP
-    let sIdx = bars.findIndex(
-      (b) => b.time >= openMs - 3600_000 && b.low <= entryP && b.high >= entryP
-    );
-    if (sIdx === -1) {
-      sIdx = bars.findIndex((b) => b.low <= entryP && b.high >= entryP);
-    }
-    if (sIdx >= 0) {
-      const actualEntryMs = bars[sIdx]!.time;
-      // Only snap within the same trading session (<= 12 hours), never across different days!
-      if (
-        Math.abs(actualEntryMs - openMs) > 60_000 &&
-        Math.abs(actualEntryMs - openMs) <= 12 * 3600_000
-      ) {
-        setEntryIso(new Date(actualEntryMs).toISOString());
-      }
-    }
-  }, [marketResult?.bars, entryStr]);
+  // Preserve user-selected and RR-tool-extracted entryIso across timeframe switches
 
   const [accountSize, setAccountSize] = useState<number>(
     initialRecord.accountSize || 100000
@@ -603,8 +577,14 @@ function LoadedMissedSetupWorkspace({
   const [saving, setSaving] = useState(false);
   const [syncingNotion, setSyncingNotion] = useState(false);
   const [pullingNotion, setPullingNotion] = useState(false);
-  const [statusMsg, setStatusMsg] = useState<string | null>(null);
+  const [statusMsg, setStatusMsg] = useState<string | null>("Saved");
+  const [statusTone, setStatusTone] = useState<"saved" | "unsaved" | "working" | "notion" | "error">("saved");
+  const [saveBtnFlash, setSaveBtnFlash] = useState(false);
+  const [notionBtnFlash, setNotionBtnFlash] = useState(false);
+  const [pullBtnFlash, setPullBtnFlash] = useState(false);
   const noteEditorRef = useRef<RichEditorHandle>(null);
+  const activeNoteTabRef = useRef<"setup" | "review">(activeNoteTab);
+  activeNoteTabRef.current = activeNoteTab;
 
   const activePlaybookRules = useMemo<string[]>(() => {
     if (!playbookId || playbookId === "none") return [];
@@ -704,7 +684,6 @@ function LoadedMissedSetupWorkspace({
     initialRecord,
   ]);
 
-  // Build candle-aligned execution legs for RunningPnlChart
   const runningPnlExecutions = useMemo(() => {
     const entry = parseFloat(entryStr);
     const target = parseFloat(targetStr);
@@ -715,7 +694,6 @@ function LoadedMissedSetupWorkspace({
     const exitSide: "buy" | "sell" = direction === "short" ? "buy" : "sell";
     const allBars = marketResult?.bars || [];
 
-    // Locate smart start & end timestamps from actual candles if available
     let openMs = Date.parse(entryIso);
     let closeMs = Math.max(openMs + 60_000, Date.parse(exitIso || entryIso));
 
@@ -859,76 +837,246 @@ function LoadedMissedSetupWorkspace({
   );
   const isPartialsOver100 = partialsPctTotal > 100;
 
-  const handleSave = async (syncNotion = false) => {
-    if (!symbol.trim()) return;
-    if (isPartialsOver100) {
-      setStatusMsg(
-        `Error: Total Partial TP % (${partialsPctTotal}%) cannot exceed 100% of position size.`
-      );
-      return;
+  const buildSavePayload = (syncNotion = false, liveHtmlOverride?: { notes?: string; reviewNotes?: string }) => ({
+    id: initialRecord.id,
+    symbol: (symbol || "NAS100").trim().toUpperCase(),
+    direction,
+    observedAt: entryIso,
+    exitAt: exitIso,
+    outcome,
+    playbookId: playbookId === "none" ? null : playbookId,
+    rulesFollowedJson: JSON.stringify(rulesFollowed),
+    entry: entryStr !== "" ? Number(entryStr) : null,
+    stop: stopStr !== "" ? Number(stopStr) : null,
+    target: targetStr !== "" ? Number(targetStr) : null,
+    partialsJson: JSON.stringify(partials),
+    accountSize,
+    riskPercent,
+    riskAmount: calc.riskDollars,
+    contractMultiplier,
+    quantity: calc.quantity,
+    plannedR: calc.plannedR,
+    realizedR: calc.blendedRealizedR,
+    theoreticalPnl: calc.theoreticalPnl,
+    maeR: maeRStr !== "" ? Number(maeRStr) : null,
+    mfeR: mfeRStr !== "" ? Number(mfeRStr) : null,
+    missReason,
+    session: derivedSession,
+    tagsJson: JSON.stringify(tags),
+    mistakesJson: JSON.stringify(mistakes),
+    notes: liveHtmlOverride?.notes !== undefined ? liveHtmlOverride.notes : notes,
+    reviewNotes: liveHtmlOverride?.reviewNotes !== undefined ? liveHtmlOverride.reviewNotes : reviewNotes,
+    rating,
+    syncNotion,
+  });
+
+  const latestPayloadRef = useRef<any>(null);
+  const isDirtyRef = useRef<boolean>(false);
+  const hasMountedRef = useRef<boolean>(false);
+  const lastSavedSignatureRef = useRef<string>("");
+
+  const currentPayload = buildSavePayload(false);
+  latestPayloadRef.current = currentPayload;
+  const currentSignature = JSON.stringify(currentPayload);
+
+  const readLiveEditorHtmlOverride = (): { notes?: string; reviewNotes?: string } => {
+    const liveHtml = noteEditorRef.current?.getHtml?.();
+    if (typeof liveHtml !== "string") return {};
+    if (activeNoteTabRef.current === "review") {
+      if (liveHtml !== reviewNotes) {
+        setReviewNotes(liveHtml);
+        return { reviewNotes: liveHtml };
+      }
+    } else {
+      if (liveHtml !== notes) {
+        setNotes(liveHtml);
+        return { notes: liveHtml };
+      }
     }
-    if (syncNotion) setSyncingNotion(true);
-    else setSaving(true);
-    setStatusMsg(syncNotion ? "Syncing to Notion..." : "Saving...");
+    return {};
+  };
+
+  const handleSave = async (
+    syncNotion = false,
+    opts?: { silent?: boolean; manualClick?: boolean }
+  ): Promise<{ notionUrl?: string | null; ok: boolean }> => {
+    if (!symbol.trim()) return { ok: false };
+    if (isPartialsOver100) {
+      setStatusTone("error");
+      setStatusMsg(
+        `Error: Total Partial TP % (${partialsPctTotal}%) cannot exceed 100%`
+      );
+      return { ok: false };
+    }
+    const liveOverride = readLiveEditorHtmlOverride();
+    const payload = buildSavePayload(syncNotion, liveOverride);
+    const sig = JSON.stringify(buildSavePayload(false, liveOverride));
+
+    if (syncNotion) {
+      setSyncingNotion(true);
+      setStatusTone("working");
+      setStatusMsg("Syncing to Notion...");
+    } else {
+      if (!opts?.silent) setSaving(true);
+      setStatusTone("working");
+      setStatusMsg("Saving...");
+    }
 
     try {
       const res = await fetch("/api/workspace/missed", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          id: initialRecord.id,
-          symbol: symbol.trim().toUpperCase(),
-          direction,
-          observedAt: entryIso,
-          exitAt: exitIso,
-          outcome,
-          playbookId: playbookId === "none" ? null : playbookId,
-          rulesFollowedJson: JSON.stringify(rulesFollowed),
-          entry: entryStr !== "" ? Number(entryStr) : null,
-          stop: stopStr !== "" ? Number(stopStr) : null,
-          target: targetStr !== "" ? Number(targetStr) : null,
-          partialsJson: JSON.stringify(partials),
-          accountSize,
-          riskPercent,
-          riskAmount: calc.riskDollars,
-          contractMultiplier,
-          quantity: calc.quantity,
-          plannedR: calc.plannedR,
-          realizedR: calc.blendedRealizedR,
-          theoreticalPnl: calc.theoreticalPnl,
-          maeR: maeRStr !== "" ? Number(maeRStr) : null,
-          mfeR: mfeRStr !== "" ? Number(mfeRStr) : null,
-          missReason,
-          session: derivedSession,
-          tagsJson: JSON.stringify(tags),
-          mistakesJson: JSON.stringify(mistakes),
-          notes,
-          reviewNotes,
-          rating,
-          syncNotion,
-        }),
+        body: JSON.stringify(payload),
       });
       const out = await res.json();
       if (!res.ok) throw new Error(out.error || "Failed to save missed trade");
-      if (out.trade?.notionUrl) setNotionUrl(out.trade.notionUrl);
-      setStatusMsg(
-        syncNotion
-          ? out.notionSynced
-            ? "Synced to Notion"
-            : out.notionError || "Saved locally"
-          : "Saved"
-      );
-      onRefresh();
+
+      lastSavedSignatureRef.current = sig;
+      isDirtyRef.current = false;
+
+      const resolvedNotionUrl = out.trade?.notionUrl || notionUrl || null;
+      if (out.trade?.notionUrl) {
+        setNotionUrl(out.trade.notionUrl);
+      }
+
+      if (syncNotion) {
+        if (out.notionSynced) {
+          setStatusTone("notion");
+          setStatusMsg("Synced to Notion");
+          setNotionBtnFlash(true);
+          setTimeout(() => {
+            setNotionBtnFlash(false);
+            setStatusTone("saved");
+            setStatusMsg("Saved");
+          }, 3200);
+        } else {
+          setStatusTone("error");
+          setStatusMsg(out.notionError || "Notion sync failed (Saved locally)");
+        }
+      } else {
+        setStatusTone("saved");
+        setStatusMsg("Saved");
+        if (opts?.manualClick) {
+          setSaveBtnFlash(true);
+          setTimeout(() => setSaveBtnFlash(false), 2200);
+        }
+      }
+
+      if (!opts?.silent) {
+        onRefresh();
+      }
+      return { ok: true, notionUrl: resolvedNotionUrl };
     } catch (err: any) {
+      setStatusTone("error");
       setStatusMsg(err?.message || "Save failed");
+      return { ok: false };
     } finally {
       setSaving(false);
       setSyncingNotion(false);
     }
   };
 
+  // Debounced 850ms autosave on any field, level, tag, or note change
+  useEffect(() => {
+    if (!hasMountedRef.current) {
+      hasMountedRef.current = true;
+      lastSavedSignatureRef.current = currentSignature;
+      return;
+    }
+    if (currentSignature === lastSavedSignatureRef.current) return;
+    if (isPartialsOver100) return;
+
+    isDirtyRef.current = true;
+    setStatusTone("unsaved");
+    setStatusMsg("Unsaved changes...");
+
+    const timer = setTimeout(() => {
+      void handleSave(false, { silent: true });
+    }, 850);
+
+    return () => clearTimeout(timer);
+  }, [currentSignature, isPartialsOver100]);
+
+  // Support Ctrl+S / Cmd+S keyboard shortcut to save immediately with confirmation
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        void handleSave(false, { silent: false, manualClick: true });
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  });
+
+  // Guaranteed save flush on page switch, unmount, or browser tab close (captures live RichEditor DOM!)
+  useEffect(() => {
+    const flushIfDirty = () => {
+      if (!latestPayloadRef.current) return;
+      const liveHtml = noteEditorRef.current?.getHtml?.();
+      const tab = activeNoteTabRef.current;
+      const payloadToFlush = { ...latestPayloadRef.current };
+      let hasLiveEditorDiff = false;
+
+      if (typeof liveHtml === "string") {
+        if (tab === "review" && liveHtml !== payloadToFlush.reviewNotes) {
+          payloadToFlush.reviewNotes = liveHtml;
+          hasLiveEditorDiff = true;
+        } else if (tab === "setup" && liveHtml !== payloadToFlush.notes) {
+          payloadToFlush.notes = liveHtml;
+          hasLiveEditorDiff = true;
+        }
+      }
+
+      if (isDirtyRef.current || hasLiveEditorDiff) {
+        isDirtyRef.current = false;
+        try {
+          fetch("/api/workspace/missed", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payloadToFlush),
+            keepalive: true,
+          }).catch(() => {});
+        } catch {}
+      }
+    };
+    window.addEventListener("pagehide", flushIfDirty);
+    window.addEventListener("beforeunload", flushIfDirty);
+    return () => {
+      window.removeEventListener("pagehide", flushIfDirty);
+      window.removeEventListener("beforeunload", flushIfDirty);
+      flushIfDirty();
+    };
+  }, []);
+
+  const handleOpenInNotion = async () => {
+    if (notionUrl) {
+      if (isDirtyRef.current) {
+        void handleSave(true, { silent: true });
+      }
+      window.open(notionUrl, "_blank", "noopener,noreferrer");
+      return;
+    }
+    const newWin = window.open("about:blank", "_blank");
+    setStatusTone("working");
+    setStatusMsg("Creating Notion page...");
+    const res = await handleSave(true);
+    if (res.ok && res.notionUrl) {
+      if (newWin) {
+        newWin.location.href = res.notionUrl;
+      } else {
+        window.open(res.notionUrl, "_blank", "noopener,noreferrer");
+      }
+    } else {
+      if (newWin) newWin.close();
+      setStatusTone("error");
+      setStatusMsg("Could not create Notion page (check Notion config)");
+    }
+  };
+
   const handlePullNotion = async () => {
     setPullingNotion(true);
+    setStatusTone("working");
     setStatusMsg("Pulling from Notion...");
     try {
       const res = await fetch("/api/workspace/missed", {
@@ -947,10 +1095,20 @@ function LoadedMissedSetupWorkspace({
       if (out.trade) {
         setNotes(out.trade.notes || "");
         setReviewNotes(out.trade.reviewNotes || "");
+        if (out.trade.notionUrl) setNotionUrl(out.trade.notionUrl);
+        isDirtyRef.current = false;
       }
+      setStatusTone("notion");
       setStatusMsg("Pulled from Notion");
+      setPullBtnFlash(true);
+      setTimeout(() => {
+        setPullBtnFlash(false);
+        setStatusTone("saved");
+        setStatusMsg("Saved");
+      }, 3200);
       onRefresh();
     } catch (err: any) {
+      setStatusTone("error");
       setStatusMsg(err?.message || "Pull failed");
     } finally {
       setPullingNotion(false);
@@ -1001,6 +1159,7 @@ function LoadedMissedSetupWorkspace({
     setOutcome(setup.outcome);
     setMfeRStr(String(setup.mfeR));
     setMaeRStr(String(setup.maeR));
+    setStatusTone("unsaved");
     setStatusMsg(
       `Populated (${setup.direction.toUpperCase()} • ${
         setup.realizedR > 0 ? `+${setup.realizedR}R` : `${setup.realizedR}R`
@@ -1189,14 +1348,14 @@ function LoadedMissedSetupWorkspace({
         </Card>
 
         {/* RESIZABLE 2-COLUMN WORKSPACE */}
-        <div className="flex flex-col lg:flex-row gap-0 relative items-stretch min-h-[640px]">
+        <div className="flex flex-col lg:flex-row gap-0 relative z-0 items-stretch min-h-[640px]">
           {!leftCollapsed && (
             <div
               style={{
                 width: rightCollapsed ? "100%" : `${leftWidth}%`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pr-0 lg:pr-3 min-w-[320px]"
+              className="space-y-4 pr-0 lg:pr-3 min-w-[320px] relative z-0"
             >
               <Card className="border-border/70">
                 <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
@@ -1206,54 +1365,113 @@ function LoadedMissedSetupWorkspace({
 
                   <div className="flex flex-wrap items-center gap-1.5">
                     {statusMsg && (
-                      <span className="text-[11px] font-medium text-muted-foreground mr-1">
-                        {statusMsg}
+                      <span
+                        role="status"
+                        className={`inline-flex items-center gap-1 rounded-full border px-2.5 py-0.5 text-[11px] font-semibold transition-all ${
+                          statusTone === "error"
+                            ? "border-rose-500/40 bg-rose-500/15 text-rose-400"
+                            : statusTone === "unsaved"
+                            ? "border-amber-500/40 bg-amber-500/15 text-amber-300"
+                            : statusTone === "working"
+                            ? "border-indigo-500/40 bg-indigo-500/15 text-indigo-300"
+                            : statusTone === "notion"
+                            ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300 shadow-2xs"
+                            : "border-emerald-500/30 bg-emerald-500/10 text-emerald-400"
+                        }`}
+                      >
+                        {statusTone === "working" ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : statusTone === "unsaved" ? (
+                          <span className="h-1.5 w-1.5 rounded-full bg-amber-400 animate-pulse" />
+                        ) : statusTone === "error" ? (
+                          <span>⚠</span>
+                        ) : (
+                          <span>✓</span>
+                        )}
+                        <span>{statusMsg}</span>
                       </span>
                     )}
-                    <a
-                      href={notionUrl || "https://www.notion.so"}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground hover:bg-secondary"
-                    >
-                      <span>Open in Notion</span>
-                      <ExternalLink className="h-3 w-3 opacity-70" />
-                    </a>
+
                     <button
                       type="button"
-                      onClick={handlePullNotion}
+                      onClick={() => void handleOpenInNotion()}
+                      disabled={syncingNotion}
+                      className="inline-flex h-7 items-center gap-1.5 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground hover:bg-secondary disabled:opacity-50"
+                      title={notionUrl ? "Open linked Notion page" : "Create & open Notion page for this missed trade"}
+                    >
+                      {notionUrl && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" title="Linked to Notion" />
+                      )}
+                      <span>{notionUrl ? "Open in Notion" : "Create & Open in Notion"}</span>
+                      {syncingNotion && !notionUrl ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <ExternalLink className="h-3 w-3 opacity-70" />
+                      )}
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handlePullNotion()}
                       disabled={pullingNotion || syncingNotion}
-                      className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground hover:bg-secondary disabled:opacity-50"
+                      className={`inline-flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[11px] font-medium transition disabled:opacity-50 ${
+                        pullBtnFlash
+                          ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300 font-semibold"
+                          : "border-border bg-secondary/40 text-foreground hover:bg-secondary"
+                      }`}
                     >
                       {pullingNotion ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
                       ) : (
                         <Download className="h-3 w-3" />
                       )}
-                      <span>Pull Notion</span>
+                      <span>{pullBtnFlash ? "✓ Pulled!" : "Pull from Notion"}</span>
                     </button>
+
                     <button
                       type="button"
-                      onClick={() => void handleSave(true)}
+                      onClick={() => void handleSave(true, { manualClick: true })}
                       disabled={saving || syncingNotion}
-                      className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-secondary/40 px-2.5 text-[11px] font-medium text-foreground hover:bg-secondary disabled:opacity-50"
+                      className={`inline-flex h-7 items-center gap-1 rounded-lg border px-2.5 text-[11px] font-medium transition disabled:opacity-50 ${
+                        notionBtnFlash
+                          ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300 font-semibold"
+                          : "border-border bg-secondary/40 text-foreground hover:bg-secondary"
+                      }`}
                     >
                       {syncingNotion ? (
                         <Loader2 className="h-3 w-3 animate-spin" />
                       ) : (
                         <UploadCloud className="h-3 w-3" />
                       )}
-                      <span>Sync to Notion</span>
+                      <span>
+                        {syncingNotion
+                          ? "Syncing..."
+                          : notionBtnFlash
+                          ? "✓ Synced to Notion!"
+                          : "Sync to Notion"}
+                      </span>
                     </button>
+
                     <button
                       type="button"
-                      onClick={() => void handleSave(false)}
+                      onClick={() => void handleSave(false, { silent: false, manualClick: true })}
                       disabled={saving}
-                      className="inline-flex h-7 items-center gap-1 rounded-lg border border-border bg-secondary hover:bg-secondary/80 px-3 text-[11px] font-semibold text-foreground shadow-2xs transition"
+                      className={`inline-flex h-7 items-center gap-1 rounded-lg border px-3 text-[11px] font-semibold shadow-2xs transition ${
+                        saveBtnFlash
+                          ? "border-emerald-500/50 bg-emerald-500/20 text-emerald-300"
+                          : "border-border bg-secondary hover:bg-secondary/80 text-foreground"
+                      }`}
                     >
-                      <Save className="h-3 w-3" />
-                      <span>{saving ? "Saving..." : "Save"}</span>
+                      {saving ? (
+                        <Loader2 className="h-3 w-3 animate-spin" />
+                      ) : (
+                        <Save className="h-3 w-3" />
+                      )}
+                      <span>
+                        {saving ? "Saving..." : saveBtnFlash ? "✓ Saved!" : "Save (Ctrl+S)"}
+                      </span>
                     </button>
+
                     <button
                       type="button"
                       onClick={() => void handleDelete()}
@@ -1743,14 +1961,7 @@ function LoadedMissedSetupWorkspace({
                     </div>
                   </div>
 
-                  <div className="flex items-center justify-between pt-1">
-                    <TradeRating
-                      value={rating}
-                      onChange={async (val) => {
-                        setRating(val);
-                      }}
-                    />
-                  </div>
+
 
                   <TradeTagsEditor
                     selectedTags={tags}
@@ -1833,7 +2044,7 @@ function LoadedMissedSetupWorkspace({
                 width: leftCollapsed ? "100%" : `calc(${100 - leftWidth}% - 10px)`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pl-0 lg:pl-3 min-w-[340px]"
+              className="space-y-4 pl-0 lg:pl-3 min-w-[340px] relative z-0"
             >
               <TradeMarketData
                 key={`missed_chart_${initialRecord.id}_${symbol}`}
