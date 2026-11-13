@@ -48,7 +48,7 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
   const extraRow =
     (db as any).$client
       .prepare(
-        `SELECT review_notes, realized_r, planned_r, mae_r, mfe_r,
+        `SELECT stop_loss, profit_target, review_notes, realized_r, planned_r, mae_r, mfe_r,
                 capture_eff, risk_percent, exit_reason, partials_breakdown, tickets
          FROM trades WHERE key = ?`
       )
@@ -150,6 +150,8 @@ export const GET = handler(async (_request: Request, { params }: Params) => {
       ...row,
       status: trade.status,
       durationMs: computedDurationMs,
+      stopLoss: extraRow.stop_loss !== undefined ? extraRow.stop_loss : row.stopLoss,
+      profitTarget: extraRow.profit_target !== undefined ? extraRow.profit_target : row.profitTarget,
       reviewNotes: extraRow.review_notes ?? "",
       partials_breakdown: extraRow.partials_breakdown ?? (row as any).partials_breakdown ?? "",
       exit_reason: extraRow.exit_reason ?? null,
@@ -176,8 +178,8 @@ interface AnnotateBody {
   mistakes?: string[];
   playbookId?: string | null;
   rating?: number | null;
-  stopLoss?: number | null;
-  profitTarget?: number | null;
+  stopLoss?: number | string | null;
+  profitTarget?: number | string | null;
   reviewed?: boolean;
 }
 
@@ -189,11 +191,17 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
   if (!row) return bad("Trade not found", 404);
 
   const body = (await request.json()) as AnnotateBody;
-  for (const field of ["stopLoss", "profitTarget", "rating"] as const)
+  for (const field of ["stopLoss", "profitTarget"] as const)
     requireValue(
-      body[field] == null || (typeof body[field] === "number" && Number.isFinite(body[field])),
-                 `Invalid ${field}.`,
+      body[field] == null ||
+        (typeof body[field] === "number" && Number.isFinite(body[field])) ||
+        (typeof body[field] === "string" && body[field]!.length <= 300),
+      `Invalid ${field}.`,
     );
+  requireValue(
+    body.rating == null || (typeof body.rating === "number" && Number.isFinite(body.rating)),
+    "Invalid rating.",
+  );
   requireValue(
     body.rating == null || (Number.isInteger(body.rating) && body.rating >= 1 && body.rating <= 5),
                "Rating must be 1–5.",
@@ -228,8 +236,28 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
   if (body.mistakes !== undefined) patch.mistakesJson = JSON.stringify(body.mistakes);
   if (body.playbookId !== undefined) patch.playbookId = body.playbookId;
   if (body.rating !== undefined) patch.rating = body.rating;
-  if (body.stopLoss !== undefined) patch.stopLoss = body.stopLoss;
-  if (body.profitTarget !== undefined) patch.profitTarget = body.profitTarget;
+  if (body.stopLoss !== undefined) {
+    const slVal =
+      body.stopLoss === null || body.stopLoss === ""
+        ? null
+        : typeof body.stopLoss === "number"
+        ? body.stopLoss
+        : String(body.stopLoss).trim();
+    (db as any).$client
+      .prepare("UPDATE trades SET stop_loss = ? WHERE key = ?")
+      .run(slVal, decoded);
+  }
+  if (body.profitTarget !== undefined) {
+    const ptVal =
+      body.profitTarget === null || body.profitTarget === ""
+        ? null
+        : typeof body.profitTarget === "number"
+        ? body.profitTarget
+        : String(body.profitTarget).trim();
+    (db as any).$client
+      .prepare("UPDATE trades SET profit_target = ? WHERE key = ?")
+      .run(ptVal, decoded);
+  }
   if (body.reviewed !== undefined) patch.reviewedAt = body.reviewed ? nowIso() : null;
 
   if (body.reviewNotes !== undefined) {
@@ -237,7 +265,7 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
       .prepare("UPDATE trades SET review_notes = ? WHERE key = ?")
       .run(body.reviewNotes ?? "", decoded);
   }
-  if (!Object.keys(patch).length && body.reviewNotes === undefined) return ok({ updated: true });
+  if (!Object.keys(patch).length && body.reviewNotes === undefined && body.stopLoss === undefined && body.profitTarget === undefined) return ok({ updated: true });
 
   // 1. Update SQLite
   if (Object.keys(patch).length > 0) {
@@ -258,8 +286,8 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
       tags: body.tags,
       mistakes: body.mistakes,
       playbook: selectedPlaybookTitle,
-      stopLoss: body.stopLoss,
-      profitTarget: body.profitTarget,
+      stopLoss: typeof body.stopLoss === "number" ? body.stopLoss : undefined,
+      profitTarget: typeof body.profitTarget === "number" ? body.profitTarget : undefined,
     });
   }
 

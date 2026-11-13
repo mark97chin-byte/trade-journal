@@ -137,10 +137,28 @@ export const rowToTrade = (
     }
   }
 
-  // Compute trade R-multiple (prefer live Stop Loss if user edited it, else MT5 imported realized_r)
+  const numericStopLoss =
+    typeof row.stopLoss === "number" && Number.isFinite(row.stopLoss)
+      ? row.stopLoss
+      : typeof row.stopLoss === "string" &&
+        row.stopLoss.trim() !== "" &&
+        Number.isFinite(Number(row.stopLoss))
+      ? Number(row.stopLoss)
+      : undefined;
+
+  const numericProfitTarget =
+    typeof row.profitTarget === "number" && Number.isFinite(row.profitTarget)
+      ? row.profitTarget
+      : typeof row.profitTarget === "string" &&
+        row.profitTarget.trim() !== "" &&
+        Number.isFinite(Number(row.profitTarget))
+      ? Number(row.profitTarget)
+      : undefined;
+
+  // Compute trade R-multiple (prefer numeric Stop Loss if set, else MT5 imported realized_r)
   let computedR: number | null = extra?.realized_r ?? null;
-  if (row.stopLoss != null && row.stopLoss > 0 && row.avgEntry > 0 && row.quantity > 0) {
-    const stopDist = Math.abs(row.avgEntry - row.stopLoss);
+  if (numericStopLoss != null && numericStopLoss > 0 && row.avgEntry > 0 && row.quantity > 0) {
+    const stopDist = Math.abs(row.avgEntry - numericStopLoss);
     if (stopDist > 0 && effectiveMultiplier != null && effectiveMultiplier > 0) {
       const riskDollars = stopDist * row.quantity * effectiveMultiplier;
       if (riskDollars > 0) {
@@ -187,6 +205,9 @@ export const rowToTrade = (
         : "loss";
   }
 
+  const parsedTags = parseJsonArray(row.tagsJson);
+  const parsedMistakes = parseJsonArray(row.mistakesJson);
+
   return {
     key: row.key,
     accountId: row.accountId,
@@ -208,16 +229,33 @@ export const rowToTrade = (
     executionIds: parseJsonArray(row.executionIdsJson),
     exits: JSON.parse(row.exitsJson) as AnnotatedTrade["exits"],
     durationMs: computedDurationMs,
+    playbookId: row.playbookId ?? null,
+    playbook: row.playbookId ?? undefined,
+    tags: parsedTags,
+    mistakes: parsedMistakes,
+    tagsJson: row.tagsJson ?? "[]",
+    mistakesJson: row.mistakesJson ?? "[]",
+    stopLoss: row.stopLoss ?? null,
+    profitTarget: row.profitTarget ?? null,
+    rating: row.rating ?? null,
+    reviewed: row.reviewedAt !== null,
+    reviewedAt: row.reviewedAt ?? null,
+    realizedR: computedR,
+    plannedR: extra?.planned_r ?? null,
+    maeR: extra?.mae_r ?? null,
+    mfeR: extra?.mfe_r ?? null,
+    captureEff: extra?.capture_eff ?? null,
+    riskPercent: extra?.risk_percent ?? null,
     annotations: {
-      tags: parseJsonArray(row.tagsJson),
-      mistakes: parseJsonArray(row.mistakesJson),
+      tags: parsedTags,
+      mistakes: parsedMistakes,
       playbook: row.playbookId ?? undefined,
       rating: row.rating ?? undefined,
-      stopLoss: row.stopLoss ?? undefined,
-      profitTarget: row.profitTarget ?? undefined,
+      stopLoss: numericStopLoss,
+      profitTarget: numericProfitTarget,
       reviewed: row.reviewedAt !== null,
     },
-  };
+  } as AnnotatedTrade;
 };
 
 export const queryTrades = (

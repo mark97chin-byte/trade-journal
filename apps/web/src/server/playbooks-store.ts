@@ -336,7 +336,7 @@ export function getAllPlaybooksEnriched(searchParams?: URLSearchParams) {
     const ruleGroups = normalizeRuleGroups(meta?.rule_groups_json, row.rulesJson);
     const rules = flattenRuleGroups(ruleGroups);
     const tags: string[] = meta?.tags_json ? JSON.parse(meta.tags_json) : [];
-    const pbTrades = (projectedTrades as any[]).filter((t) => t.playbookId === row.id);
+    const pbTrades = (projectedTrades as any[]).filter((t) => (t.playbookId ?? t.annotations?.playbook) === row.id);
     const stats = computeStrategyMetrics(pbTrades, timeZone);
 
     return {
@@ -434,7 +434,7 @@ export function getPlaybookDetail(id: string, searchParams?: URLSearchParams) {
   const rules = flattenRuleGroups(ruleGroups);
   const tags: string[] = meta?.tags_json ? JSON.parse(meta.tags_json) : [];
 
-  const pbTrades = (projectedTrades as any[]).filter((t) => t.playbookId === row.id);
+  const pbTrades = (projectedTrades as any[]).filter((t) => (t.playbookId ?? t.annotations?.playbook) === row.id);
   const stats = computeStrategyMetrics(pbTrades, timeZone);
 
   // Compute per-rule performance from tradeRuleChecks

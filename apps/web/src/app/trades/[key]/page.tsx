@@ -98,8 +98,8 @@ interface TradeDetail {
   mistakesJson: string | null;
   playbookId: string | null;
   rating: number | null;
-  stopLoss: number | null;
-  profitTarget: number | null;
+  stopLoss: number | string | null;
+  profitTarget: number | string | null;
   reviewedAt: string | null;
   partials_breakdown?: string;
 }
@@ -365,9 +365,17 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
               : 100;
 
           // Infer 1R price distance (from explicit Stop Loss, or from Realized R & Avg Exit distance)
+          const numericTradeStop =
+            typeof trade.stopLoss === "number" && Number.isFinite(trade.stopLoss)
+              ? trade.stopLoss
+              : typeof trade.stopLoss === "string" &&
+                trade.stopLoss.trim() !== "" &&
+                Number.isFinite(Number(trade.stopLoss))
+              ? Number(trade.stopLoss)
+              : null;
           const explicitRiskPts =
-            trade.stopLoss && trade.stopLoss > 0
-              ? Math.abs(trade.avgEntry - trade.stopLoss)
+            numericTradeStop && numericTradeStop > 0
+              ? Math.abs(trade.avgEntry - numericTradeStop)
               : null;
           const inferredRiskPts =
             explicitRiskPts && explicitRiskPts > 0
@@ -1553,35 +1561,47 @@ function AnnotationsCard({
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-[11px] text-muted-foreground">Stop loss</label>
-            <MonetaryField>
-              <Input
-                value={stopLoss}
-                onChange={(e) => {
-                  setStopLoss(e.target.value);
-                  debounced({ stopLoss: e.target.value === "" ? null : Number(e.target.value) });
-                }}
-                placeholder="planned stop"
-                inputMode="decimal"
-                className="h-8 text-xs"
-              />
-            </MonetaryField>
+            <Input
+              value={stopLoss}
+              onChange={(e) => {
+                const raw = e.target.value;
+                setStopLoss(raw);
+                const trimmed = raw.trim();
+                const num = Number(trimmed);
+                debounced({
+                  stopLoss:
+                    trimmed === ""
+                      ? null
+                      : Number.isFinite(num) && /^-?\d+(\.\d+)?$/.test(trimmed)
+                      ? num
+                      : raw,
+                });
+              }}
+              placeholder="Price or note (e.g. Above M15 SIBI)"
+              className="h-8 text-xs"
+            />
           </div>
           <div>
             <label className="text-[11px] text-muted-foreground">Profit target</label>
-            <MonetaryField>
-              <Input
-                value={profitTarget}
-                onChange={(e) => {
-                  setProfitTarget(e.target.value);
-                  debounced({
-                    profitTarget: e.target.value === "" ? null : Number(e.target.value),
-                  });
-                }}
-                placeholder="planned target"
-                inputMode="decimal"
-                className="h-8 text-xs"
-              />
-            </MonetaryField>
+            <Input
+              value={profitTarget}
+              onChange={(e) => {
+                const raw = e.target.value;
+                setProfitTarget(raw);
+                const trimmed = raw.trim();
+                const num = Number(trimmed);
+                debounced({
+                  profitTarget:
+                    trimmed === ""
+                      ? null
+                      : Number.isFinite(num) && /^-?\d+(\.\d+)?$/.test(trimmed)
+                      ? num
+                      : raw,
+                });
+              }}
+              placeholder="Price or note (e.g. PWL)"
+              className="h-8 text-xs"
+            />
           </div>
         </div>
 
