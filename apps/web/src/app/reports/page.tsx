@@ -1,5 +1,5 @@
-import { EdgeOptimizerView } from "@/components/reports/edge-optimizer-view";
 "use client";
+import { EdgeOptimizerView } from "@/components/reports/edge-optimizer-view";
 
 import { StrategyRulesCard } from "@/components/reports/strategy-rules-card";
 import React, { Suspense, useState, useRef, useEffect, useMemo } from "react";
