@@ -137,22 +137,24 @@ export const rowToTrade = (
     }
   }
 
+  const rawStopLoss: unknown = (row as any).stopLoss;
   const numericStopLoss =
-    typeof row.stopLoss === "number" && Number.isFinite(row.stopLoss)
-      ? row.stopLoss
-      : typeof row.stopLoss === "string" &&
-        row.stopLoss.trim() !== "" &&
-        Number.isFinite(Number(row.stopLoss))
-      ? Number(row.stopLoss)
+    typeof rawStopLoss === "number" && Number.isFinite(rawStopLoss)
+      ? rawStopLoss
+      : typeof rawStopLoss === "string" &&
+        rawStopLoss.trim() !== "" &&
+        Number.isFinite(Number(rawStopLoss))
+      ? Number(rawStopLoss)
       : undefined;
 
+  const rawProfitTarget: unknown = (row as any).profitTarget;
   const numericProfitTarget =
-    typeof row.profitTarget === "number" && Number.isFinite(row.profitTarget)
-      ? row.profitTarget
-      : typeof row.profitTarget === "string" &&
-        row.profitTarget.trim() !== "" &&
-        Number.isFinite(Number(row.profitTarget))
-      ? Number(row.profitTarget)
+    typeof rawProfitTarget === "number" && Number.isFinite(rawProfitTarget)
+      ? rawProfitTarget
+      : typeof rawProfitTarget === "string" &&
+        rawProfitTarget.trim() !== "" &&
+        Number.isFinite(Number(rawProfitTarget))
+      ? Number(rawProfitTarget)
       : undefined;
 
   // Compute trade R-multiple (prefer numeric Stop Loss if set, else MT5 imported realized_r)
@@ -255,7 +257,7 @@ export const rowToTrade = (
       profitTarget: numericProfitTarget,
       reviewed: row.reviewedAt !== null,
     },
-  } as AnnotatedTrade;
+  } as unknown as AnnotatedTrade;
 };
 
 export const queryTrades = (
