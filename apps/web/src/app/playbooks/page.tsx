@@ -46,8 +46,11 @@ function PlaybooksContent() {
   const router = useRouter();
   const { query } = useFilters();
   const [refreshKey, setRefreshKey] = useState(0);
+  const [includeMissed, setIncludeMissed] = useState<boolean>(false);
   const reload = () => setRefreshKey((k) => k + 1);
-  const { data, loading } = useApi<any>(`/api/playbooks?${query}${query ? "&" : ""}_r=${refreshKey}`);
+  const { data, loading } = useApi<any>(
+    `/api/playbooks?${query}${query ? "&" : ""}includeMissed=${includeMissed ? "1" : "0"}&_r=${refreshKey}`
+  );
 
   const [tab, setTab] = useState<"active" | "archived">("active");
   const [viewMode, setViewMode] = useState<"table" | "grid">("table");
@@ -84,8 +87,29 @@ function PlaybooksContent() {
       <FilterBar title="Playbooks" />
 
       <main className="mx-auto max-w-7xl px-4 py-5 space-y-5">
-        {/* TOP ROW: + New playbook button */}
-        <div className="flex items-center justify-end">
+        {/* TOP ROW: Include Missed Toggle + New playbook button */}
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <button
+            type="button"
+            onClick={() => setIncludeMissed((v) => !v)}
+            className={`inline-flex h-9 items-center gap-2 rounded-xl border px-3.5 text-xs font-semibold transition-all ${
+              includeMissed
+                ? "border-amber-500/50 bg-amber-500/15 text-amber-300 shadow-xs"
+                : "border-border/60 bg-[#12141a] text-muted-foreground hover:text-foreground"
+            }`}
+            title="Toggle whether Missed Trades are included in strategy Win %, Net P&L, and Profit Factor"
+          >
+            <span
+              className={`h-2 w-2 rounded-full ${
+                includeMissed ? "bg-amber-400" : "bg-muted-foreground/40"
+              }`}
+            />
+            <span>
+              {includeMissed
+                ? "Including Missed Trades in Stats"
+                : "Include Missed Trades in Stats"}
+            </span>
+          </button>
           <Button
             type="button"
             onClick={() => {

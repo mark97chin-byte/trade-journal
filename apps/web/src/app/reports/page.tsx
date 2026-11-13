@@ -1,3 +1,4 @@
+import { EdgeOptimizerView } from "@/components/reports/edge-optimizer-view";
 "use client";
 
 import { StrategyRulesCard } from "@/components/reports/strategy-rules-card";
@@ -24,6 +25,7 @@ type MainTab =
   | "performance"
   | "compare"
   | "missed_opportunity"
+  | "edge_optimizer"
   | "content_management";
 
 type DayTimeSubTab = "days" | "months" | "trade_time" | "trade_duration";
@@ -62,7 +64,9 @@ export default function ReportsPage() {
 
 function ReportsContent() {
   const { query, range, from, to } = useFilters();
-  const { data, loading, error } = useApi<any>(`/api/reports/breakdown?${query}`);
+  const [includeMissed, setIncludeMissed] = useState<boolean>(false);
+  const effectiveQuery = `${query}${query ? "&" : ""}includeMissed=${includeMissed ? "1" : "0"}`;
+  const { data, loading, error } = useApi<any>(`/api/reports/breakdown?${effectiveQuery}`);
 
   const [mainTab, setMainTab] = useState<MainTab>("overview");
   const [dayTimeSubTab, setDayTimeSubTab] = useState<DayTimeSubTab>("days");
@@ -232,7 +236,42 @@ function ReportsContent() {
             >
               Missed trades
             </button>
+
+            {/* 6. Edge & R Optimizer */}
+            <button
+              type="button"
+              onClick={() => setMainTab("edge_optimizer")}
+              className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
+                mainTab === "edge_optimizer"
+                  ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 shadow-sm"
+                  : "text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
+              }`}
+            >
+              ⚡ Edge &amp; R Optimizer
+            </button>
           </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {/* Global Include Missed Trades Toggle for Reports */}
+            <button
+              type="button"
+              onClick={() => setIncludeMissed((v) => !v)}
+              className={`flex items-center gap-1.5 rounded-lg border px-3 py-1.5 text-xs font-semibold transition-all ${
+                includeMissed
+                  ? "border-amber-500/50 bg-amber-500/15 text-amber-300 shadow-xs"
+                  : "border-border/60 bg-slate-50 dark:bg-card text-muted-foreground hover:text-foreground"
+              }`}
+              title="Toggle whether Missed Trades are included in Strategies, Tags, and Optimizer calculations"
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  includeMissed ? "bg-amber-400" : "bg-muted-foreground/40"
+                }`}
+              />
+              <span>
+                {includeMissed ? "Including Missed Trades" : "Include Missed Trades"}
+              </span>
+            </button>
 
           {/* Right: Categories & Tags button — ONLY visible when in Reports: Tags */}
           {(mainTab === "tags" || mainTab === "content_management") && (
@@ -251,6 +290,7 @@ function ReportsContent() {
               <span>Categories & Tags</span>
             </button>
           )}
+          </div>
         </div>
 
         {/* SUB-PILLS FOR DAY & TIME */}
@@ -502,6 +542,14 @@ function ReportsContent() {
 
             {mainTab === "missed_opportunity" && (
               <MissedTradesReportView query={query} />
+            )}
+
+            {mainTab === "edge_optimizer" && (
+              <EdgeOptimizerView
+                query={query}
+                includeMissed={includeMissed}
+                onToggleIncludeMissed={() => setIncludeMissed((v) => !v)}
+              />
             )}
           </div>
         )}

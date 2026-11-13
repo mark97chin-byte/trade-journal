@@ -69,9 +69,10 @@ function PlaybookDetailContent() {
   const router = useRouter();
   const { query } = useFilters();
   const [refreshKey, setRefreshKey] = useState(0);
+  const [includeMissed, setIncludeMissed] = useState<boolean>(false);
   const reload = () => setRefreshKey((k) => k + 1);
   const { data, loading } = useApi<any>(
-    `/api/playbooks/${params.id}?${query}${query ? "&" : ""}_r=${refreshKey}`
+    `/api/playbooks/${params.id}?${query}${query ? "&" : ""}includeMissed=${includeMissed ? "1" : "0"}&_r=${refreshKey}`
   );
 
   const [activeTab, setActiveTab] = useState<"stats" | "rules" | "trades" | "notes">("stats");
@@ -421,7 +422,28 @@ function PlaybookDetailContent() {
                   )}
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setIncludeMissed((v) => !v)}
+                    className={`inline-flex h-8 items-center gap-2 rounded-lg border px-3 text-xs font-semibold transition-all ${
+                      includeMissed
+                        ? "border-amber-500/50 bg-amber-500/15 text-amber-300"
+                        : "border-border/60 bg-[#161822] text-muted-foreground hover:text-foreground"
+                    }`}
+                    title="Include Missed Trades in this strategy's Stats and Rule winrates"
+                  >
+                    <span
+                      className={`h-2 w-2 rounded-full ${
+                        includeMissed ? "bg-amber-400" : "bg-muted-foreground/40"
+                      }`}
+                    />
+                    <span>
+                      {includeMissed
+                        ? `Including Missed (${pb.missedTrades?.length ?? 0})`
+                        : `Include Missed (${pb.missedTrades?.length ?? 0})`}
+                    </span>
+                  </button>
                   <Button
                     type="button"
                     variant="outline"
@@ -1034,10 +1056,112 @@ function PlaybookDetailContent() {
                   </table>
                 </div>
               ) : (
-                <div className="rounded-xl border border-border/40 bg-[#0d0f14] p-8 text-center text-xs text-muted-foreground">
-                  {pb.missedTrades.length === 0
-                    ? "No missed trades recorded for this strategy."
-                    : `${pb.missedTrades.length} missed trades recorded.`}
+                <div className="overflow-x-auto rounded-xl border border-border/40 bg-[#0d0f14]">
+                  <table className="w-full text-left text-xs">
+                    <thead className="border-b border-border/40 bg-[#161822]/60 text-muted-foreground">
+                      <tr>
+                        <th className="py-3 pl-4 font-medium">Setup ID</th>
+                        <th className="py-3 font-medium">Date (NY) &amp; Session</th>
+                        <th className="py-3 font-medium">Symbol</th>
+                        <th className="py-3 text-center font-medium">Direction</th>
+                        <th className="py-3 text-center font-medium">Outcome</th>
+                        <th className="py-3 font-medium">Reason Missed</th>
+                        <th className="py-3 text-right font-medium">Entry / SL / TP</th>
+                        <th className="py-3 text-right font-medium">Realized R</th>
+                        <th className="py-3 pr-4 text-right font-medium">Theoretical P&amp;L</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-border/20">
+                      {pb.missedTrades.map((m: any) => {
+                        const mId = m.id || m.key;
+                        const dir = String(m.direction || "long").toLowerCase();
+                        const out = String(m.outcome || "WIN").toUpperCase();
+                        const pnl = Number(m.theoreticalPnl ?? m.theoretical_pnl ?? 0);
+                        const rVal = m.realizedR ?? m.realized_r ?? m.plannedR ?? m.planned_r ?? null;
+                        return (
+                          <tr
+                            key={mId}
+                            onClick={() => router.push(`/missed/${encodeURIComponent(mId)}`)}
+                            className="cursor-pointer hover:bg-secondary/20 transition-colors"
+                          >
+                            <td className="py-3.5 pl-4 font-mono font-semibold text-foreground">
+                              {mId}
+                            </td>
+                            <td className="py-3.5 tabular-nums text-muted-foreground">
+                              {fmtDateShort(m.observedAt ?? m.observed_at)} •{" "}
+                              <strong className="text-foreground">{m.session || "NY AM"}</strong>
+                            </td>
+                            <td className="py-3.5 font-mono font-bold text-foreground">
+                              {m.symbol}
+                            </td>
+                            <td className="py-3.5 text-center">
+                              <span
+                                className={`uppercase font-semibold ${
+                                  dir === "short" ? "text-rose-400" : "text-emerald-400"
+                                }`}
+                              >
+                                {dir}
+                              </span>
+                            </td>
+                            <td className="py-3.5 text-center">
+                              <span
+                                className={`inline-block rounded px-2 py-0.5 text-[10px] font-bold uppercase ${
+                                  out === "WIN"
+                                    ? "bg-emerald-500/20 text-emerald-400"
+                                    : out === "LOSS"
+                                    ? "bg-rose-500/20 text-rose-400"
+                                    : "bg-secondary text-muted-foreground"
+                                }`}
+                              >
+                                {out}
+                              </span>
+                            </td>
+                            <td className="py-3.5 text-foreground">
+                              {m.missReason ?? m.miss_reason ?? "Hesitation / Fear"}
+                            </td>
+                            <td className="py-3.5 text-right font-mono text-muted-foreground">
+                              {m.entry ?? "—"} / {m.stop ?? "—"} / {m.target ?? "—"}
+                            </td>
+                            <td
+                              className={`py-3.5 text-right font-mono font-semibold ${
+                                rVal != null && Number(rVal) >= 0
+                                  ? "text-emerald-400"
+                                  : rVal != null
+                                  ? "text-rose-400"
+                                  : "text-muted-foreground"
+                              }`}
+                            >
+                              {rVal != null
+                                ? `${Number(rVal) > 0 ? "+" : ""}${Number(rVal).toFixed(2)}R`
+                                : "—"}
+                            </td>
+                            <td
+                              className={`py-3.5 pr-4 text-right font-mono font-semibold ${
+                                pnl > 0
+                                  ? "text-emerald-400"
+                                  : pnl < 0
+                                  ? "text-rose-400"
+                                  : "text-foreground"
+                              }`}
+                            >
+                              {fmtMoney(pnl)}
+                            </td>
+                          </tr>
+                        );
+                      })}
+
+                      {pb.missedTrades.length === 0 && (
+                        <tr>
+                          <td
+                            colSpan={9}
+                            className="py-10 text-center text-xs text-muted-foreground"
+                          >
+                            No missed trades recorded for this strategy.
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
                 </div>
               )}
             </div>

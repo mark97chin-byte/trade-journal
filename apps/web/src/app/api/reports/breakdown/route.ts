@@ -1,3 +1,4 @@
+import { queryMissedTradesAsAnnotated } from "@/server/missed-trades-bridge";
 import { dailyStats, dayKeyOf, readFilters } from "@luxalgo/journal-core";
 import { accounts, db, playbooks as playbooksTable, tradeRuleChecks } from "@/db";
 import { ensurePlaybookTables, getMetaRow, normalizeRuleGroups } from "@/server/playbooks-store";
@@ -57,12 +58,20 @@ export const GET = handler(async (request: Request) => {
   const allPlaybooks = db.select().from(playbooksTable).all();
   const { categories: tagCategoriesList, tags: managedTagsList } = getTagsWithUsage();
 
-  const { trades, scope: currencyScope } = currencyProjection(
+  const includeMissed =
+    params.get("includeMissed") === "1" || params.get("includeMissed") === "true";
+
+  const { trades: projectedExecTrades, scope: currencyScope } = currencyProjection(
     originalTrades,
     accountRows,
     getCurrencyConversion(),
   );
 
+  const missedBundle = includeMissed
+    ? queryMissedTradesAsAnnotated(filters)
+    : { trades: [], ruleChecks: [] };
+
+  const trades = [...projectedExecTrades, ...missedBundle.trades];
   const currency = currencyScope.monetary ? currencyScope.currency ?? "USD" : "USD";
 
   const closedTrades = (trades as any[]).filter(
@@ -544,7 +553,17 @@ export const GET = handler(async (request: Request) => {
 
   
   ensurePlaybookTables();
-  const allRuleChecks = db.select().from(tradeRuleChecks).all();
+  const dbRuleChecks = db.select().from(tradeRuleChecks).all();
+  const allRuleChecks = [
+    ...dbRuleChecks,
+    ...missedBundle.ruleChecks.map((c) => ({
+      id: `missed_${c.tradeKey}_${c.rule}`,
+      tradeKey: c.tradeKey,
+      playbookId: c.playbookId,
+      rule: c.rule,
+      followed: c.followed,
+    })),
+  ];
   const strategyRulesList: {
     playbookId: string;
     playbookName: string;

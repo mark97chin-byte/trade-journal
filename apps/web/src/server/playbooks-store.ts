@@ -1,3 +1,4 @@
+import { formatMissedTradeRow, queryMissedTradesAsAnnotated, type RawMissedTradeRow } from "@/server/missed-trades-bridge";
 import { asc, eq, and, sql } from "drizzle-orm";
 import { db, playbooks, trades, tradeRuleChecks, accounts } from "@/db";
 import { dailyStats, dayKeyOf, readFilters } from "@luxalgo/journal-core";
@@ -304,14 +305,19 @@ export function computeStrategyMetrics(playbookTrades: any[], timeZone: string) 
 export function getAllPlaybooksEnriched(searchParams?: URLSearchParams) {
   ensurePlaybookTables();
   const timeZone = getTimeZone();
+  const includeMissed =
+    searchParams?.get("includeMissed") === "1" ||
+    searchParams?.get("includeMissed") === "true";
   const filters = searchParams ? readFilters(searchParams) : {};
   const { trades: rawTrades } = queryTrades(filters);
   const accountRows = db.select().from(accounts).all();
-  const { trades: projectedTrades, scope } = currencyProjection(
+  const { trades: execProjectedTrades, scope } = currencyProjection(
     rawTrades,
     accountRows,
     getCurrencyConversion()
   );
+  const missedBundle = includeMissed ? queryMissedTradesAsAnnotated(filters) : { trades: [] };
+  const projectedTrades = [...execProjectedTrades, ...missedBundle.trades];
   const currency = scope.monetary ? scope.currency ?? "USD" : "USD";
 
   // Count missed trades per playbook if missed_trades table exists
@@ -419,14 +425,21 @@ export function getPlaybookDetail(id: string, searchParams?: URLSearchParams) {
   if (!row) return null;
 
   const timeZone = getTimeZone();
+  const includeMissed =
+    searchParams?.get("includeMissed") === "1" ||
+    searchParams?.get("includeMissed") === "true";
   const filters = searchParams ? readFilters(searchParams) : {};
   const { trades: rawTrades } = queryTrades(filters);
   const accountRows = db.select().from(accounts).all();
-  const { trades: projectedTrades, scope } = currencyProjection(
+  const { trades: execProjectedTrades, scope } = currencyProjection(
     rawTrades,
     accountRows,
     getCurrencyConversion()
   );
+  const missedBundle = includeMissed
+    ? queryMissedTradesAsAnnotated(filters)
+    : { trades: [], ruleChecks: [] };
+  const projectedTrades = [...execProjectedTrades, ...missedBundle.trades];
   const currency = scope.monetary ? scope.currency ?? "USD" : "USD";
 
   const meta = getMetaRow(row.id);
@@ -435,14 +448,27 @@ export function getPlaybookDetail(id: string, searchParams?: URLSearchParams) {
   const tags: string[] = meta?.tags_json ? JSON.parse(meta.tags_json) : [];
 
   const pbTrades = (projectedTrades as any[]).filter((t) => (t.playbookId ?? t.annotations?.playbook) === row.id);
+  const execOnlyPbTrades = (execProjectedTrades as any[]).filter((t) => (t.playbookId ?? t.annotations?.playbook) === row.id);
   const stats = computeStrategyMetrics(pbTrades, timeZone);
 
-  // Compute per-rule performance from tradeRuleChecks
-  const allChecks = db
+  // Compute per-rule performance from tradeRuleChecks (+ missed_trades rules when includeMissed=true)
+  const dbChecks = db
     .select()
     .from(tradeRuleChecks)
     .where(eq(tradeRuleChecks.playbookId, row.id))
     .all();
+  const allChecks = [
+    ...dbChecks,
+    ...missedBundle.ruleChecks
+      .filter((c) => c.playbookId === row.id)
+      .map((c) => ({
+        id: `missed_${c.tradeKey}_${c.rule}`,
+        tradeKey: c.tradeKey,
+        playbookId: c.playbookId,
+        rule: c.rule,
+        followed: c.followed,
+      })),
+  ];
 
   const tradeByKey = new Map<string, any>();
   for (const t of pbTrades) {
@@ -496,12 +522,13 @@ export function getPlaybookDetail(id: string, searchParams?: URLSearchParams) {
     }),
   }));
 
-  // Missed trades for this playbook
+  // Missed trades for this playbook (formatted with clean camelCase fields)
   let missedTrades: any[] = [];
   try {
-    missedTrades = db.all(
-      sql`SELECT * FROM missed_trades WHERE playbook_id = ${row.id} ORDER BY created_at DESC`
+    const rawMissed = db.all<RawMissedTradeRow>(
+      sql`SELECT * FROM missed_trades WHERE playbook_id = ${row.id} AND archived_at IS NULL ORDER BY observed_at DESC`
     );
+    missedTrades = rawMissed.map(formatMissedTradeRow);
   } catch {
     missedTrades = [];
   }
@@ -540,7 +567,7 @@ export function getPlaybookDetail(id: string, searchParams?: URLSearchParams) {
       ruleGroups: ruleGroupsWithStats,
       rules,
       stats,
-      trades: pbTrades.map((t) => ({
+      trades: execOnlyPbTrades.map((t) => ({
         key: t.key ?? t.id,
         id: t.id,
         symbol: t.symbol,
