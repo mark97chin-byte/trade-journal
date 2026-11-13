@@ -1,10 +1,12 @@
 "use client";
 
 import React, { useState, useMemo } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useApi } from "@/lib/use-api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import {
   Sparkles,
   TrendingUp,
@@ -18,6 +20,8 @@ import {
   Loader2,
   CheckCircle2,
   AlertTriangle,
+  Info,
+  BookOpen,
 } from "lucide-react";
 
 function fmtMoney(val: number | null | undefined): string {
@@ -30,6 +34,25 @@ function fmtMoney(val: number | null | undefined): string {
   })}`;
 }
 
+function HintIcon({ text }: { text: string }) {
+  return (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <button
+          type="button"
+          onClick={(e) => e.stopPropagation()}
+          className="inline-flex items-center text-muted-foreground/70 hover:text-foreground transition-colors"
+        >
+          <Info className="h-3.5 w-3.5" />
+        </button>
+      </TooltipTrigger>
+      <TooltipContent className="max-w-xs text-xs leading-relaxed">
+        {text}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 export function EdgeOptimizerView({
   query,
   includeMissed,
@@ -40,17 +63,22 @@ export function EdgeOptimizerView({
   onToggleIncludeMissed: () => void;
 }) {
   const router = useRouter();
-  const [selectedPlaybookId, setSelectedPlaybookId] = useState<string>("all");
+  const [selectedStrategyId, setSelectedStrategyId] = useState<string>("all");
   const [minSampleSize, setMinSampleSize] = useState<number>(1);
   const [activeDimension, setActiveDimension] = useState<string>("all_categories");
   const [expandedBucketKey, setExpandedBucketKey] = useState<string | null>(null);
 
   const [aiLoading, setAiLoading] = useState(false);
   const [aiReport, setAiReport] = useState<string | null>(null);
+  const [savedReportMeta, setSavedReportMeta] = useState<{
+    reportId: string;
+    title: string;
+    source: string;
+  } | null>(null);
 
   const apiUrl = `/api/reports/optimizer?${query}${query ? "&" : ""}includeMissed=${
     includeMissed ? "1" : "0"
-  }&playbookId=${encodeURIComponent(selectedPlaybookId)}`;
+  }&strategyId=${encodeURIComponent(selectedStrategyId)}`;
 
   const { data, loading } = useApi<any>(apiUrl);
 
@@ -66,6 +94,12 @@ export function EdgeOptimizerView({
       raw = data.dimensions.byKillzone || [];
     } else if (activeDimension === "candle7h") {
       raw = data.dimensions.by7hCandle || [];
+    } else if (activeDimension === "duration") {
+      raw = data.dimensions.byDuration || [];
+    } else if (activeDimension === "sequential") {
+      raw = data.dimensions.bySequentialState || [];
+    } else if (activeDimension === "sym_dir") {
+      raw = data.dimensions.bySymbolDirection || [];
     } else if (activeDimension === "dow") {
       raw = data.dimensions.byDayOfWeek || [];
     } else if (activeDimension === "symbol") {
@@ -74,6 +108,12 @@ export function EdgeOptimizerView({
     return raw.filter((r) => (r.metrics?.count ?? 0) >= minSampleSize);
   }, [data, activeDimension, minSampleSize]);
 
+  const selectedStrategyLabel = useMemo(() => {
+    if (selectedStrategyId === "all") return "All Strategies";
+    const found = (data?.playbooks || []).find((p: any) => p.id === selectedStrategyId);
+    return found ? found.name : "Strategy";
+  }, [data?.playbooks, selectedStrategyId]);
+
   const runAiAudit = async () => {
     if (!data) return;
     setAiLoading(true);
@@ -81,11 +121,21 @@ export function EdgeOptimizerView({
       const res = await fetch("/api/reports/optimizer/ai", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        body: JSON.stringify({
+          ...data,
+          strategyLabel: selectedStrategyLabel,
+        }),
       });
       const json = await res.json();
       if (json.analysis) {
         setAiReport(json.analysis);
+        if (json.reportId) {
+          setSavedReportMeta({
+            reportId: json.reportId,
+            title: json.title || "Optimizer Report",
+            source: json.source || "AI",
+          });
+        }
       }
     } finally {
       setAiLoading(false);
@@ -101,13 +151,12 @@ export function EdgeOptimizerView({
   const bestTarget = mfeCurve?.bestTrailing;
   const samplePct = Math.min(100, Math.round((b.count / 20) * 100));
 
-  // Render MFE Expectancy Curve SVG
   const renderMfeCurveSvg = () => {
     const pts: any[] = mfeCurve?.points || [];
     if (pts.length === 0 || b.count === 0) {
       return (
         <div className="flex h-52 items-center justify-center text-xs text-muted-foreground">
-          Log trades with MFE / Realized R to generate the Target R Expectancy Curve.
+          No trades found in the selected date/filter range.
         </div>
       );
     }
@@ -116,7 +165,7 @@ export function EdgeOptimizerView({
     const height = 220;
     const padL = 48;
     const padR = 24;
-    const padT = 22;
+    const padT = 24;
     const padB = 32;
     const plotW = width - padL - padR;
     const plotH = height - padT - padB;
@@ -149,7 +198,6 @@ export function EdgeOptimizerView({
           stroke="rgba(255,255,255,0.18)"
           strokeDasharray="3 3"
         />
-        {/* Baseline Actual Expectancy Line */}
         <line
           x1={padL}
           y1={actualY}
@@ -166,7 +214,7 @@ export function EdgeOptimizerView({
         <path d={areaPath} fill="#10b981" fillOpacity="0.16" />
         <path d={linePath} fill="none" stroke="#10b981" strokeWidth="2.5" strokeLinecap="round" />
 
-        {bestIdx >= 0 && (
+        {bestIdx >= 0 && bestTarget && (
           <g>
             <line
               x1={getX(bestIdx)}
@@ -183,14 +231,15 @@ export function EdgeOptimizerView({
               fill="#f59e0b"
             />
             <text
-              x={getX(bestIdx)}
+              x={Math.min(width - 120, Math.max(120, getX(bestIdx)))}
               y={Math.max(14, getY(pts[bestIdx]!.trailingExpR) - 10)}
               textAnchor="middle"
               fontSize="10"
               fontWeight="bold"
               fill="#fbbf24"
             >
-              Optimal: {bestTarget.targetR}R (+{bestTarget.trailingExpR}R/trade • {bestTarget.hitRate}% hit)
+              Optimal: {bestTarget.targetR}R ({bestTarget.trailingExpR >= 0 ? "+" : ""}
+              {bestTarget.trailingExpR}R/trade • {bestTarget.hitRate}% hit)
             </text>
           </g>
         )}
@@ -218,24 +267,25 @@ export function EdgeOptimizerView({
 
   return (
     <div className="space-y-6">
-      {/* TOP CONTROL BAR & SAMPLE SIZE GATE */}
+      {/* TOP CONTROL BAR & SAMPLE SIZE ADVISORY */}
       <div className="rounded-xl border border-border/60 bg-card p-4 shadow-sm space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <h2 className="text-base font-bold text-foreground flex items-center gap-2">
-              <Target className="h-4 w-4 text-emerald-400" />
+              <Target className="h-4 w-4 text-muted-foreground" />
               <span>Quantitative Edge &amp; R-Multiple Optimizer</span>
+              <HintIcon text="Combines exact R-multiple excursion math (MFE/MAE, Partial Scale-Outs, Hold-Time, Post-Win/Loss recency, and Tag/Rule cross-tabs) with AI pattern synthesis." />
             </h2>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Layer 1 exact mathematical excursion &amp; confluence engine + Layer 2 AI pattern synthesizer.
+              Layer 1 exact mathematical excursion &amp; confluence engine + Layer 2 AI pattern synthesizer (auto-saved to your AI Notebook).
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
             {/* Strategy Filter */}
             <select
-              value={selectedPlaybookId}
-              onChange={(e) => setSelectedPlaybookId(e.target.value)}
+              value={selectedStrategyId}
+              onChange={(e) => setSelectedStrategyId(e.target.value)}
               className="h-8 rounded-lg border border-border/70 bg-background px-2.5 text-xs font-semibold text-foreground outline-none"
             >
               <option value="all">All Strategies</option>
@@ -249,7 +299,7 @@ export function EdgeOptimizerView({
             {/* Min Sample Size Filter */}
             <div className="flex items-center gap-1.5 rounded-lg border border-border/70 bg-background px-2.5 h-8 text-xs">
               <span className="text-muted-foreground">Min N:</span>
-              {[1, 5, 10, 15, 20].map((nVal) => (
+              {[1, 3, 5, 10, 15, 20].map((nVal) => (
                 <button
                   key={nVal}
                   type="button"
@@ -263,6 +313,7 @@ export function EdgeOptimizerView({
                   {nVal}+
                 </button>
               ))}
+              <HintIcon text="Filter out tag/rule rows with fewer than N trades. Set to 1+ to inspect all buckets or 15+ / 20+ for statistically mature patterns." />
             </div>
 
             {/* Include Missed Toggle */}
@@ -289,19 +340,19 @@ export function EdgeOptimizerView({
               size="sm"
               disabled={aiLoading || b.count === 0}
               onClick={() => void runAiAudit()}
-              className="h-8 gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-semibold"
+              className="h-8 gap-1.5 bg-secondary text-foreground font-semibold border border-border hover:bg-secondary/80 text-xs"
             >
               {aiLoading ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
               ) : (
-                <Sparkles className="h-3.5 w-3.5" />
+                <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
               )}
-              <span>{aiLoading ? "Synthesizing..." : "Run AI Pattern & Edge Audit"}</span>
+              <span>{aiLoading ? "Analyzing & Saving to Notebook..." : "Run AI Pattern & Edge Audit"}</span>
             </Button>
           </div>
         </div>
 
-        {/* Sample Size Confidence Bar */}
+        {/* Sample Size Confidence & Data Skew Banner */}
         <div className="rounded-lg border border-border/50 bg-secondary/20 p-3 flex flex-wrap items-center justify-between gap-4 text-xs">
           <div className="flex items-center gap-2.5">
             {b.count >= 20 ? (
@@ -311,13 +362,13 @@ export function EdgeOptimizerView({
             )}
             <div>
               <span className="font-bold text-foreground">
-                Sample Size Gate: {b.count} / 20 Setups ({b.executedCount} Executed
+                Active Sample: {b.count} Setups ({b.executedCount} Executed
                 {includeMissed ? ` + ${b.missedCount} Missed` : ""})
               </span>
               <span className="ml-2 text-muted-foreground">
                 {b.count >= 20
-                  ? "High statistical confidence unlocked (N ≥ 20)."
-                  : `Need ${Math.max(0, 20 - b.count)} more setup(s) to reach the 20-trade statistical threshold (early preview active).`}
+                  ? "Statistically actionable sample size reached (N ≥ 20)."
+                  : "Note: Optimization is running on all available trades below, but data may be skewed due to a small sample size (<20 trades)."}
               </span>
             </div>
           </div>
@@ -333,21 +384,35 @@ export function EdgeOptimizerView({
         </div>
       </div>
 
-      {/* LAYER 2: AI PATTERN SYNTHESIS PANEL (WHEN TRIGGERED) */}
+      {/* LAYER 2: AI PATTERN SYNTHESIS PANEL (AUTO-SAVED TO NOTEBOOK) */}
       {aiReport && (
         <div className="rounded-xl border border-indigo-500/40 bg-[#12141f] p-5 space-y-3 shadow-lg">
-          <div className="flex items-center justify-between border-b border-border/40 pb-2.5">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2.5">
             <div className="flex items-center gap-2 text-sm font-bold text-indigo-300">
               <Sparkles className="h-4 w-4" />
-              <span>AI Quantitative Strategy &amp; Edge Synthesis</span>
+              <span>{savedReportMeta?.title || "AI Quantitative Strategy & Edge Synthesis"}</span>
+              {savedReportMeta?.source && (
+                <span className="rounded bg-indigo-500/20 px-2 py-0.5 text-[10px] font-mono text-indigo-200">
+                  {savedReportMeta.source}
+                </span>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={() => setAiReport(null)}
-              className="text-xs text-muted-foreground hover:text-foreground"
-            >
-              Dismiss ✕
-            </button>
+            <div className="flex items-center gap-3">
+              <Link
+                href="/notebook?tab=ai&folder=optimizer"
+                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-2.5 py-1 text-xs font-semibold text-emerald-300 transition"
+              >
+                <BookOpen className="h-3.5 w-3.5" />
+                <span>Saved to Notebook → Optimizer Reports ↗</span>
+              </Link>
+              <button
+                type="button"
+                onClick={() => setAiReport(null)}
+                className="text-xs text-muted-foreground hover:text-foreground"
+              >
+                Dismiss ✕
+              </button>
+            </div>
           </div>
           <div className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/95 space-y-1">
             {aiReport}
@@ -355,11 +420,12 @@ export function EdgeOptimizerView({
         </div>
       )}
 
-      {/* TOP 6 QUANTITATIVE TELEMETRY CARDS */}
+      {/* TOP 6 QUANTITATIVE TELEMETRY CARDS WITH HOVER TOOLTIPS */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6 text-xs">
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
-          <div className="text-[10px] uppercase font-bold text-muted-foreground">
-            Expectancy E[R]
+          <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
+            <span>Expectancy E[R]</span>
+            <HintIcon text="Average R-multiple won or lost per trade: (Win% × Avg Win R) - (Loss% × Avg Loss R). The 95% CI shows the statistical range of your true expectancy." />
           </div>
           <div
             className={`text-lg font-bold font-mono ${
@@ -374,8 +440,9 @@ export function EdgeOptimizerView({
         </div>
 
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
-          <div className="text-[10px] uppercase font-bold text-muted-foreground">
-            System Quality (SQN)
+          <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
+            <span>System Quality (SQN)</span>
+            <HintIcon text="Van Tharp's System Quality Number = √N × (Mean R / StdDev R). Measures consistency of returns relative to volatility. >2.0 is solid; >3.0 is excellent." />
           </div>
           <div className="text-lg font-bold font-mono text-foreground">{b.sqn}</div>
           <div className="text-[10px] text-muted-foreground">
@@ -388,22 +455,24 @@ export function EdgeOptimizerView({
         </div>
 
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
-          <div className="text-[10px] uppercase font-bold text-muted-foreground">
-            Optimal Target R*
+          <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
+            <span>Optimal Target R*</span>
+            <HintIcon text="The fixed Take-Profit R-multiple (between 0.5R and 8.0R) that maximizes per-trade expectancy based on how far your trades actually ran (MFE R)." />
           </div>
           <div className="text-lg font-bold font-mono text-amber-400">
             {bestTarget ? `${bestTarget.targetR}R` : "—"}
           </div>
           <div className="text-[10px] text-muted-foreground">
             {bestTarget
-              ? `+${bestTarget.trailingExpR}R exp (${bestTarget.hitRate}% hit)`
+              ? `${bestTarget.trailingExpR >= 0 ? "+" : ""}${bestTarget.trailingExpR}R exp (${bestTarget.hitRate}% hit)`
               : "No MFE data"}
           </div>
         </div>
 
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
-          <div className="text-[10px] uppercase font-bold text-muted-foreground">
-            90% Winner Heat (MAE)
+          <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
+            <span>90% Winner Heat (MAE)</span>
+            <HintIcon text="90% of your winning trades never experienced more drawdown than this R value. If a live trade draws down past this level, its historical probability of winning drops below 10%." />
           </div>
           <div className="text-lg font-bold font-mono text-rose-400">
             {b.p90WinnerMaeR !== null ? `-${b.p90WinnerMaeR}R` : "—"}
@@ -414,8 +483,9 @@ export function EdgeOptimizerView({
         </div>
 
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
-          <div className="text-[10px] uppercase font-bold text-muted-foreground">
-            R Capture Efficiency
+          <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
+            <span>R Capture Efficiency</span>
+            <HintIcon text="Percentage of Maximum Favorable Excursion (MFE R) locked in at exit on winning trades (Realized R ÷ MFE R). Runner bleed shows average R left on the table." />
           </div>
           <div className="text-lg font-bold font-mono text-foreground">
             {b.avgCaptureEff !== null ? `${b.avgCaptureEff}%` : "—"}
@@ -426,8 +496,9 @@ export function EdgeOptimizerView({
         </div>
 
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
-          <div className="text-[10px] uppercase font-bold text-muted-foreground">
-            Half-Kelly Safe Risk
+          <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
+            <span>Half-Kelly Safe Risk</span>
+            <HintIcon text="Half of the mathematical Kelly Criterion optimal bet size based on your Win % and Payoff Ratio, plus the statistically expected longest losing streak in 100 trades." />
           </div>
           <div className="text-lg font-bold font-mono text-indigo-400">
             {b.halfKellyPct}%
@@ -443,8 +514,9 @@ export function EdgeOptimizerView({
         <div className="lg:col-span-7 rounded-xl border border-border/50 bg-card p-4 space-y-3">
           <div className="flex items-center justify-between border-b border-border/30 pb-2">
             <div>
-              <h3 className="text-sm font-bold text-foreground">
-                1. MFE Optimal Target R Expectancy Curve (0.5R → 8.0R)
+              <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+                <span>1. MFE Optimal Target R Expectancy Curve (0.5R → 8.0R)</span>
+                <HintIcon text="Tests every candidate Take-Profit level from 0.5R to 8.0R. If a trade's MFE reached T, it simulates banking +T R; otherwise it keeps the trade's actual realized R." />
               </h3>
               <p className="text-[11px] text-muted-foreground">
                 Simulates expected R per trade across candidate Full-TP targets based on each setup&apos;s recorded MFE.
@@ -456,8 +528,9 @@ export function EdgeOptimizerView({
 
         <div className="lg:col-span-5 rounded-xl border border-border/50 bg-card p-4 space-y-3">
           <div className="border-b border-border/30 pb-2">
-            <h3 className="text-sm font-bold text-foreground">
-              2. Top Partial Scale-Out Plans (TP1 + SL→BE + Runner)
+            <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
+              <span>2. Top Partial Scale-Out Plans (TP1 + SL→BE + Runner)</span>
+              <HintIcon text="Simulates 36 two-stage partial scale-out combinations (taking 25%/50%/75% off at TP1, moving stop to Breakeven 0R, and holding the runner to TP2) against your historical MFE." />
             </h3>
             <p className="text-[11px] text-muted-foreground">
               Ranked 2-stage partial plans vs. your actual realized expectancy ({b.expectancyR}R).
@@ -483,11 +556,15 @@ export function EdgeOptimizerView({
                   </div>
                 </div>
                 <div className="text-right font-mono shrink-0">
-                  <div className="font-bold text-emerald-400">
-                    +{plan.expectancyR}R/trade
+                  <div
+                    className={`font-bold ${
+                      plan.expectancyR >= 0 ? "text-emerald-400" : "text-rose-400"
+                    }`}
+                  >
+                    {plan.expectancyR >= 0 ? `+${plan.expectancyR}R` : `${plan.expectancyR}R`}/trade
                   </div>
                   <div className="text-[10px] text-muted-foreground">
-                    Net: +{plan.totalR}R
+                    Net: {plan.totalR >= 0 ? `+${plan.totalR}R` : `${plan.totalR}R`}
                   </div>
                 </div>
               </div>
@@ -501,11 +578,12 @@ export function EdgeOptimizerView({
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/30 pb-3">
           <div>
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
-              <Layers className="h-4 w-4 text-indigo-400" />
+              <Layers className="h-4 w-4 text-muted-foreground" />
               <span>3. Mix &amp; Match Cross-Tab Matrix (Click any row to view trades)</span>
+              <HintIcon text="Cross-tabulate your selected Strategy against any Tag Category, Entry Timeframe, ICT Killzone, 7H Candle, Hold Duration, Sequential State (Post-Win/Loss), or Symbol × Direction." />
             </h3>
             <p className="text-[11px] text-muted-foreground">
-              Slice your selected Strategy by Tag Category (Entry Timeframe, Entry Model, Drivers), ICT Killzone, 7H Candle, or Symbol.
+              Slice your selected Strategy by Tag Category, ICT Killzone, 7H Candle, Hold Duration, Sequential State, or Symbol × Direction.
             </p>
           </div>
 
@@ -518,6 +596,9 @@ export function EdgeOptimizerView({
               })),
               { id: "killzone", label: "ICT Killzones" },
               { id: "candle7h", label: "7H Candles" },
+              { id: "duration", label: "Hold Duration" },
+              { id: "sequential", label: "Post-Win / Post-Loss" },
+              { id: "sym_dir", label: "Symbol × Direction" },
               { id: "dow", label: "Day of Week" },
               { id: "symbol", label: "Symbols" },
             ].map((tab) => (
@@ -715,7 +796,7 @@ export function EdgeOptimizerView({
               {dimensionRows.length === 0 && (
                 <tr>
                   <td colSpan={9} className="py-8 text-center text-xs text-muted-foreground">
-                    No buckets meet the minimum sample size filter (Min N: {minSampleSize}).
+                    No buckets in this dimension meet Min N = {minSampleSize}. Click &ldquo;1+&rdquo; in Min N above to view all buckets.
                   </td>
                 </tr>
               )}
@@ -728,14 +809,17 @@ export function EdgeOptimizerView({
       <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
         {/* Top Edge Amplifiers */}
         <div className="rounded-xl border border-border/50 bg-card p-4 space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold text-emerald-400 border-b border-border/30 pb-2">
-            <TrendingUp className="h-4 w-4" />
-            <span>Top Edge Amplifiers (Tags &amp; Rules)</span>
+          <div className="flex items-center justify-between text-xs font-bold text-emerald-400 border-b border-border/30 pb-2">
+            <span className="flex items-center gap-2">
+              <TrendingUp className="h-4 w-4" />
+              <span>Top Edge Amplifiers (Tags, Rules &amp; Windows)</span>
+            </span>
+            <HintIcon text="Single factors (Tags, Playbook Rules, Killzones, Hold Durations, or Symbol×Direction) that produce the highest positive R-expectancy." />
           </div>
           <div className="space-y-2 text-xs">
             {(data.edgeAmplifiers || [])
               .filter((f: any) => f.metrics.count >= minSampleSize)
-              .slice(0, 5)
+              .slice(0, 6)
               .map((item: any) => (
                 <div
                   key={item.id}
@@ -768,51 +852,60 @@ export function EdgeOptimizerView({
 
         {/* Top Drawdown & Leak Flags */}
         <div className="rounded-xl border border-border/50 bg-card p-4 space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold text-rose-400 border-b border-border/30 pb-2">
-            <TrendingDown className="h-4 w-4" />
-            <span>Drawdown &amp; Underperformance Flags</span>
+          <div className="flex items-center justify-between text-xs font-bold text-rose-400 border-b border-border/30 pb-2">
+            <span className="flex items-center gap-2">
+              <TrendingDown className="h-4 w-4" />
+              <span>Negative Conditions &amp; Drawdown Flags</span>
+            </span>
+            <HintIcon text="Conditions, tags, hold times, or sessions causing net negative R bleed or underperformance." />
           </div>
           <div className="space-y-2 text-xs">
             {(data.drawdownLeaks || []).length === 0 ? (
               <div className="py-6 text-center text-muted-foreground">
-                No negative-expectancy tags or rules flagged in this sample.
+                No negative-expectancy factors flagged in this sample.
               </div>
             ) : (
-              (data.drawdownLeaks || []).slice(0, 5).map((item: any) => (
-                <div
-                  key={item.id}
-                  className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 flex items-center justify-between gap-2"
-                >
-                  <div className="min-w-0">
-                    <div className="text-[10px] text-muted-foreground truncate">
-                      {item.groupLabel}
+              (data.drawdownLeaks || [])
+                .filter((f: any) => f.metrics.count >= minSampleSize)
+                .slice(0, 6)
+                .map((item: any) => (
+                  <div
+                    key={item.id}
+                    className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-2.5 flex items-center justify-between gap-2"
+                  >
+                    <div className="min-w-0">
+                      <div className="text-[10px] text-muted-foreground truncate">
+                        {item.groupLabel}
+                      </div>
+                      <div className="font-semibold text-foreground truncate">
+                        {item.label}
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        {item.metrics.count} setups • Win Rate: {item.metrics.winRate}%
+                      </div>
                     </div>
-                    <div className="font-semibold text-foreground truncate">
-                      {item.label}
-                    </div>
-                    <div className="text-[10px] text-muted-foreground">
-                      {item.metrics.count} setups • Win Rate: {item.metrics.winRate}%
+                    <div className="text-right font-mono shrink-0">
+                      <div className="font-bold text-rose-400">
+                        {item.metrics.expectancyR}R/trade
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        Net: {item.metrics.totalR}R
+                      </div>
                     </div>
                   </div>
-                  <div className="text-right font-mono shrink-0">
-                    <div className="font-bold text-rose-400">
-                      {item.metrics.expectancyR}R/trade
-                    </div>
-                    <div className="text-[10px] text-muted-foreground">
-                      Net: {item.metrics.totalR}R
-                    </div>
-                  </div>
-                </div>
-              ))
+                ))
             )}
           </div>
         </div>
 
         {/* Hesitation Tax & 2-Factor Synergies */}
         <div className="rounded-xl border border-border/50 bg-card p-4 space-y-3">
-          <div className="flex items-center gap-2 text-xs font-bold text-amber-400 border-b border-border/30 pb-2">
-            <ShieldAlert className="h-4 w-4" />
-            <span>2-Factor Synergies &amp; Hesitation Tax</span>
+          <div className="flex items-center justify-between text-xs font-bold text-amber-400 border-b border-border/30 pb-2">
+            <span className="flex items-center gap-2">
+              <ShieldAlert className="h-4 w-4" />
+              <span>2-Factor Synergies &amp; Hesitation Tax</span>
+            </span>
+            <HintIcon text="Pairs of tags that perform best together, plus valid tags where hesitation (Missed Trades) left the most R on the table." />
           </div>
           <div className="space-y-2 text-xs">
             {(data.confluencePairs || []).slice(0, 3).map((pair: any) => (

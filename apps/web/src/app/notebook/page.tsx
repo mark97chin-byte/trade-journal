@@ -4,6 +4,8 @@ import { OptionSelect } from "@/components/ui/option-select";
 import { Suspense, useRef, useState } from "react";
 import { ArrowLeft, FolderPlus, Plus, Search, Trash2, ArrowRightLeft, Send, Sparkles, ArchiveRestore } from "lucide-react";
 import { NotebookTradeMatcherModal } from "@/components/notebook/notebook-trade-matcher-modal";
+import { AiNotebookPanel } from "@/components/notebook/ai-notebook-panel";
+import { useSearchParams } from "next/navigation";
 import { FilterBar } from "@/components/filter-bar";
 import { VoiceNote } from "@/components/voice-note";
 import { Button } from "@/components/ui/button";
@@ -40,6 +42,10 @@ export default function NotebookPage() {
 }
 
 function Notebook() {
+  const searchParams = useSearchParams();
+  const [notebookMode, setNotebookMode] = useState<"manual" | "ai">(() =>
+    searchParams.get("tab") === "ai" || searchParams.get("folder") ? "ai" : "manual"
+  );
   const [folder, setFolder] = useState("all");
   const [search, setSearch] = useState("");
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -206,23 +212,55 @@ function Notebook() {
       <FilterBar
         title="Notebook"
         actions={
-          <div className="flex items-center gap-2">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => void createLiveScratchpad()}
-              className="border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
-            >
-              <Sparkles className="h-3.5 w-3.5 mr-1" />
-              + Live Trade Scratchpad
-            </Button>
-            <Button size="sm" onClick={createNote}>
-              <Plus />
-              New note
-            </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <div className="flex items-center rounded-lg border border-border/70 bg-secondary/30 p-0.5 text-xs">
+              <button
+                type="button"
+                onClick={() => setNotebookMode("manual")}
+                className={`rounded-md px-3 py-1 font-semibold transition ${
+                  notebookMode === "manual"
+                    ? "bg-secondary text-foreground border border-border shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                My Notes &amp; Scratchpads
+              </button>
+              <button
+                type="button"
+                onClick={() => setNotebookMode("ai")}
+                className={`rounded-md px-3 py-1 font-semibold transition ${
+                  notebookMode === "ai"
+                    ? "bg-secondary text-foreground border border-border shadow-2xs"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                AI Notebook &amp; Reports
+              </button>
+            </div>
+
+            {notebookMode === "manual" && (
+              <>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => void createLiveScratchpad()}
+                  className="border-indigo-500/40 bg-indigo-500/10 text-indigo-300 hover:bg-indigo-500/20 text-xs font-semibold"
+                >
+                  <Sparkles className="h-3.5 w-3.5 mr-1" />
+                  + Live Trade Scratchpad
+                </Button>
+                <Button size="sm" onClick={createNote}>
+                  <Plus />
+                  New note
+                </Button>
+              </>
+            )}
           </div>
         }
       />
+      {notebookMode === "ai" ? (
+        <AiNotebookPanel />
+      ) : (
       <div className="notebook-workspace" data-note-open={Boolean(selected)}>
         <div className="notebook-folders min-w-0 space-y-0.5 overflow-y-auto border-r p-2">
           <button
@@ -374,6 +412,7 @@ function Notebook() {
           )}
         </div>
       </div>
+      )}
     </div>
   );
 }

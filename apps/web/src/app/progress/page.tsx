@@ -61,6 +61,7 @@ type NotebookFolder =
   | "quarterly"
   | "yearly"
   | "custom"
+  | "optimizer"
   | "chats";
 
 interface GoalStep {
@@ -1323,6 +1324,7 @@ function Progress() {
       quarterly: reports.filter((r) => r.horizon === "quarterly").length,
       yearly: reports.filter((r) => r.horizon === "yearly").length,
       custom: reports.filter((r) => r.horizon === "custom").length,
+      optimizer: reports.filter((r) => r.horizon === "optimizer").length,
       chats: chatSessions.length,
     };
   }, [reports, chatSessions]);
@@ -1977,6 +1979,7 @@ function Progress() {
                     },
                     { id: "yearly", label: "Yearly Audits", count: folderCounts.yearly, due: false },
                     { id: "custom", label: "Scoped Audits", count: folderCounts.custom, due: false },
+                    { id: "optimizer", label: "Optimizer Reports", count: folderCounts.optimizer, due: false },
                     { id: "chats", label: "Coach Chats", count: folderCounts.chats, due: false },
                   ] as const
                 ).map((f) => (

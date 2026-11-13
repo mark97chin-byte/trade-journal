@@ -9,10 +9,42 @@ import { classifyKillzoneAnd7hCandle } from "@/lib/killzones";
 
 const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
+const DURATION_BUCKETS = [
+  { key: "<5m", label: "< 5m (Scalp)", min: 0, max: 5 * 60_000 },
+  { key: "5-15m", label: "5m – 15m", min: 5 * 60_000, max: 15 * 60_000 },
+  { key: "15-30m", label: "15m – 30m", min: 15 * 60_000, max: 30 * 60_000 },
+  { key: "30-60m", label: "30m – 1h", min: 30 * 60_000, max: 60 * 60_000 },
+  { key: "1-2h", label: "1h – 2h", min: 60 * 60_000, max: 120 * 60_000 },
+  { key: "2-4h", label: "2h – 4h", min: 120 * 60_000, max: 240 * 60_000 },
+  { key: "4h+", label: "4h+ (Intraday Swing)", min: 240 * 60_000, max: Infinity },
+];
+
 function percentile(sorted: number[], p: number): number | null {
   if (sorted.length === 0) return null;
   const idx = Math.min(sorted.length - 1, Math.max(0, Math.floor((p / 100) * sorted.length)));
   return Number(sorted[idx]!.toFixed(2));
+}
+
+function getTradeDurationMs(t: any): number | null {
+  if (typeof t.durationMs === "number" && t.durationMs > 0) return t.durationMs;
+  const openMs = t.openedAt ? Date.parse(t.openedAt) : NaN;
+  const closeMs = (t.closedAt ?? t.closeTime ?? t.exitTime)
+    ? Date.parse(t.closedAt ?? t.closeTime ?? t.exitTime)
+    : NaN;
+  if (Number.isFinite(openMs) && Number.isFinite(closeMs) && closeMs >= openMs) {
+    return closeMs - openMs;
+  }
+  return null;
+}
+
+function getEffectiveR(t: any): number {
+  if (typeof t.realizedR === "number" && Number.isFinite(t.realizedR)) {
+    return t.realizedR;
+  }
+  const pnl = Number(t.netPnl ?? t.pnl ?? 0);
+  if (pnl > 0.0001 || t.status === "win") return 1.0;
+  if (pnl < -0.0001 || t.status === "loss") return -1.0;
+  return 0;
 }
 
 function computeQuantBucketMetrics(trades: any[]) {
@@ -35,21 +67,18 @@ function computeQuantBucketMetrics(trades: any[]) {
   const maeList: number[] = [];
   const winMaeList: number[] = [];
   const captureList: number[] = [];
+  const riskPctList: number[] = [];
 
   for (const t of trades) {
     const pnl = Number(t.netPnl ?? t.pnl ?? 0);
     netPnl += pnl;
 
-    const rVal: number =
-      typeof t.realizedR === "number" && Number.isFinite(t.realizedR)
-        ? t.realizedR
-        : pnl > 0.0001 || t.status === "win"
-        ? 1.0
-        : pnl < -0.0001 || t.status === "loss"
-        ? -1.0
-        : 0;
-
+    const rVal = getEffectiveR(t);
     rList.push(rVal);
+
+    if (typeof t.riskPercent === "number" && t.riskPercent > 0) {
+      riskPctList.push(t.riskPercent);
+    }
 
     const isWin = pnl > 0.0001 || t.status === "win" || rVal > 0.05;
     const isLoss = pnl < -0.0001 || t.status === "loss" || rVal < -0.05;
@@ -149,6 +178,11 @@ function computeQuantBucketMetrics(trades: any[]) {
       ? captureList.reduce((a, b) => a + b, 0) / captureList.length
       : null;
 
+  const avgRiskPct =
+    riskPctList.length > 0
+      ? Number((riskPctList.reduce((a, b) => a + b, 0) / riskPctList.length).toFixed(2))
+      : null;
+
   const runnerBleedR =
     avgWinnerMfeR !== null && avgWinR > 0
       ? Math.max(0, avgWinnerMfeR - avgWinR)
@@ -179,6 +213,7 @@ function computeQuantBucketMetrics(trades: any[]) {
     kellyPct: Number((kellyFraction * 100).toFixed(1)),
     halfKellyPct: Number(((kellyFraction * 100) / 2).toFixed(1)),
     expectedMaxLosingStreak,
+    avgRiskPct,
     avgMfeR: avgMfeR !== null ? Number(avgMfeR.toFixed(2)) : null,
     avgWinnerMfeR: avgWinnerMfeR !== null ? Number(avgWinnerMfeR.toFixed(2)) : null,
     medianWinnerMfeR: percentile(sortedWinMfe, 50),
@@ -205,12 +240,7 @@ function computeMfeTargetCurve(trades: any[]) {
     let validCount = 0;
 
     for (const tr of trades) {
-      const rVal =
-        typeof tr.realizedR === "number" && Number.isFinite(tr.realizedR)
-          ? tr.realizedR
-          : Number(tr.netPnl ?? 0) > 0
-          ? 1
-          : -1;
+      const rVal = getEffectiveR(tr);
       const mfe =
         typeof tr.mfeR === "number" && Number.isFinite(tr.mfeR)
           ? Math.max(tr.mfeR, Math.max(0, rVal))
@@ -243,11 +273,11 @@ function computeMfeTargetCurve(trades: any[]) {
   });
 
   const bestTrailing =
-    points.length > 0
+    points.length > 0 && trades.length > 0
       ? points.reduce((a, b) => (b.trailingExpR > a.trailingExpR ? b : a))
       : null;
   const bestStrict =
-    points.length > 0
+    points.length > 0 && trades.length > 0
       ? points.reduce((a, b) => (b.strictExpR > a.strictExpR ? b : a))
       : null;
 
@@ -255,6 +285,7 @@ function computeMfeTargetCurve(trades: any[]) {
 }
 
 function computePartialScaleOutGrid(trades: any[]) {
+  if (trades.length === 0) return [];
   const tp1Pcts = [0.25, 0.5, 0.75];
   const tp1Levels = [1.0, 1.5, 2.0, 2.5];
   const tp2Levels = [2.0, 3.0, 4.0, 5.0];
@@ -284,12 +315,7 @@ function computePartialScaleOutGrid(trades: any[]) {
         const n = trades.length;
 
         for (const tr of trades) {
-          const actualR =
-            typeof tr.realizedR === "number" && Number.isFinite(tr.realizedR)
-              ? tr.realizedR
-              : Number(tr.netPnl ?? 0) > 0
-              ? 1
-              : -1;
+          const actualR = getEffectiveR(tr);
           const mfe =
             typeof tr.mfeR === "number" && Number.isFinite(tr.mfeR)
               ? Math.max(tr.mfeR, Math.max(0, actualR))
@@ -302,7 +328,6 @@ function computePartialScaleOutGrid(trades: any[]) {
             tradeSimR = w1 * r1 + w2 * r2;
           } else if (mfe >= r1) {
             tp1Hits++;
-            // TP1 banked, Stop moved to Breakeven (0R) on remainder (or actual runner if > r1)
             const runnerR = actualR > r1 ? actualR : 0;
             tradeSimR = w1 * r1 + w2 * runnerR;
           } else {
@@ -313,20 +338,18 @@ function computePartialScaleOutGrid(trades: any[]) {
           if (tradeSimR > 0.05) simWins++;
         }
 
-        if (n > 0) {
-          results.push({
-            id: `${Math.round(w1 * 100)}_${r1}_${r2}`,
-            label: `${Math.round(w1 * 100)}% @ ${r1}R + ${Math.round(w2 * 100)}% @ ${r2}R (SL→BE)`,
-            tp1Pct: Math.round(w1 * 100),
-            tp1R: r1,
-            tp2R: r2,
-            expectancyR: Number((totalSimR / n).toFixed(2)),
-            totalR: Number(totalSimR.toFixed(2)),
-            winRate: Number(((simWins / n) * 100).toFixed(1)),
-            tp1HitRate: Number(((tp1Hits / n) * 100).toFixed(1)),
-            tp2HitRate: Number(((tp2Hits / n) * 100).toFixed(1)),
-          });
-        }
+        results.push({
+          id: `${Math.round(w1 * 100)}_${r1}_${r2}`,
+          label: `${Math.round(w1 * 100)}% @ ${r1}R + ${Math.round(w2 * 100)}% @ ${r2}R (SL→BE)`,
+          tp1Pct: Math.round(w1 * 100),
+          tp1R: r1,
+          tp2R: r2,
+          expectancyR: Number((totalSimR / n).toFixed(2)),
+          totalR: Number(totalSimR.toFixed(2)),
+          winRate: Number(((simWins / n) * 100).toFixed(1)),
+          tp1HitRate: Number(((tp1Hits / n) * 100).toFixed(1)),
+          tp2HitRate: Number(((tp2Hits / n) * 100).toFixed(1)),
+        });
       }
     }
   }
@@ -346,12 +369,7 @@ function computeMaeStopSimulator(trades: any[]) {
     let simTotalR = 0;
 
     for (const tr of trades) {
-      const actualR =
-        typeof tr.realizedR === "number" && Number.isFinite(tr.realizedR)
-          ? tr.realizedR
-          : Number(tr.netPnl ?? 0) > 0
-          ? 1
-          : -1;
+      const actualR = getEffectiveR(tr);
       const mae =
         typeof tr.maeR === "number" && Number.isFinite(tr.maeR)
           ? Math.abs(tr.maeR)
@@ -364,7 +382,6 @@ function computeMaeStopSimulator(trades: any[]) {
 
       if (mae > stopR) {
         if (isOrigWin) chokedWins++;
-        // Stopped out at tighter stop (-stopR relative to original 1R risk)
         simTotalR -= stopR;
       } else {
         if (isOrigWin) survivedWins++;
@@ -386,18 +403,91 @@ function computeMaeStopSimulator(trades: any[]) {
   });
 }
 
-export const GET = handler(async (request: Request) => {
-  const params = new URL(request.url).searchParams;
-  const includeMissed =
-    params.get("includeMissed") === "1" || params.get("includeMissed") === "true";
-  const selectedStrategyId = params.get("playbookId") || "all";
+function computeSequentialStateBuckets(trades: any[]) {
+  const sorted = [...trades].sort((a, b) =>
+    String(a.openedAt || "").localeCompare(String(b.openedAt || ""))
+  );
 
-  const filters = readFilters(params);
+  const after1Win: any[] = [];
+  const after2PlusWins: any[] = [];
+  const after1Loss: any[] = [];
+  const after2PlusLosses: any[] = [];
+
+  let winStreak = 0;
+  let lossStreak = 0;
+
+  for (let i = 0; i < sorted.length; i++) {
+    const t = sorted[i]!;
+    if (i > 0) {
+      if (winStreak >= 1) after1Win.push(t);
+      if (winStreak >= 2) after2PlusWins.push(t);
+      if (lossStreak >= 1) after1Loss.push(t);
+      if (lossStreak >= 2) after2PlusLosses.push(t);
+    }
+
+    const rVal = getEffectiveR(t);
+    const pnl = Number(t.netPnl ?? 0);
+    if (pnl > 0.0001 || t.status === "win" || rVal > 0.05) {
+      winStreak++;
+      lossStreak = 0;
+    } else if (pnl < -0.0001 || t.status === "loss" || rVal < -0.05) {
+      lossStreak++;
+      winStreak = 0;
+    }
+  }
+
+  return [
+    {
+      key: "after_win",
+      label: "Immediately Following a Win (1+ Win Streak)",
+      metrics: computeQuantBucketMetrics(after1Win),
+      optimalTargetR: computeMfeTargetCurve(after1Win).bestTrailing?.targetR ?? null,
+      trades: after1Win,
+    },
+    {
+      key: "after_loss",
+      label: "Immediately Following a Loss (Post-Loss State)",
+      metrics: computeQuantBucketMetrics(after1Loss),
+      optimalTargetR: computeMfeTargetCurve(after1Loss).bestTrailing?.targetR ?? null,
+      trades: after1Loss,
+    },
+    {
+      key: "after_2_wins",
+      label: "After 2+ Consecutive Wins (Hot Streak State)",
+      metrics: computeQuantBucketMetrics(after2PlusWins),
+      optimalTargetR: computeMfeTargetCurve(after2PlusWins).bestTrailing?.targetR ?? null,
+      trades: after2PlusWins,
+    },
+    {
+      key: "after_2_losses",
+      label: "After 2+ Consecutive Losses (Drawdown State)",
+      metrics: computeQuantBucketMetrics(after2PlusLosses),
+      optimalTargetR: computeMfeTargetCurve(after2PlusLosses).bestTrailing?.targetR ?? null,
+      trades: after2PlusLosses,
+    },
+  ].filter((row) => row.metrics.count > 0);
+}
+
+export const GET = handler(async (request: Request) => {
+  const rawParams = new URL(request.url).searchParams;
+  const includeMissed =
+    rawParams.get("includeMissed") === "1" || rawParams.get("includeMissed") === "true";
+  const selectedStrategyId =
+    rawParams.get("strategyId") || rawParams.get("playbookId") || "all";
+
+  // Strip playbookId="all" or strategyId before calling readFilters so queryTrades() never filters for literal "all"
+  const cleanParams = new URLSearchParams(rawParams.toString());
+  cleanParams.delete("strategyId");
+  cleanParams.delete("includeMissed");
+  if (cleanParams.get("playbookId") === "all") {
+    cleanParams.delete("playbookId");
+  }
+
+  const filters = readFilters(cleanParams);
   const { trades: execTrades } = queryTrades(filters);
   const missedBundle = queryMissedTradesAsAnnotated(filters);
 
   const allPlaybooks = db.select().from(playbooksTable).all();
-  const pbNameMap = new Map(allPlaybooks.map((p) => [p.id, p.name]));
   const { categories: tagCategoriesList, tags: managedTagsList } = getTagsWithUsage();
 
   ensurePlaybookTables();
@@ -415,8 +505,8 @@ export const GET = handler(async (request: Request) => {
     ruleMapByTrade.set(c.tradeKey, s);
   }
 
-  const closedExec = (execTrades as any[]).filter((t) =>
-    Boolean(t.closedAt ?? t.closeTime ?? t.exitTime)
+  const closedExec = (execTrades as any[]).filter(
+    (t) => t.status !== "open" || Boolean(t.closedAt ?? t.closeTime ?? t.exitTime)
   );
   const basePool = includeMissed
     ? [...closedExec, ...missedBundle.trades]
@@ -466,11 +556,11 @@ export const GET = handler(async (request: Request) => {
       .sort((a, b) => b.metrics.expectancyR - a.metrics.expectancyR);
   }
 
-  // Killzone & 7H Candle Breakdown
   const kzBuckets = new Map<string, any[]>();
   const candle7hBuckets = new Map<string, any[]>();
   const dowBuckets = new Map<string, any[]>();
   const symbolBuckets = new Map<string, any[]>();
+  const symDirBuckets = new Map<string, any[]>();
 
   for (const t of filteredPool) {
     const kz = classifyKillzoneAnd7hCandle(t.openedAt);
@@ -486,6 +576,10 @@ export const GET = handler(async (request: Request) => {
 
     const sym = String(t.symbol || "UNKNOWN").replace(/\.raw$/i, "");
     symbolBuckets.set(sym, [...(symbolBuckets.get(sym) ?? []), t]);
+
+    const dirUpper = String(t.direction || "long").toUpperCase();
+    const sdKey = `${sym} · ${dirUpper}`;
+    symDirBuckets.set(sdKey, [...(symDirBuckets.get(sdKey) ?? []), t]);
   }
 
   const formatMapBuckets = (map: Map<string, any[]>) =>
@@ -499,10 +593,28 @@ export const GET = handler(async (request: Request) => {
       }))
       .sort((a, b) => b.metrics.expectancyR - a.metrics.expectancyR);
 
-  // Automated Pattern Scanner: Single Factors (Tags & Playbook Rules) + 2-Factor Synergies
+  // Hold-Time Duration Buckets
+  const byDuration = DURATION_BUCKETS.map((b) => {
+    const matched = filteredPool.filter((t) => {
+      const dur = getTradeDurationMs(t);
+      return dur !== null && dur >= b.min && dur < b.max;
+    });
+    return {
+      key: b.key,
+      label: b.label,
+      metrics: computeQuantBucketMetrics(matched),
+      optimalTargetR: computeMfeTargetCurve(matched).bestTrailing?.targetR ?? null,
+      trades: matched,
+    };
+  }).filter((r) => r.metrics.count > 0);
+
+  // Sequential State Buckets (Post-Win vs Post-Loss)
+  const bySequentialState = computeSequentialStateBuckets(filteredPool);
+
+  // Automated Pattern Scanner: Single Factors (Tags, Rules, Killzones, Durations, SymbolxDir)
   const singleFactors: Array<{
     id: string;
-    kind: "tag" | "rule" | "killzone";
+    kind: "tag" | "rule" | "killzone" | "duration" | "sym_dir";
     label: string;
     groupLabel: string;
     metrics: ReturnType<typeof computeQuantBucketMetrics>;
@@ -528,7 +640,6 @@ export const GET = handler(async (request: Request) => {
     });
   }
 
-  // Playbook Rules Scanner
   for (const pb of allPlaybooks) {
     if (selectedStrategyId !== "all" && pb.id !== selectedStrategyId) continue;
     const meta = getMetaRow(pb.id);
@@ -556,17 +667,60 @@ export const GET = handler(async (request: Request) => {
     }
   }
 
+  for (const [kzLabel, kzList] of kzBuckets.entries()) {
+    if (kzList.length === 0) continue;
+    const m = computeQuantBucketMetrics(kzList);
+    singleFactors.push({
+      id: `kz:${kzLabel}`,
+      kind: "killzone",
+      label: kzLabel,
+      groupLabel: "ICT Killzone / Session",
+      metrics: m,
+      expectancyLiftR: Number((m.expectancyR - baseline.expectancyR).toFixed(2)),
+      winRateLift: Number((m.winRate - baseline.winRate).toFixed(1)),
+      optimalTargetR: computeMfeTargetCurve(kzList).bestTrailing?.targetR ?? null,
+    });
+  }
+
+  for (const dRow of byDuration) {
+    singleFactors.push({
+      id: `dur:${dRow.key}`,
+      kind: "duration",
+      label: `Hold Time: ${dRow.label}`,
+      groupLabel: "Trade Duration",
+      metrics: dRow.metrics,
+      expectancyLiftR: Number((dRow.metrics.expectancyR - baseline.expectancyR).toFixed(2)),
+      winRateLift: Number((dRow.metrics.winRate - baseline.winRate).toFixed(1)),
+      optimalTargetR: dRow.optimalTargetR,
+    });
+  }
+
+  for (const [sdLabel, sdList] of symDirBuckets.entries()) {
+    if (sdList.length === 0) continue;
+    const m = computeQuantBucketMetrics(sdList);
+    singleFactors.push({
+      id: `sd:${sdLabel}`,
+      kind: "sym_dir",
+      label: sdLabel,
+      groupLabel: "Symbol × Direction",
+      metrics: m,
+      expectancyLiftR: Number((m.expectancyR - baseline.expectancyR).toFixed(2)),
+      winRateLift: Number((m.winRate - baseline.winRate).toFixed(1)),
+      optimalTargetR: computeMfeTargetCurve(sdList).bestTrailing?.targetR ?? null,
+    });
+  }
+
   const edgeAmplifiers = [...singleFactors]
     .filter((f) => f.metrics.expectancyR > 0)
     .sort((a, b) => b.metrics.expectancyR - a.metrics.expectancyR || b.metrics.totalR - a.metrics.totalR)
-    .slice(0, 8);
+    .slice(0, 10);
 
   const drawdownLeaks = [...singleFactors]
-    .filter((f) => f.metrics.expectancyR < baseline.expectancyR || f.metrics.totalR < 0)
+    .filter((f) => f.metrics.expectancyR < 0 || f.metrics.totalR < 0)
     .sort((a, b) => a.metrics.totalR - b.metrics.totalR || a.metrics.expectancyR - b.metrics.expectancyR)
-    .slice(0, 8);
+    .slice(0, 10);
 
-  // 2-Factor Confluence Synergy Scanner (Pairs of active tags)
+  // 2-Factor Confluence Synergy Scanner
   const activeTags = managedTagsList.filter((mt) =>
     filteredPool.some((t) => getTradeTagsLower(t).includes(mt.name.toLowerCase()))
   );
@@ -601,7 +755,7 @@ export const GET = handler(async (request: Request) => {
   }
   confluencePairs.sort((a, b) => b.metrics.expectancyR - a.metrics.expectancyR);
 
-  // Hesitation Tax Scanner (Compare Executed vs. Missed across Tags & Rules)
+  // Hesitation Tax Scanner
   const allCombinedWithMissed =
     selectedStrategyId === "all"
       ? [...closedExec, ...missedBundle.trades]
@@ -653,6 +807,9 @@ export const GET = handler(async (request: Request) => {
       byCategory,
       byKillzone: formatMapBuckets(kzBuckets),
       by7hCandle: formatMapBuckets(candle7hBuckets),
+      byDuration,
+      bySequentialState,
+      bySymbolDirection: formatMapBuckets(symDirBuckets),
       byDayOfWeek: formatMapBuckets(dowBuckets),
       bySymbol: formatMapBuckets(symbolBuckets),
     },

@@ -241,13 +241,14 @@ function ReportsContent() {
             <button
               type="button"
               onClick={() => setMainTab("edge_optimizer")}
+              title="Quantitative MFE/MAE target R optimizer, partial scale-out simulator, confluence cross-tabs, and AI pattern scanner"
               className={`rounded-lg px-3 py-1.5 text-xs font-semibold transition-all ${
                 mainTab === "edge_optimizer"
-                  ? "border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 shadow-sm"
+                  ? "bg-secondary text-foreground font-semibold border border-border shadow-sm"
                   : "text-muted-foreground hover:text-foreground hover:bg-slate-100/90 dark:bg-secondary/40"
               }`}
             >
-              ⚡ Edge &amp; R Optimizer
+              Edge &amp; R Optimizer
             </button>
           </div>
 
