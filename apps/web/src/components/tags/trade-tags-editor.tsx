@@ -29,12 +29,20 @@ export function TradeTagsEditor({
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [managedTags, setManagedTags] = useState<TagItem[]>([]);
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const [catSort, setCatSort] = useState<"name-asc" | "name-desc" | "most-tags">("name-asc");
   const [search, setSearch] = useState("");
   const [newTagCategoryId, setNewTagCategoryId] = useState<string>("");
   const [creating, setCreating] = useState(false);
 
   const fetchTags = async () => {
     try {
+      if (typeof window !== "undefined") {
+        const savedSort = window.localStorage.getItem("tz_category_sort_order");
+        if (savedSort === "name-asc" || savedSort === "name-desc" || savedSort === "most-tags") {
+          setCatSort(savedSort);
+        }
+      }
       const res = await fetch("/api/tags");
       if (res.ok) {
         const json = await res.json();
@@ -115,16 +123,30 @@ export function TradeTagsEditor({
     }
   };
 
-  // Group tags by category (same structure as Playbook Rule Groups)
+  // Sort categories using the same sort order configured in Settings / Content Management
+  const sortedCategories = useMemo(() => {
+    return [...categories].sort((a, b) => {
+      if (catSort === "name-asc") {
+        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      }
+      if (catSort === "name-desc") {
+        return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: "base" });
+      }
+      return b.tagCount - a.tagCount;
+    });
+  }, [categories, catSort]);
+
+  // Group tags by sorted category
   const groupedTags = useMemo(() => {
     const q = search.trim().toLowerCase();
     const groups = new Map<
       string,
-      { categoryId: string | null; categoryName: string; color: string; items: TagItem[] }
+      { key: string; categoryId: string | null; categoryName: string; color: string; items: TagItem[] }
     >();
 
-    for (const c of categories) {
+    for (const c of sortedCategories) {
       groups.set(c.id, {
+        key: c.id,
         categoryId: c.id,
         categoryName: c.name,
         color: c.color,
@@ -146,6 +168,7 @@ export function TradeTagsEditor({
 
       const key = t.categoryId ?? "uncategorized";
       const existing = groups.get(key) ?? {
+        key,
         categoryId: t.categoryId,
         categoryName: t.categoryName || "Uncategorized",
         color: t.categoryColor || "#64748b",
@@ -161,6 +184,7 @@ export function TradeTagsEditor({
       if (q && !customName.toLowerCase().includes(q)) continue;
       const key = "uncategorized";
       const existing = groups.get(key) ?? {
+        key,
         categoryId: null,
         categoryName: "Custom / Uncategorized",
         color: "#64748b",
@@ -180,7 +204,7 @@ export function TradeTagsEditor({
     }
 
     return Array.from(groups.values()).filter((g) => g.items.length > 0);
-  }, [categories, managedTags, allSelected, search]);
+  }, [sortedCategories, managedTags, allSelected, search]);
 
   const exactMatchExists = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -193,7 +217,7 @@ export function TradeTagsEditor({
     if (!name || creating) return;
     setCreating(true);
     try {
-      const targetCatId = newTagCategoryId || categories[0]?.id || null;
+      const targetCatId = newTagCategoryId || sortedCategories[0]?.id || null;
 
       const res = await fetch("/api/tags", {
         method: "POST",
@@ -220,9 +244,29 @@ export function TradeTagsEditor({
     }
   };
 
+  const toggleGroupCollapse = (groupKey: string) => {
+    setCollapsedGroups((prev) => ({
+      ...prev,
+      [groupKey]: !prev[groupKey],
+    }));
+  };
+
+  const allGroupsCollapsed =
+    groupedTags.length > 0 && groupedTags.every((g) => Boolean(collapsedGroups[g.key]));
+
+  const toggleAllGroups = () => {
+    if (allGroupsCollapsed) {
+      setCollapsedGroups({});
+    } else {
+      const next: Record<string, boolean> = {};
+      for (const g of groupedTags) next[g.key] = true;
+      setCollapsedGroups(next);
+    }
+  };
+
   return (
     <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 space-y-2.5">
-      {/* Collapsible Header Row (Matches Strategy Rules Followed Header) */}
+      {/* Main Collapsible Header Row (No 0/43 fraction) */}
       <div className="flex items-center justify-between gap-2 text-xs">
         <button
           type="button"
@@ -234,19 +278,31 @@ export function TradeTagsEditor({
           ) : (
             <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground shrink-0" />
           )}
-          <span className="font-bold text-foreground">
-            Tags &amp; Categories ({allSelected.length} / {managedTags.length})
-          </span>
+          <span className="font-bold text-foreground">Tags &amp; Categories</span>
+          {allSelected.length > 0 && (
+            <span className="rounded-full bg-emerald-500/15 border border-emerald-500/30 px-2 py-0.2 text-[10px] font-semibold text-emerald-400">
+              {allSelected.length} selected
+            </span>
+          )}
         </button>
 
         <div className="flex items-center gap-2 shrink-0">
+          {!collapsed && groupedTags.length > 1 && (
+            <button
+              type="button"
+              onClick={toggleAllGroups}
+              className="text-[11px] underline text-muted-foreground hover:text-foreground"
+            >
+              {allGroupsCollapsed ? "Expand All Categories" : "Collapse All Categories"}
+            </button>
+          )}
           {!collapsed && allSelected.length > 0 && (
             <button
               type="button"
               onClick={() => commitSelection([])}
               className="text-[11px] underline text-muted-foreground hover:text-foreground"
             >
-              Clear All
+              Clear
             </button>
           )}
           <Link
@@ -299,9 +355,9 @@ export function TradeTagsEditor({
         </div>
       )}
 
-      {/* Expanded Checklist Grouped by Category */}
+      {/* Expanded View with Collapsible Category Sections */}
       {!collapsed && (
-        <div className="space-y-3.5 pt-2 border-t border-border/40">
+        <div className="space-y-2.5 pt-2 border-t border-border/40">
           {/* Quick Filter / Create Tag Bar */}
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
@@ -325,60 +381,91 @@ export function TradeTagsEditor({
             )}
           </div>
 
-          {groupedTags.map((group) => (
-            <div key={group.categoryId ?? "uncategorized"} className="space-y-1.5">
-              {/* Category Group Title (Matches Playbook Rule Group Title) */}
-              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-0.5">
-                <span
-                  className="h-2 w-2 rounded-full shrink-0"
-                  style={{ backgroundColor: group.color }}
-                />
-                <span>{group.categoryName}</span>
-              </div>
+          {groupedTags.map((group) => {
+            const isSearching = Boolean(search.trim());
+            const isGroupCollapsed = !isSearching && Boolean(collapsedGroups[group.key]);
+            const selectedInGroup = group.items.filter((it) =>
+              allSelected.some((s) => s.toLowerCase() === it.name.toLowerCase())
+            ).length;
 
-              {/* Checklist Rows */}
-              <div className="space-y-1">
-                {group.items.map((item) => {
-                  const isChecked = allSelected.some(
-                    (s) => s.toLowerCase() === item.name.toLowerCase()
-                  );
-                  return (
-                    <label
-                      key={item.id}
-                      className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-2.5 py-1.5 text-xs transition select-none ${
-                        isChecked
-                          ? "border-border bg-secondary/70 text-foreground font-medium"
-                          : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
-                      }`}
-                    >
-                      <div className="flex items-center gap-2.5 min-w-0">
-                        <Checkbox
-                          checked={isChecked}
-                          onCheckedChange={() => toggleTag(item.name)}
-                        />
-                        <span className="leading-snug">{item.name}</span>
-                        {item.description && (
-                          <span className="text-[10px] text-muted-foreground/70 truncate">
-                            — {item.description}
-                          </span>
-                        )}
-                      </div>
+            return (
+              <div
+                key={group.key}
+                className="rounded-lg border border-border/40 bg-background/40 p-2 space-y-1.5"
+              >
+                {/* Collapsible Category Section Header */}
+                <button
+                  type="button"
+                  onClick={() => toggleGroupCollapse(group.key)}
+                  className="flex w-full items-center justify-between gap-2 px-1 py-0.5 text-left group"
+                >
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">
+                    {isGroupCollapsed ? (
+                      <ChevronRight className="h-3 w-3 shrink-0" />
+                    ) : (
+                      <ChevronDown className="h-3 w-3 shrink-0" />
+                    )}
+                    <span
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{ backgroundColor: group.color }}
+                    />
+                    <span>{group.categoryName}</span>
+                  </div>
 
-                      <span
-                        className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold ${
-                          isChecked
-                            ? "bg-emerald-500/15 text-emerald-400"
-                            : "bg-secondary/60 text-muted-foreground"
-                        }`}
-                      >
-                        {isChecked ? "Selected" : "Unchecked"}
+                  <div className="flex items-center gap-1.5">
+                    {selectedInGroup > 0 && (
+                      <span className="rounded bg-emerald-500/15 px-1.5 py-0.2 text-[10px] font-semibold text-emerald-400">
+                        {selectedInGroup} selected
                       </span>
-                    </label>
-                  );
-                })}
+                    )}
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {isGroupCollapsed ? "Expand" : "Collapse"}
+                    </span>
+                  </div>
+                </button>
+
+                {/* Tag Rows Inside Category */}
+                {!isGroupCollapsed && (
+                  <div className="space-y-1 pt-0.5">
+                    {group.items.map((item) => {
+                      const isChecked = allSelected.some(
+                        (s) => s.toLowerCase() === item.name.toLowerCase()
+                      );
+                      return (
+                        <label
+                          key={item.id}
+                          className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-2.5 py-1.5 text-xs transition select-none ${
+                            isChecked
+                              ? "border-border bg-secondary/70 text-foreground font-medium"
+                              : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
+                          }`}
+                        >
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <Checkbox
+                              checked={isChecked}
+                              onCheckedChange={() => toggleTag(item.name)}
+                            />
+                            <span className="leading-snug">{item.name}</span>
+                            {item.description && (
+                              <span className="text-[10px] text-muted-foreground/70 truncate">
+                                — {item.description}
+                              </span>
+                            )}
+                          </div>
+
+                          {isChecked && (
+                            <span className="shrink-0 rounded bg-emerald-500/15 px-2 py-0.5 text-[10px] font-semibold text-emerald-400">
+                              Selected
+                            </span>
+                          )}
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
-          ))}
+            );
+          })}
 
           {groupedTags.length === 0 && (
             <div className="py-3 text-center text-xs text-muted-foreground">
@@ -396,7 +483,7 @@ export function TradeTagsEditor({
                   onChange={(e) => setNewTagCategoryId(e.target.value)}
                   className="h-7 rounded border border-border/70 bg-background px-2 text-xs text-foreground outline-none"
                 >
-                  {categories.map((c) => (
+                  {sortedCategories.map((c) => (
                     <option key={c.id} value={c.id}>
                       {c.name}
                     </option>

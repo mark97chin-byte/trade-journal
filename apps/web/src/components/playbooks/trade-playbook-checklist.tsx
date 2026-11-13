@@ -35,6 +35,7 @@ export function TradePlaybookChecklist({
   const [ruleGroups, setRuleGroups] = useState<RuleCheckGroup[]>([]);
   const [loading, setLoading] = useState(false);
   const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
 
   const fetchRules = async () => {
     if (!tradeKey || !playbookId || playbookId === "none") {
@@ -183,48 +184,81 @@ export function TradePlaybookChecklist({
       </div>
 
       {!collapsed && totalRules > 0 && (
-        <div className="space-y-3.5 pt-1 border-t border-border/40">
+        <div className="space-y-2.5 pt-2 border-t border-border/40">
           {ruleGroups.map((group) => {
             if (group.rules.length === 0) return null;
+            const isGroupCollapsed = Boolean(collapsedGroups[group.id]);
+            const groupFollowed = group.rules.filter((r) => r.followed === true).length;
+
             return (
-              <div key={group.id} className="space-y-1.5">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-0.5">
-                  {group.name}
-                </div>
+              <div
+                key={group.id}
+                className="rounded-lg border border-border/40 bg-background/40 p-2 space-y-1.5"
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    setCollapsedGroups((prev) => ({
+                      ...prev,
+                      [group.id]: !prev[group.id],
+                    }))
+                  }
+                  className="flex w-full items-center justify-between gap-2 px-1 py-0.5 text-left group"
+                >
+                  <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">
+                    {isGroupCollapsed ? (
+                      <ChevronRight className="h-3 w-3 shrink-0" />
+                    ) : (
+                      <ChevronDown className="h-3 w-3 shrink-0" />
+                    )}
+                    <span>{group.name}</span>
+                  </div>
 
-                <div className="space-y-1">
-                  {group.rules.map((item) => {
-                    const isChecked = item.followed === true;
-                    return (
-                      <label
-                        key={item.id || item.rule}
-                        className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-2.5 py-1.5 text-xs transition select-none ${
-                          isChecked
-                            ? "border-border bg-secondary/70 text-foreground font-medium"
-                            : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
-                        }`}
-                      >
-                        <div className="flex items-center gap-2.5 min-w-0">
-                          <Checkbox
-                            checked={isChecked}
-                            onCheckedChange={() => void toggleRule(item.rule, item.followed)}
-                          />
-                          <span className="leading-snug">{item.rule}</span>
-                        </div>
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-mono text-muted-foreground">
+                      {groupFollowed}/{group.rules.length}
+                    </span>
+                    <span className="text-[10px] text-muted-foreground/70">
+                      {isGroupCollapsed ? "Expand" : "Collapse"}
+                    </span>
+                  </div>
+                </button>
 
-                        <span
-                          className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold ${
+                {!isGroupCollapsed && (
+                  <div className="space-y-1 pt-0.5">
+                    {group.rules.map((item) => {
+                      const isChecked = item.followed === true;
+                      return (
+                        <label
+                          key={item.id || item.rule}
+                          className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-2.5 py-1.5 text-xs transition select-none ${
                             isChecked
-                              ? "bg-emerald-500/15 text-emerald-400"
-                              : "bg-secondary/60 text-muted-foreground"
+                              ? "border-border bg-secondary/70 text-foreground font-medium"
+                              : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
                           }`}
                         >
-                          {isChecked ? "Followed" : "Unchecked"}
-                        </span>
-                      </label>
-                    );
-                  })}
-                </div>
+                          <div className="flex items-center gap-2.5 min-w-0">
+                            <Checkbox
+                              checked={isChecked}
+                              onCheckedChange={() => void toggleRule(item.rule, item.followed)}
+                            />
+                            <span className="leading-snug">{item.rule}</span>
+                          </div>
+
+                          <span
+                            className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold ${
+                              isChecked
+                                ? "bg-emerald-500/15 text-emerald-400"
+                                : "bg-secondary/60 text-muted-foreground"
+                            }`}
+                          >
+                            {isChecked ? "Followed" : "Unchecked"}
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
             );
           })}

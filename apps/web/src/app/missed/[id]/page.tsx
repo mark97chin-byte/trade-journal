@@ -588,6 +588,7 @@ function LoadedMissedSetupWorkspace({
   activeNoteTabRef.current = activeNoteTab;
 
   const [rulesCollapsed, setRulesCollapsed] = useState<boolean>(true);
+  const [collapsedRuleGroups, setCollapsedRuleGroups] = useState<Record<string, boolean>>({});
 
   const activePlaybookRuleGroups = useMemo<
     Array<{ id: string; name: string; rules: string[] }>
@@ -1722,13 +1723,41 @@ function LoadedMissedSetupWorkspace({
                       </div>
 
                       {!rulesCollapsed && (
-                        <div className="space-y-3.5 pt-1 border-t border-border/40">
-                          {activePlaybookRuleGroups.map((group) => (
-                            <div key={group.id} className="space-y-1.5">
-                              <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-0.5">
-                                {group.name}
-                              </div>
-                              <div className="space-y-1">
+                        <div className="space-y-2.5 pt-2 border-t border-border/40">
+                          {activePlaybookRuleGroups.map((group) => {
+                            const isGrpCollapsed = Boolean(collapsedRuleGroups[group.id]);
+                            const grpFollowed = group.rules.filter((r) => rulesFollowed.includes(r)).length;
+                            return (
+                            <div key={group.id} className="rounded-lg border border-border/40 bg-background/40 p-2 space-y-1.5">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setCollapsedRuleGroups((prev) => ({
+                                    ...prev,
+                                    [group.id]: !prev[group.id],
+                                  }))
+                                }
+                                className="flex w-full items-center justify-between gap-2 px-1 py-0.5 text-left group"
+                              >
+                                <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground group-hover:text-foreground transition-colors">
+                                  {isGrpCollapsed ? (
+                                    <ChevronRight className="h-3 w-3 shrink-0" />
+                                  ) : (
+                                    <ChevronDown className="h-3 w-3 shrink-0" />
+                                  )}
+                                  <span>{group.name}</span>
+                                </div>
+                                <div className="flex items-center gap-1.5">
+                                  <span className="text-[10px] font-mono text-muted-foreground">
+                                    {grpFollowed}/{group.rules.length}
+                                  </span>
+                                  <span className="text-[10px] text-muted-foreground/70">
+                                    {isGrpCollapsed ? "Expand" : "Collapse"}
+                                  </span>
+                                </div>
+                              </button>
+                              {!isGrpCollapsed && (
+                              <div className="space-y-1 pt-0.5">
                                 {group.rules.map((rule) => {
                                   const checked = rulesFollowed.includes(rule);
                                   return (
@@ -1769,8 +1798,10 @@ function LoadedMissedSetupWorkspace({
                                   );
                                 })}
                               </div>
+                              )}
                             </div>
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>

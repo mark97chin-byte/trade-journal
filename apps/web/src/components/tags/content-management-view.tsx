@@ -54,7 +54,13 @@ export function ContentManagementView() {
 
   // Search & Filter states
   const [catSearch, setCatSearch] = useState("");
-  const [catSort, setCatSort] = useState<"name-asc" | "name-desc" | "most-tags">("name-asc");
+  const [catSort, setCatSort] = useState<"name-asc" | "name-desc" | "most-tags">(() => {
+    if (typeof window !== "undefined") {
+      const saved = window.localStorage.getItem("tz_category_sort_order");
+      if (saved === "name-asc" || saved === "name-desc" || saved === "most-tags") return saved;
+    }
+    return "name-asc";
+  });
   const [tagSearch, setTagSearch] = useState("");
   const [tagCategoryFilter, setTagCategoryFilter] = useState<string>("all");
 
@@ -116,8 +122,8 @@ export function ContentManagementView() {
     const q = catSearch.trim().toLowerCase();
     const list = categories.filter((c) => !q || c.name.toLowerCase().includes(q));
     return [...list].sort((a, b) => {
-      if (catSort === "name-asc") return a.name.localeCompare(b.name);
-      if (catSort === "name-desc") return b.name.localeCompare(a.name);
+      if (catSort === "name-asc") return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      if (catSort === "name-desc") return b.name.localeCompare(a.name, undefined, { numeric: true, sensitivity: "base" });
       return b.tagCount - a.tagCount;
     });
   }, [categories, catSearch, catSort]);
@@ -291,7 +297,11 @@ export function ContentManagementView() {
                 <span>Sort by</span>
                 <select
                   value={catSort}
-                  onChange={(e) => setCatSort(e.target.value as any)}
+                  onChange={(e) => {
+                    const val = e.target.value as "name-asc" | "name-desc" | "most-tags";
+                    setCatSort(val);
+                    try { window.localStorage.setItem("tz_category_sort_order", val); } catch {}
+                  }}
                   className="h-8 rounded-md border border-border/60 bg-[#12141a] px-2.5 text-xs text-foreground outline-none"
                 >
                   <option value="name-asc">Name A-Z</option>
