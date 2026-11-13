@@ -235,7 +235,6 @@ function saveOptimizerReportToNotebooks(params: {
       nowIso
     );
 
-    // Also save into standard `notes` table under folder `optimizer-reports` ("Optimizer Reports")
     try {
       db.prepare(
         `INSERT OR IGNORE INTO folders (id, name, kind, created_at) VALUES ('optimizer-reports', 'Optimizer Reports', 'system', ?)`
@@ -253,9 +252,7 @@ function saveOptimizerReportToNotebooks(params: {
       .replace(/^## (.*)$/gm, "<h2>$1</h2>")
       .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
       .replace(/^- (.*)$/gm, "<p>• $1</p>")
-      .replace(/
-
-/g, "<br/>");
+      .replace(/\n\n/g, "<br/>");
 
     try {
       db.prepare(
@@ -316,16 +313,12 @@ Write a structured Markdown report with these exact 5 sections:
     let finalReasoning = "";
     let modelUsed = "quant-engine";
 
-    // 1. Try Local KoboldCpp / Strata first if online
     try {
       const localCfg = loadLocalAiSettings();
       const status = await probeKoboldStatus(localCfg.baseUrl);
       if (status.online) {
         const kRes = await runKoboldAi(
-          `${systemPrompt}
-
-=== COMPLETE MULTI-DIMENSIONAL REPORT TELEMETRY ===
-${compactData}`,
+          `${systemPrompt}\n\n=== COMPLETE MULTI-DIMENSIONAL REPORT TELEMETRY ===\n${compactData}`,
           {
             persona: "coach",
             thinkingMode: "balanced",
@@ -342,7 +335,6 @@ ${compactData}`,
       }
     } catch {}
 
-    // 2. Try Gemini / OpenAI if KoboldCpp was offline
     if (modelUsed === "quant-engine") {
       const geminiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || "";
       const openAiKey = process.env.OPENAI_API_KEY || "";
@@ -354,9 +346,7 @@ ${compactData}`,
               method: "POST",
               headers: { "Content-Type": "application/json" },
               body: JSON.stringify({
-                contents: [{ parts: [{ text: `${systemPrompt}
-
-${compactData}` }] }],
+                contents: [{ parts: [{ text: `${systemPrompt}\n\n${compactData}` }] }],
               }),
             }
           );
