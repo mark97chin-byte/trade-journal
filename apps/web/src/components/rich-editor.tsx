@@ -1831,21 +1831,48 @@ export function RichEditor({
       }
     });
 
-    Array.from(container.childNodes).forEach((node) => {
-      if (node.nodeType === Node.TEXT_NODE && (node.textContent || "").trim()) {
-        const p = document.createElement("p");
-        p.textContent = node.textContent;
-        container.replaceChild(p, node);
-      } else if (
-        node.nodeType === Node.ELEMENT_NODE &&
-        (node as HTMLElement).tagName === "DIV" &&
-        !(node as HTMLElement).className
-      ) {
-        const div = node as HTMLElement;
-        const p = document.createElement("p");
-        p.innerHTML = div.innerHTML || "<br/>";
-        container.replaceChild(p, div);
+    const INLINE_NODE_TAGS = new Set([
+      "SPAN", "STRONG", "B", "EM", "I", "U", "S", "STRIKE", "DEL", "CODE", "A", "MARK", "SUB", "SUP", "SMALL", "FONT"
+    ]);
+    const normalizeParentInlineRuns = (parentEl: HTMLElement) => {
+      let run: ChildNode[] = [];
+      const flushRun = (beforeNode: ChildNode | null) => {
+        if (!run.length) return;
+        const hasText = run.some((n) => (n.textContent || "").trim().length > 0);
+        if (hasText) {
+          const p = document.createElement("p");
+          run.forEach((n) => p.appendChild(n));
+          parentEl.insertBefore(p, beforeNode);
+        }
+        run = [];
+      };
+      for (const child of Array.from(parentEl.childNodes)) {
+        const isInline =
+          child.nodeType === Node.TEXT_NODE ||
+          (child.nodeType === Node.ELEMENT_NODE &&
+            INLINE_NODE_TAGS.has((child as HTMLElement).tagName));
+        if (isInline) {
+          run.push(child);
+        } else {
+          flushRun(child);
+          if (
+            child.nodeType === Node.ELEMENT_NODE &&
+            (child as HTMLElement).tagName === "DIV" &&
+            !(child as HTMLElement).className
+          ) {
+            const div = child as HTMLElement;
+            const p = document.createElement("p");
+            p.innerHTML = div.innerHTML || "<br/>";
+            parentEl.replaceChild(p, div);
+          }
+        }
       }
+      flushRun(null);
+    };
+
+    normalizeParentInlineRuns(container);
+    container.querySelectorAll<HTMLElement>(".tz-toggle-body, .tz-column").forEach((sub) => {
+      normalizeParentInlineRuns(sub);
     });
 
     if (container.children.length === 0 && !readOnly) {

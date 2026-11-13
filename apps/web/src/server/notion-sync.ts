@@ -765,9 +765,75 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
   if (!html || !html.trim()) return [];
   const root = parse(html);
 
+  const INLINE_TAGS = new Set([
+    "SPAN", "STRONG", "B", "EM", "I", "U", "S", "STRIKE", "DEL",
+    "CODE", "A", "MARK", "SUB", "SUP", "SMALL", "FONT", "BR"
+  ]);
+
+  const BLOCK_CLASSES = [
+    "tz-toggle", "tz-column-list", "tz-column", "tz-callout", "tz-banner",
+    "tz-check-row", "tz-figure", "tz-code-block", "tz-notion-btn-wrapper",
+    "tz-add-ticker-btn", "tz-table", "tz-quote", "tz-divider"
+  ];
+
+  function isInlineNode(node: Node): boolean {
+    if (node.nodeType === 3) return true;
+    if (node.nodeType !== 1) return false;
+    const el = node as HTMLElement;
+    const tag = el.tagName?.toUpperCase() || "";
+    if (!INLINE_TAGS.has(tag)) return false;
+    for (const cls of BLOCK_CLASSES) {
+      if (el.classList.contains(cls)) return false;
+    }
+    const hasBlockDescendant = el.querySelector(
+      ".tz-toggle, .tz-column-list, .tz-callout, .tz-banner, .tz-check-row, figure, img, ul, ol, blockquote, hr, table, .tz-table, p, h1, h2, h3, div"
+    );
+    return !hasBlockDescendant;
+  }
+
+  function buildParagraphFromInlineRun(run: Node[]): any | null {
+    if (!run.length) return null;
+    const wrapper = parse("<div></div>").firstChild as HTMLElement;
+    for (const n of run) {
+      wrapper.appendChild(n.clone());
+    }
+    const rt = extractRichTextFromNode(wrapper);
+    // Filter out runs that are purely indentation whitespace between block elements
+    const combinedText = rt.map((seg) => seg?.text?.content || "").join("").trim();
+    if (!combinedText) return null;
+
+    // Clean leading/trailing formatting newlines from first and last text segments
+    if (rt.length > 0 && rt[0]?.text?.content) {
+      rt[0].text.content = rt[0].text.content.replace(/^\s*\n\s*/, "");
+    }
+    if (rt.length > 0 && rt[rt.length - 1]?.text?.content) {
+      rt[rt.length - 1].text.content = rt[rt.length - 1].text.content.replace(/\s*\n\s*$/, "");
+    }
+
+    return {
+      object: "block",
+      type: "paragraph",
+      paragraph: { rich_text: rt },
+    };
+  }
+
   async function parseNodes(nodes: Node[]): Promise<any[]> {
     const list: any[] = [];
+    let inlineRun: Node[] = [];
+
+    const flushInlineRun = () => {
+      if (inlineRun.length === 0) return;
+      const para = buildParagraphFromInlineRun(inlineRun);
+      if (para) list.push(para);
+      inlineRun = [];
+    };
+
     for (const node of nodes) {
+      if (isInlineNode(node)) {
+        inlineRun.push(node);
+        continue;
+      }
+      flushInlineRun();
       const parsed = await parseSingleNode(node);
       if (Array.isArray(parsed)) {
         list.push(...parsed);
@@ -775,6 +841,7 @@ export async function editorHtmlToNotionTree(html: string, token = process.env.N
         list.push(parsed);
       }
     }
+    flushInlineRun();
     return list;
   }
 
