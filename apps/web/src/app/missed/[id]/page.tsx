@@ -587,7 +587,7 @@ function LoadedMissedSetupWorkspace({
   const activeNoteTabRef = useRef<"setup" | "review">(activeNoteTab);
   activeNoteTabRef.current = activeNoteTab;
 
-  const [rulesCollapsed, setRulesCollapsed] = useState<boolean>(false);
+  const [rulesCollapsed, setRulesCollapsed] = useState<boolean>(true);
 
   const activePlaybookRuleGroups = useMemo<
     Array<{ id: string; name: string; rules: string[] }>

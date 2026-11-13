@@ -1,13 +1,13 @@
 "use client";
 
-import React, { useState, useEffect, useRef, useMemo } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import Link from "next/link";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
   ChevronDown,
+  ChevronRight,
   Search,
   X,
-  Tag as TagIcon,
   Plus,
   Settings2,
 } from "lucide-react";
@@ -17,22 +17,21 @@ interface TradeTagsEditorProps {
   selectedTags: string[];
   selectedMistakes: string[];
   onChange: (nextTags: string[], nextMistakes: string[]) => void;
+  defaultCollapsed?: boolean;
 }
 
 export function TradeTagsEditor({
   selectedTags,
   selectedMistakes,
   onChange,
+  defaultCollapsed = true,
 }: TradeTagsEditorProps) {
   const [categories, setCategories] = useState<CategoryItem[]>([]);
   const [managedTags, setManagedTags] = useState<TagItem[]>([]);
-  const [open, setOpen] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
   const [search, setSearch] = useState("");
-  const [categoryFilter, setCategoryFilter] = useState<string>("all");
   const [newTagCategoryId, setNewTagCategoryId] = useState<string>("");
   const [creating, setCreating] = useState(false);
-
-  const containerRef = useRef<HTMLDivElement>(null);
 
   const fetchTags = async () => {
     try {
@@ -54,20 +53,10 @@ export function TradeTagsEditor({
   };
 
   useEffect(() => {
-    fetchTags();
+    void fetchTags();
   }, []);
 
-  useEffect(() => {
-    function handleClickOutside(e: MouseEvent) {
-      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
-        setOpen(false);
-      }
-    }
-    if (open) document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [open]);
-
-  // Combine selected tags and mistakes into a unified set of active tag names
+  // Combine selected tags and mistakes into a unified list of active tag names
   const allSelected = useMemo(() => {
     const map = new Map<string, string>();
     for (const t of [...selectedTags, ...selectedMistakes]) {
@@ -126,7 +115,7 @@ export function TradeTagsEditor({
     }
   };
 
-  // Group tags by category for the dropdown display
+  // Group tags by category (same structure as Playbook Rule Groups)
   const groupedTags = useMemo(() => {
     const q = search.trim().toLowerCase();
     const groups = new Map<
@@ -134,9 +123,7 @@ export function TradeTagsEditor({
       { categoryId: string | null; categoryName: string; color: string; items: TagItem[] }
     >();
 
-    // Seed groups in category order
     for (const c of categories) {
-      if (categoryFilter !== "all" && categoryFilter !== c.id) continue;
       groups.set(c.id, {
         categoryId: c.id,
         categoryName: c.name,
@@ -145,12 +132,10 @@ export function TradeTagsEditor({
       });
     }
 
-    for (const t of managedTags) {
-      if (categoryFilter !== "all") {
-        if (categoryFilter === "uncategorized" && t.categoryId !== null) continue;
-        if (categoryFilter !== "uncategorized" && t.categoryId !== categoryFilter) continue;
-      }
+    const seenNames = new Set<string>();
 
+    for (const t of managedTags) {
+      seenNames.add(t.name.toLowerCase());
       if (
         q &&
         !t.name.toLowerCase().includes(q) &&
@@ -170,8 +155,32 @@ export function TradeTagsEditor({
       groups.set(key, existing);
     }
 
+    // Include any custom tags already on this trade that aren't in managedTags
+    for (const customName of allSelected) {
+      if (seenNames.has(customName.toLowerCase())) continue;
+      if (q && !customName.toLowerCase().includes(q)) continue;
+      const key = "uncategorized";
+      const existing = groups.get(key) ?? {
+        categoryId: null,
+        categoryName: "Custom / Uncategorized",
+        color: "#64748b",
+        items: [],
+      };
+      existing.items.push({
+        id: `custom-${customName}`,
+        name: customName,
+        categoryId: null,
+        categoryName: "Custom / Uncategorized",
+        categoryColor: "#64748b",
+        description: "",
+        used: 1,
+        createdAt: "",
+      });
+      groups.set(key, existing);
+    }
+
     return Array.from(groups.values()).filter((g) => g.items.length > 0);
-  }, [categories, managedTags, search, categoryFilter]);
+  }, [categories, managedTags, allSelected, search]);
 
   const exactMatchExists = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -184,10 +193,7 @@ export function TradeTagsEditor({
     if (!name || creating) return;
     setCreating(true);
     try {
-      const targetCatId =
-        categoryFilter !== "all" && categoryFilter !== "uncategorized"
-          ? categoryFilter
-          : newTagCategoryId || null;
+      const targetCatId = newTagCategoryId || categories[0]?.id || null;
 
       const res = await fetch("/api/tags", {
         method: "POST",
@@ -215,22 +221,54 @@ export function TradeTagsEditor({
   };
 
   return (
-    <div ref={containerRef} className="space-y-2">
-      {/* Header Row */}
-      <div className="flex items-center justify-between">
-        <label className="text-xs text-muted-foreground">Tags & Categories</label>
-        <Link
-          href="/tags"
-          className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+    <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 space-y-2.5">
+      {/* Collapsible Header Row (Matches Strategy Rules Followed Header) */}
+      <div className="flex items-center justify-between gap-2 text-xs">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex flex-1 items-center gap-2 text-left group"
         >
-          <Settings2 className="h-3 w-3" />
-          <span>Manage tags</span>
-        </Link>
+          {collapsed ? (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground shrink-0" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground shrink-0" />
+          )}
+          <span className="font-bold text-foreground">
+            Tags &amp; Categories ({allSelected.length} / {managedTags.length})
+          </span>
+        </button>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {!collapsed && allSelected.length > 0 && (
+            <button
+              type="button"
+              onClick={() => commitSelection([])}
+              className="text-[11px] underline text-muted-foreground hover:text-foreground"
+            >
+              Clear All
+            </button>
+          )}
+          <Link
+            href="/tags"
+            className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground transition-colors"
+          >
+            <Settings2 className="h-3 w-3" />
+            <span>Manage tags</span>
+          </Link>
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            className="rounded border border-border/60 bg-background/60 hover:bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground hover:text-foreground transition"
+          >
+            {collapsed ? "Expand" : "Collapse"}
+          </button>
+        </div>
       </div>
 
-      {/* Active Tag Badges */}
-      {allSelected.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 pb-0.5">
+      {/* Compact Active Tag Pills When Collapsed */}
+      {collapsed && allSelected.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 pt-1 border-t border-border/40">
           {allSelected.map((tagName) => {
             const meta = tagMetaMap.get(tagName.toLowerCase());
             const color = meta?.categoryColor ?? "#94a3b8";
@@ -240,7 +278,7 @@ export function TradeTagsEditor({
               <span
                 key={tagName}
                 title={`${catName}: ${tagName}`}
-                className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-[#161822] px-2 py-1 text-xs font-medium text-foreground shadow-2xs"
+                className="inline-flex items-center gap-1.5 rounded-md border border-border/60 bg-background px-2 py-0.5 text-[11px] font-medium text-foreground"
               >
                 <span
                   className="h-2 w-2 rounded-full shrink-0"
@@ -261,142 +299,125 @@ export function TradeTagsEditor({
         </div>
       )}
 
-      {/* Dropdown Trigger Button */}
-      <div className="relative">
-        <button
-          type="button"
-          onClick={() => setOpen(!open)}
-          className="flex h-9 w-full items-center justify-between rounded-md border border-input bg-background px-3 text-xs text-foreground transition-colors hover:bg-accent/40 focus:outline-none focus:ring-1 focus:ring-ring"
-        >
-          <span className="text-muted-foreground">
-            {allSelected.length === 0
-              ? "Select tags by category..."
-              : `${allSelected.length} ${allSelected.length === 1 ? "tag" : "tags"} applied — click to add or remove`}
-          </span>
-          <ChevronDown
-            className={`h-3.5 w-3.5 text-muted-foreground transition-transform ${
-              open ? "rotate-180" : ""
-            }`}
-          />
-        </button>
-
-        {/* Popover Menu */}
-        {open && (
-          <div className="absolute left-0 top-full z-50 mt-1.5 w-full rounded-xl border border-border/80 bg-[#161822] p-2.5 shadow-2xl animate-in fade-in-50 zoom-in-95 space-y-2">
-            {/* Search + Category Filter Row */}
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1">
-                <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search or create tag..."
-                  autoFocus
-                  className="h-7 w-full rounded-md border border-border/70 bg-[#0f1117] pl-8 pr-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-indigo-500"
-                />
-              </div>
-
-              <select
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-                className="h-7 max-w-[140px] rounded-md border border-border/70 bg-[#0f1117] px-2 text-[11px] text-foreground outline-none"
+      {/* Expanded Checklist Grouped by Category */}
+      {!collapsed && (
+        <div className="space-y-3.5 pt-2 border-t border-border/40">
+          {/* Quick Filter / Create Tag Bar */}
+          <div className="flex items-center gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-2.5 top-2 h-3.5 w-3.5 text-muted-foreground" />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                placeholder="Filter or create new tag..."
+                className="h-7 w-full rounded-md border border-border/70 bg-background pl-8 pr-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-indigo-500"
+              />
+            </div>
+            {search.trim() && (
+              <button
+                type="button"
+                onClick={() => setSearch("")}
+                className="text-[11px] text-muted-foreground hover:text-foreground px-1.5"
               >
-                <option value="all">All categories</option>
-                {categories.map((c) => (
-                  <option key={c.id} value={c.id}>
-                    {c.name}
-                  </option>
-                ))}
-                <option value="uncategorized">Uncategorized</option>
-              </select>
-            </div>
-
-            {/* Categorized Tag Checkboxes */}
-            <div className="max-h-60 overflow-y-auto space-y-2.5 pr-1">
-              {groupedTags.map((group) => (
-                <div key={group.categoryId ?? "uncategorized"} className="space-y-1">
-                  <div className="flex items-center gap-1.5 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    <TagIcon
-                      className="h-2.5 w-2.5 shrink-0"
-                      style={{ color: group.color, fill: group.color }}
-                    />
-                    <span>{group.categoryName}</span>
-                  </div>
-
-                  <div className="grid grid-cols-1 gap-0.5 pl-1">
-                    {group.items.map((item) => {
-                      const isChecked = allSelected.some(
-                        (s) => s.toLowerCase() === item.name.toLowerCase()
-                      );
-                      return (
-                        <label
-                          key={item.id}
-                          className="flex cursor-pointer items-center justify-between rounded-md px-2 py-1 text-xs text-foreground hover:bg-secondary/50 transition-colors select-none"
-                        >
-                          <div className="flex items-center gap-2 truncate">
-                            <Checkbox
-                              checked={isChecked}
-                              onCheckedChange={() => toggleTag(item.name)}
-                            />
-                            <span className="truncate">{item.name}</span>
-                          </div>
-                          {item.used > 0 && (
-                            <span className="text-[10px] text-muted-foreground tabular-nums">
-                              {item.used}
-                            </span>
-                          )}
-                        </label>
-                      );
-                    })}
-                  </div>
-                </div>
-              ))}
-
-              {groupedTags.length === 0 && (
-                <div className="py-4 text-center text-xs text-muted-foreground">
-                  No matching tags found.
-                </div>
-              )}
-            </div>
-
-            {/* Inline Quick-Create New Tag */}
-            {search.trim() && !exactMatchExists && (
-              <div className="border-t border-border/40 pt-2 flex flex-wrap items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5 text-xs">
-                  <span className="text-muted-foreground">In:</span>
-                  <select
-                    value={
-                      categoryFilter !== "all" && categoryFilter !== "uncategorized"
-                        ? categoryFilter
-                        : newTagCategoryId
-                    }
-                    onChange={(e) => setNewTagCategoryId(e.target.value)}
-                    className="h-7 rounded border border-border/70 bg-[#0f1117] px-2 text-xs text-foreground outline-none"
-                  >
-                    {categories.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.name}
-                      </option>
-                    ))}
-                    <option value="">Uncategorized</option>
-                  </select>
-                </div>
-
-                <button
-                  type="button"
-                  disabled={creating}
-                  onClick={handleCreateNewTag}
-                  className="inline-flex items-center gap-1 rounded-md bg-secondary text-foreground font-semibold border border-border hover:bg-secondary text-foreground font-semibold border border-border px-2.5 py-1 text-xs font-semibold text-white transition-colors"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  <span>Create &ldquo;{search.trim()}&rdquo;</span>
-                </button>
-              </div>
+                Clear
+              </button>
             )}
           </div>
-        )}
-      </div>
+
+          {groupedTags.map((group) => (
+            <div key={group.categoryId ?? "uncategorized"} className="space-y-1.5">
+              {/* Category Group Title (Matches Playbook Rule Group Title) */}
+              <div className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-0.5">
+                <span
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{ backgroundColor: group.color }}
+                />
+                <span>{group.categoryName}</span>
+              </div>
+
+              {/* Checklist Rows */}
+              <div className="space-y-1">
+                {group.items.map((item) => {
+                  const isChecked = allSelected.some(
+                    (s) => s.toLowerCase() === item.name.toLowerCase()
+                  );
+                  return (
+                    <label
+                      key={item.id}
+                      className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-2.5 py-1.5 text-xs transition select-none ${
+                        isChecked
+                          ? "border-border bg-secondary/70 text-foreground font-medium"
+                          : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
+                      }`}
+                    >
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <Checkbox
+                          checked={isChecked}
+                          onCheckedChange={() => toggleTag(item.name)}
+                        />
+                        <span className="leading-snug">{item.name}</span>
+                        {item.description && (
+                          <span className="text-[10px] text-muted-foreground/70 truncate">
+                            — {item.description}
+                          </span>
+                        )}
+                      </div>
+
+                      <span
+                        className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold ${
+                          isChecked
+                            ? "bg-emerald-500/15 text-emerald-400"
+                            : "bg-secondary/60 text-muted-foreground"
+                        }`}
+                      >
+                        {isChecked ? "Selected" : "Unchecked"}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+
+          {groupedTags.length === 0 && (
+            <div className="py-3 text-center text-xs text-muted-foreground">
+              No matching tags found.
+            </div>
+          )}
+
+          {/* Inline Quick-Create New Tag */}
+          {search.trim() && !exactMatchExists && (
+            <div className="border-t border-border/40 pt-2 flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-1.5 text-xs">
+                <span className="text-muted-foreground">Category:</span>
+                <select
+                  value={newTagCategoryId}
+                  onChange={(e) => setNewTagCategoryId(e.target.value)}
+                  className="h-7 rounded border border-border/70 bg-background px-2 text-xs text-foreground outline-none"
+                >
+                  {categories.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                  <option value="">Uncategorized</option>
+                </select>
+              </div>
+
+              <button
+                type="button"
+                disabled={creating}
+                onClick={() => void handleCreateNewTag()}
+                className="inline-flex items-center gap-1 rounded-md border border-border bg-secondary hover:bg-secondary/80 px-2.5 py-1 text-xs font-semibold text-foreground transition-colors"
+              >
+                <Plus className="h-3.5 w-3.5" />
+                <span>Create &ldquo;{search.trim()}&rdquo;</span>
+              </button>
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

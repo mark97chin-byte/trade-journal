@@ -22,7 +22,7 @@ export function TradePlaybookChecklist({
   tradeKey,
   playbookId,
   asCard = false,
-  defaultCollapsed = false,
+  defaultCollapsed = true,
   onUpdated,
 }: {
   tradeKey: string;
