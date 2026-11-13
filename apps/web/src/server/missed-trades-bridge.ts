@@ -32,6 +32,9 @@ export interface RawMissedTradeRow {
   rules_followed_json?: string | null;
   notes: string | null;
   review_notes?: string | null;
+  rating?: number | null;
+  notion_page_id?: string | null;
+  notion_url?: string | null;
   created_at: string;
   archived_at: string | null;
 }
