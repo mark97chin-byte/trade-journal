@@ -1038,6 +1038,18 @@ export function RichEditor({
     setIsMounted(true);
   }, []);
 
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (fullscreen) {
+      document.body.setAttribute("data-editor-fullscreen", "true");
+    } else {
+      document.body.removeAttribute("data-editor-fullscreen");
+    }
+    return () => {
+      document.body.removeAttribute("data-editor-fullscreen");
+    };
+  }, [fullscreen]);
+
   const [openPopover, setOpenPopover] = useState<
     null | "block" | "font" | "color" | "align" | "insert"
   >(null);
@@ -2918,7 +2930,7 @@ export function RichEditor({
       >
         {/* TOP TOOLBAR (STICKY SO IT ALWAYS FOLLOWS SCROLL) */}
         {!readOnly && (
-          <div style={{ top: fullscreen ? 0 : `${stickyTopPx}px` }} className={`sticky ${fullscreen ? "z-40" : "z-30"} shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c] px-2.5 py-1.5 text-xs rounded-t-xl shadow-md`}>
+          <div style={{ top: fullscreen ? 0 : `${stickyTopPx}px` }} className={`sticky ${fullscreen ? "z-50" : "z-20"} shrink-0 flex flex-wrap items-center justify-between gap-1.5 border-b border-border/50 bg-[#12141c] px-2.5 py-1.5 text-xs rounded-t-xl shadow-md`}>
             <div className="flex flex-wrap items-center gap-1">
               {/* 1. Block / Heading / Toggle Heading Selector */}
               <div className="relative">

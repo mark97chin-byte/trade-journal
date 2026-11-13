@@ -354,7 +354,7 @@ body.dashboard-is-dragging .journal-hover-card {
   }
 }
 .journal-desktop-sidebar {
-  z-index: 40;
+  z-index: 50;
   width: 13rem;
   transition: width 280ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -385,7 +385,7 @@ body.dashboard-is-dragging .journal-hover-card {
 .journal-sidebar-trigger {
   right: 0;
   top: 50%;
-  z-index: 10;
+  z-index: 60;
   transform: translate(50%, -50%);
   transition:
     color 160ms ease,
@@ -1477,4 +1477,15 @@ html:not(.dark) [class*="bg-[#2"],
 .journal-calendar-week[data-pnl="loss"] {
   background-color: color-mix(in srgb, var(--loss) 10%, transparent) !important;
   border-color: color-mix(in srgb, var(--loss) 25%, transparent) !important;
+}
+
+
+/* Ensure Fullscreen RichEditor is never overlapped by sidebar, filter bar, or charts */
+body[data-editor-fullscreen="true"] {
+  overflow: hidden !important;
+}
+body[data-editor-fullscreen="true"] .journal-desktop-sidebar,
+body[data-editor-fullscreen="true"] .journal-mobile-header,
+body[data-editor-fullscreen="true"] .journal-filter-bar {
+  display: none !important;
 }

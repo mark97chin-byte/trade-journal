@@ -52,6 +52,7 @@ import {
 import { RichEditor, Markdown, type RichEditorHandle } from "@/components/rich-editor";
 import { ReviewExport } from "@/components/review-export";
 import { RuleChecklist } from "@/components/rule-checklist";
+import { TradePlaybookChecklist } from "@/components/playbooks/trade-playbook-checklist";
 import { TradeTagsEditor } from "@/components/tags/trade-tags-editor";
 import { AiNotice } from "@/components/ai-notice";
 import { useAutosave } from "@/lib/use-autosave";
@@ -593,7 +594,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
         })()}
 
         {/* 2. DYNAMIC RESIZABLE 2-COLUMN LAYOUT */}
-        <div className="flex flex-col lg:flex-row gap-0 relative z-0 items-stretch min-h-[600px]">
+        <div className="flex flex-col lg:flex-row gap-0 relative items-stretch min-h-[600px]">
           {/* LEFT COLUMN: JOURNAL (RICH EDITOR, RULES, TAGS, AI) */}
           {!leftCollapsed && (
             <div
@@ -601,11 +602,10 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                 width: rightCollapsed ? "100%" : `${leftWidth}%`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pr-0 lg:pr-3 min-w-[280px] relative z-0"
+              className="space-y-4 pr-0 lg:pr-3 min-w-[280px]"
             >
               <AnnotationsCard key={trade.key} trade={trade} onPatch={patch} />
               <TradePeriodCompanion openedAt={trade.openedAt} />
-              <RuleChecklist tradeKey={trade.key} playbookId={trade.playbookId} />
 
               <Card>
                 <CardHeader className="flex-row items-center justify-between pb-2">
@@ -661,7 +661,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                 width: leftCollapsed ? "100%" : `calc(${100 - leftWidth}% - 8px)`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pl-0 lg:pl-3 min-w-[340px] relative z-0"
+              className="space-y-4 pl-0 lg:pl-3 min-w-[340px]"
             >
               <TradeMarketData trade={trade} executions={executions} onResultChange={setMarketResult} />
 
@@ -1586,7 +1586,7 @@ function AnnotationsCard({
         </div>
 
         <div>
-          <label className="text-[11px] text-muted-foreground">Playbook</label>
+          <label className="text-[11px] text-muted-foreground">Playbook / Strategy Model</label>
           <Select
             value={trade.playbookId ?? "none"}
             onValueChange={(val) => void handlePatchWithFeedback({ playbookId: val === "none" ? null : val })}
@@ -1603,6 +1603,12 @@ function AnnotationsCard({
               ))}
             </SelectContent>
           </Select>
+
+          <TradePlaybookChecklist
+            tradeKey={trade.key}
+            playbookId={trade.playbookId}
+            asCard={false}
+          />
         </div>
 
         <TradeTagsEditor

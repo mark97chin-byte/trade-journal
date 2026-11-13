@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useEffect, useState } from "react";
+import { ChevronDown, ChevronRight } from "lucide-react";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 
@@ -20,19 +21,27 @@ interface RuleCheckGroup {
 export function TradePlaybookChecklist({
   tradeKey,
   playbookId,
+  asCard = false,
+  defaultCollapsed = false,
   onUpdated,
 }: {
   tradeKey: string;
   playbookId?: string | null;
   asCard?: boolean;
+  defaultCollapsed?: boolean;
   onUpdated?: () => void;
 }) {
   const [playbookName, setPlaybookName] = useState<string | null>(null);
   const [ruleGroups, setRuleGroups] = useState<RuleCheckGroup[]>([]);
   const [loading, setLoading] = useState(false);
+  const [collapsed, setCollapsed] = useState<boolean>(defaultCollapsed);
 
   const fetchRules = async () => {
-    if (!tradeKey) return;
+    if (!tradeKey || !playbookId || playbookId === "none") {
+      setPlaybookName(null);
+      setRuleGroups([]);
+      return;
+    }
     setLoading(true);
     try {
       const res = await fetch(`/api/trades/${encodeURIComponent(tradeKey)}/rules`);
@@ -66,7 +75,7 @@ export function TradePlaybookChecklist({
   };
 
   useEffect(() => {
-    fetchRules();
+    void fetchRules();
   }, [tradeKey, playbookId]);
 
   const toggleRule = async (ruleText: string, currentFollowed: boolean | null) => {
@@ -90,73 +99,124 @@ export function TradePlaybookChecklist({
     onUpdated?.();
   };
 
+  const toggleAllRules = async () => {
+    const allRules = ruleGroups.flatMap((g) => g.rules);
+    if (allRules.length === 0) return;
+    const allChecked = allRules.every((r) => r.followed === true);
+    const nextState = !allChecked;
+
+    setRuleGroups((prev) =>
+      prev.map((g) => ({
+        ...g,
+        rules: g.rules.map((r) => ({ ...r, followed: nextState })),
+      }))
+    );
+
+    await Promise.all(
+      allRules.map((item) =>
+        fetch(`/api/trades/${encodeURIComponent(tradeKey)}/rules`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ rule: item.rule, followed: nextState }),
+        })
+      )
+    );
+
+    onUpdated?.();
+  };
+
+  if (!playbookId || playbookId === "none") {
+    return null;
+  }
+
   const totalRules = ruleGroups.reduce((acc, g) => acc + g.rules.length, 0);
   const followedCount = ruleGroups.reduce(
     (acc, g) => acc + g.rules.filter((r) => r.followed === true).length,
     0
   );
 
-  return (
-    <Card>
-      <CardHeader className="pb-3 space-y-1">
-        <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-          Strategy rule review
-        </p>
-        {playbookName ? (
-          <>
-            <h3 className="text-sm font-bold text-foreground">{playbookName}</h3>
-            <p className="text-xs text-muted-foreground tabular-nums">
-              {followedCount}/{totalRules} rules followed
-            </p>
-          </>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            {loading ? "Loading rules..." : "Assign a playbook above to review strategy rules."}
-          </p>
-        )}
-      </CardHeader>
+  if (!loading && totalRules === 0) {
+    return null;
+  }
 
-      {playbookName && totalRules > 0 && (
-        <CardContent className="space-y-4 pt-0">
+  const innerContent = (
+    <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 space-y-2.5 mt-2">
+      <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          onClick={() => setCollapsed((c) => !c)}
+          className="flex flex-1 items-center gap-2 text-left text-xs group"
+        >
+          {collapsed ? (
+            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground shrink-0" />
+          ) : (
+            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground shrink-0" />
+          )}
+          <span className="font-bold text-foreground">
+            Strategy Rules Followed ({followedCount} / {totalRules})
+          </span>
+          {playbookName && (
+            <span className="rounded bg-secondary px-1.5 py-0.5 text-[10px] font-semibold text-muted-foreground">
+              {playbookName}
+            </span>
+          )}
+        </button>
+
+        <div className="flex items-center gap-2 shrink-0">
+          {!collapsed && totalRules > 0 && (
+            <button
+              type="button"
+              onClick={() => void toggleAllRules()}
+              className="text-[11px] underline text-muted-foreground hover:text-foreground"
+            >
+              {followedCount === totalRules ? "Clear All" : "Check All Rules"}
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => setCollapsed((c) => !c)}
+            className="rounded border border-border/60 bg-background/60 hover:bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground hover:text-foreground transition"
+          >
+            {collapsed ? "Expand" : "Collapse"}
+          </button>
+        </div>
+      </div>
+
+      {!collapsed && totalRules > 0 && (
+        <div className="space-y-3.5 pt-1 border-t border-border/40">
           {ruleGroups.map((group) => {
             if (group.rules.length === 0) return null;
             return (
               <div key={group.id} className="space-y-1.5">
-                {ruleGroups.length > 1 && (
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-                    {group.name}
-                  </div>
-                )}
+                <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-0.5">
+                  {group.name}
+                </div>
 
-                <div className="divide-y divide-border/30 border-t border-border/30">
+                <div className="space-y-1">
                   {group.rules.map((item) => {
                     const isChecked = item.followed === true;
                     return (
                       <label
                         key={item.id || item.rule}
-                        className="flex cursor-pointer items-center justify-between gap-3 py-2.5 text-xs hover:bg-secondary/20 transition-colors select-none px-1 rounded-xs"
+                        className={`flex cursor-pointer items-center justify-between gap-3 rounded-lg border px-2.5 py-1.5 text-xs transition select-none ${
+                          isChecked
+                            ? "border-border bg-secondary/70 text-foreground font-medium"
+                            : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
+                        }`}
                       >
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-2.5 min-w-0">
                           <Checkbox
                             checked={isChecked}
-                            onCheckedChange={() => toggleRule(item.rule, item.followed)}
+                            onCheckedChange={() => void toggleRule(item.rule, item.followed)}
                           />
-                          <span
-                            className={
-                              isChecked
-                                ? "text-foreground font-medium"
-                                : "text-muted-foreground"
-                            }
-                          >
-                            {item.rule}
-                          </span>
+                          <span className="leading-snug">{item.rule}</span>
                         </div>
 
                         <span
-                          className={`rounded px-2 py-0.5 text-[10px] font-semibold ${
+                          className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold ${
                             isChecked
                               ? "bg-emerald-500/15 text-emerald-400"
-                              : "bg-secondary/50 text-muted-foreground"
+                              : "bg-secondary/60 text-muted-foreground"
                           }`}
                         >
                           {isChecked ? "Followed" : "Unchecked"}
@@ -168,8 +228,23 @@ export function TradePlaybookChecklist({
               </div>
             );
           })}
-        </CardContent>
+        </div>
       )}
-    </Card>
+    </div>
   );
+
+  if (asCard) {
+    return (
+      <Card>
+        <CardHeader className="pb-2">
+          <p className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+            Strategy rule review
+          </p>
+        </CardHeader>
+        <CardContent>{innerContent}</CardContent>
+      </Card>
+    );
+  }
+
+  return innerContent;
 }

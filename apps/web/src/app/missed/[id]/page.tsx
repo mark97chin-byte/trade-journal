@@ -13,6 +13,7 @@ import {
   Download,
   ExternalLink,
   Calculator,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   PanelLeftClose,
@@ -586,18 +587,44 @@ function LoadedMissedSetupWorkspace({
   const activeNoteTabRef = useRef<"setup" | "review">(activeNoteTab);
   activeNoteTabRef.current = activeNoteTab;
 
-  const activePlaybookRules = useMemo<string[]>(() => {
+  const [rulesCollapsed, setRulesCollapsed] = useState<boolean>(false);
+
+  const activePlaybookRuleGroups = useMemo<
+    Array<{ id: string; name: string; rules: string[] }>
+  >(() => {
     if (!playbookId || playbookId === "none") return [];
-    const found = playbooks.find((b) => b.id === playbookId);
+    const found = playbooks.find((b) => b.id === playbookId) as any;
     if (!found) return [];
-    if (Array.isArray(found.rules)) return found.rules;
-    if (typeof (found as any).rulesJson === "string") {
+    if (Array.isArray(found.ruleGroups) && found.ruleGroups.length > 0) {
+      return found.ruleGroups
+        .map((g: any, gIdx: number) => ({
+          id: String(g.id || `grp-${gIdx}`),
+          name: String(g.name || "Entry criteria"),
+          rules: Array.isArray(g.rules)
+            ? g.rules
+                .map((r: any) => (typeof r === "string" ? r.trim() : String(r?.text || r?.rule || "").trim()))
+                .filter(Boolean)
+            : [],
+        }))
+        .filter((g: any) => g.rules.length > 0);
+    }
+    let flat: string[] = [];
+    if (Array.isArray(found.rules)) flat = found.rules;
+    else if (typeof found.rulesJson === "string") {
       try {
-        return JSON.parse((found as any).rulesJson);
+        flat = JSON.parse(found.rulesJson);
       } catch {}
+    }
+    if (flat.length > 0) {
+      return [{ id: "group-default", name: "Entry criteria", rules: flat }];
     }
     return [];
   }, [playbookId, playbooks]);
+
+  const activePlaybookRules = useMemo<string[]>(
+    () => activePlaybookRuleGroups.flatMap((g) => g.rules),
+    [activePlaybookRuleGroups]
+  );
 
   const calc = useMemo(() => {
     const entry = parseFloat(entryStr);
@@ -1348,14 +1375,14 @@ function LoadedMissedSetupWorkspace({
         </Card>
 
         {/* RESIZABLE 2-COLUMN WORKSPACE */}
-        <div className="flex flex-col lg:flex-row gap-0 relative z-0 items-stretch min-h-[640px]">
+        <div className="flex flex-col lg:flex-row gap-0 relative items-stretch min-h-[640px]">
           {!leftCollapsed && (
             <div
               style={{
                 width: rightCollapsed ? "100%" : `${leftWidth}%`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pr-0 lg:pr-3 min-w-[320px] relative z-0"
+              className="space-y-4 pr-0 lg:pr-3 min-w-[320px]"
             >
               <Card className="border-border/70">
                 <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2 pb-2">
@@ -1648,58 +1675,104 @@ function LoadedMissedSetupWorkspace({
                   </div>
 
                   {playbookId !== "none" && activePlaybookRules.length > 0 && (
-                    <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 space-y-2">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="font-bold text-foreground">
-                          Playbook Rules Matched ({rulesFollowed.length} /{" "}
-                          {activePlaybookRules.length})
-                        </span>
+                    <div className="rounded-xl border border-border/70 bg-secondary/20 p-3 space-y-2.5">
+                      <div className="flex items-center justify-between gap-2 text-xs">
                         <button
                           type="button"
-                          onClick={() =>
-                            setRulesFollowed(
-                              rulesFollowed.length === activePlaybookRules.length
-                                ? []
-                                : [...activePlaybookRules]
-                            )
-                          }
-                          className="text-[11px] underline text-muted-foreground hover:text-foreground"
+                          onClick={() => setRulesCollapsed((c) => !c)}
+                          className="flex flex-1 items-center gap-2 text-left group"
                         >
-                          {rulesFollowed.length === activePlaybookRules.length
-                            ? "Clear All"
-                            : "Check All Rules"}
+                          {rulesCollapsed ? (
+                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground shrink-0" />
+                          ) : (
+                            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground group-hover:text-foreground shrink-0" />
+                          )}
+                          <span className="font-bold text-foreground">
+                            Strategy Rules Matched ({rulesFollowed.length} /{" "}
+                            {activePlaybookRules.length})
+                          </span>
                         </button>
-                      </div>
-                      <div className="space-y-1.5">
-                        {activePlaybookRules.map((rule) => {
-                          const checked = rulesFollowed.includes(rule);
-                          return (
+
+                        <div className="flex items-center gap-2 shrink-0">
+                          {!rulesCollapsed && (
                             <button
-                              key={rule}
                               type="button"
                               onClick={() =>
-                                setRulesFollowed((prev) =>
-                                  prev.includes(rule)
-                                    ? prev.filter((r) => r !== rule)
-                                    : [...prev, rule]
+                                setRulesFollowed(
+                                  rulesFollowed.length === activePlaybookRules.length
+                                    ? []
+                                    : [...activePlaybookRules]
                                 )
                               }
-                              className={`w-full flex items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
-                                checked
-                                  ? "border-foreground bg-secondary text-foreground font-medium"
-                                  : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
-                              }`}
+                              className="text-[11px] underline text-muted-foreground hover:text-foreground"
                             >
-                              {checked ? (
-                                <CheckSquare className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                              ) : (
-                                <Square className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                              )}
-                              <span>{rule}</span>
+                              {rulesFollowed.length === activePlaybookRules.length
+                                ? "Clear All"
+                                : "Check All Rules"}
                             </button>
-                          );
-                        })}
+                          )}
+                          <button
+                            type="button"
+                            onClick={() => setRulesCollapsed((c) => !c)}
+                            className="rounded border border-border/60 bg-background/60 hover:bg-secondary px-2 py-0.5 text-[10px] font-semibold text-muted-foreground hover:text-foreground transition"
+                          >
+                            {rulesCollapsed ? "Expand" : "Collapse"}
+                          </button>
+                        </div>
                       </div>
+
+                      {!rulesCollapsed && (
+                        <div className="space-y-3.5 pt-1 border-t border-border/40">
+                          {activePlaybookRuleGroups.map((group) => (
+                            <div key={group.id} className="space-y-1.5">
+                              <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground px-0.5">
+                                {group.name}
+                              </div>
+                              <div className="space-y-1">
+                                {group.rules.map((rule) => {
+                                  const checked = rulesFollowed.includes(rule);
+                                  return (
+                                    <button
+                                      key={rule}
+                                      type="button"
+                                      onClick={() =>
+                                        setRulesFollowed((prev) =>
+                                          prev.includes(rule)
+                                            ? prev.filter((r) => r !== rule)
+                                            : [...prev, rule]
+                                        )
+                                      }
+                                      className={`w-full flex items-center justify-between gap-3 rounded-lg border px-2.5 py-1.5 text-left text-xs transition ${
+                                        checked
+                                          ? "border-border bg-secondary/70 text-foreground font-medium"
+                                          : "border-border/50 bg-background text-muted-foreground hover:text-foreground"
+                                      }`}
+                                    >
+                                      <div className="flex items-center gap-2.5 min-w-0">
+                                        {checked ? (
+                                          <CheckSquare className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
+                                        ) : (
+                                          <Square className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                                        )}
+                                        <span className="leading-snug">{rule}</span>
+                                      </div>
+                                      <span
+                                        className={`shrink-0 rounded px-2 py-0.5 text-[10px] font-semibold ${
+                                          checked
+                                            ? "bg-emerald-500/15 text-emerald-400"
+                                            : "bg-secondary/60 text-muted-foreground"
+                                        }`}
+                                      >
+                                        {checked ? "Followed" : "Unchecked"}
+                                      </span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -2044,7 +2117,7 @@ function LoadedMissedSetupWorkspace({
                 width: leftCollapsed ? "100%" : `calc(${100 - leftWidth}% - 10px)`,
                 flexShrink: 0,
               }}
-              className="space-y-4 pl-0 lg:pl-3 min-w-[340px] relative z-0"
+              className="space-y-4 pl-0 lg:pl-3 min-w-[340px]"
             >
               <TradeMarketData
                 key={`missed_chart_${initialRecord.id}_${symbol}`}
