@@ -1,12 +1,13 @@
 "use client";
 
-import React, { useState, useMemo } from "react";
+import React, { useState, useMemo, useEffect, useCallback } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useApi } from "@/lib/use-api";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { AiLogButton } from "@/components/ai-log-button";
 import {
   Sparkles,
   TrendingUp,
@@ -22,6 +23,11 @@ import {
   AlertTriangle,
   Info,
   BookOpen,
+  MessageSquare,
+  Send,
+  RefreshCw,
+  Calendar,
+  Moon,
 } from "lucide-react";
 
 function fmtMoney(val: number | null | undefined): string {
@@ -65,16 +71,25 @@ export function EdgeOptimizerView({
   const router = useRouter();
   const [selectedStrategyId, setSelectedStrategyId] = useState<string>("all");
   const [minSampleSize, setMinSampleSize] = useState<number>(1);
-  const [activeDimension, setActiveDimension] = useState<string>("all_categories");
+  const [activeDimension, setActiveDimension] = useState<string>("playbook_rules");
   const [expandedBucketKey, setExpandedBucketKey] = useState<string | null>(null);
+  const [collapsedPlaybooks, setCollapsedPlaybooks] = useState<Record<string, boolean>>({});
+  const [collapsedRuleGroups, setCollapsedRuleGroups] = useState<Record<string, boolean>>({});
+
+  // AI Status, Saved Optimizer Reports & Q&A state
+  const [aiStatus, setAiStatus] = useState<{
+    online: boolean;
+    modelName: string;
+    baseUrl: string;
+  } | null>(null);
+  const [savedOptimizerReports, setSavedOptimizerReports] = useState<any[]>([]);
+  const [selectedReportId, setSelectedReportId] = useState<string>("");
+  const [reportCommentsMap, setReportCommentsMap] = useState<Record<string, any[]>>({});
+  const [qaInput, setQaInput] = useState("");
+  const [qaSending, setQaSending] = useState(false);
+  const [showReportPanel, setShowReportPanel] = useState(true);
 
   const [aiLoading, setAiLoading] = useState(false);
-  const [aiReport, setAiReport] = useState<string | null>(null);
-  const [savedReportMeta, setSavedReportMeta] = useState<{
-    reportId: string;
-    title: string;
-    source: string;
-  } | null>(null);
 
   const apiUrl = `/api/reports/optimizer?${query}${query ? "&" : ""}includeMissed=${
     includeMissed ? "1" : "0"
@@ -82,20 +97,70 @@ export function EdgeOptimizerView({
 
   const { data, loading } = useApi<any>(apiUrl);
 
+  const fetchAiCoachStatusAndReports = useCallback(async () => {
+    try {
+      const res = await fetch("/api/ai/coach");
+      const json = await res.json();
+      if (json.ok) {
+        if (json.kobold) {
+          setAiStatus({
+            online: Boolean(json.kobold.online),
+            modelName: json.kobold.modelName || json.kobold.activeModelFile || "KoboldCpp",
+            baseUrl: json.kobold.baseUrl || "http://100.75.201.34:5001",
+          });
+        }
+        const optReps = (json.reports || []).filter((r: any) => r.horizon === "optimizer");
+        setSavedOptimizerReports(optReps);
+        setReportCommentsMap(json.reportCommentsMap || {});
+        if (!selectedReportId && optReps.length > 0) {
+          setSelectedReportId(optReps[0].id);
+        }
+      }
+    } catch {}
+  }, [selectedReportId]);
+
+  useEffect(() => {
+    void fetchAiCoachStatusAndReports();
+  }, [fetchAiCoachStatusAndReports]);
+
+  // Natural sort helper (1., 2., 3., ...)
+  const sortRowsNaturally = useCallback((rows: any[]) => {
+    return [...rows].sort((a, b) => {
+      const catCmp = String(a.categoryName || "").localeCompare(
+        String(b.categoryName || ""),
+        undefined,
+        { numeric: true, sensitivity: "base" }
+      );
+      if (catCmp !== 0) return catCmp;
+      return String(a.label || "").localeCompare(String(b.label || ""), undefined, {
+        numeric: true,
+        sensitivity: "base",
+      });
+    });
+  }, []);
+
   const dimensionRows = useMemo(() => {
     if (!data?.dimensions) return [];
     let raw: any[] = [];
     if (activeDimension === "all_categories") {
-      raw = Object.values(data.dimensions.byCategory || {}).flat();
+      const sortedCats = data.tagCategories || [];
+      for (const c of sortedCats) {
+        const catList = data.dimensions.byCategory?.[c.id] || [];
+        raw.push(...sortRowsNaturally(catList));
+      }
     } else if (activeDimension.startsWith("cat:")) {
       const catId = activeDimension.slice(4);
-      raw = data.dimensions.byCategory?.[catId] || [];
+      raw = sortRowsNaturally(data.dimensions.byCategory?.[catId] || []);
     } else if (activeDimension === "killzone") {
       raw = data.dimensions.byKillzone || [];
     } else if (activeDimension === "candle7h") {
       raw = data.dimensions.by7hCandle || [];
     } else if (activeDimension === "duration") {
       raw = data.dimensions.byDuration || [];
+    } else if (activeDimension === "overnight") {
+      raw = data.dimensions.byOvernight || [];
+    } else if (activeDimension === "macro") {
+      raw = data.dimensions.byMacroEvent || [];
     } else if (activeDimension === "sequential") {
       raw = data.dimensions.bySequentialState || [];
     } else if (activeDimension === "sym_dir") {
@@ -106,7 +171,7 @@ export function EdgeOptimizerView({
       raw = data.dimensions.bySymbol || [];
     }
     return raw.filter((r) => (r.metrics?.count ?? 0) >= minSampleSize);
-  }, [data, activeDimension, minSampleSize]);
+  }, [data, activeDimension, minSampleSize, sortRowsNaturally]);
 
   const selectedStrategyLabel = useMemo(() => {
     if (selectedStrategyId === "all") return "All Strategies";
@@ -127,18 +192,51 @@ export function EdgeOptimizerView({
         }),
       });
       const json = await res.json();
-      if (json.analysis) {
-        setAiReport(json.analysis);
-        if (json.reportId) {
-          setSavedReportMeta({
-            reportId: json.reportId,
-            title: json.title || "Optimizer Report",
-            source: json.source || "AI",
-          });
-        }
+      if (json.ok && json.reportId) {
+        await fetchAiCoachStatusAndReports();
+        setSelectedReportId(json.reportId);
+        setShowReportPanel(true);
       }
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const activeSavedReport = useMemo(() => {
+    if (!savedOptimizerReports.length) return null;
+    return (
+      savedOptimizerReports.find((r) => r.id === selectedReportId) ||
+      savedOptimizerReports[0] ||
+      null
+    );
+  }, [savedOptimizerReports, selectedReportId]);
+
+  const activeReportComments = useMemo(() => {
+    if (!activeSavedReport) return [];
+    return reportCommentsMap[activeSavedReport.id] || [];
+  }, [activeSavedReport, reportCommentsMap]);
+
+  const handleAskReportQuestion = async () => {
+    const q = qaInput.trim();
+    if (!q || !activeSavedReport || qaSending) return;
+    setQaSending(true);
+    setQaInput("");
+    try {
+      await fetch("/api/ai/coach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action: "chat_coach",
+          reportId: activeSavedReport.id,
+          message: q,
+        }),
+      });
+      // Poll briefly for reply
+      setTimeout(() => void fetchAiCoachStatusAndReports(), 1500);
+      setTimeout(() => void fetchAiCoachStatusAndReports(), 4000);
+      setTimeout(() => void fetchAiCoachStatusAndReports(), 8000);
+    } finally {
+      setQaSending(false);
     }
   };
 
@@ -150,6 +248,66 @@ export function EdgeOptimizerView({
   const mfeCurve = data.mfeCurve;
   const bestTarget = mfeCurve?.bestTrailing;
   const samplePct = Math.min(100, Math.round((b.count / 20) * 100));
+  const ovSummary = data.overnightSummary;
+
+  const renderTradesDrillDown = (tradesList: any[], label: string) => (
+    <div className="rounded-lg border border-border/50 bg-card p-2.5 space-y-1.5">
+      <div className="text-[11px] font-bold text-foreground">
+        Setups matching &ldquo;{label}&rdquo; ({tradesList.length})
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+        {tradesList.map((t: any, i: number) => {
+          const isM = Boolean(t.isMissed);
+          const k = String(t.key ?? t.id ?? i);
+          const link = isM
+            ? `/missed/${encodeURIComponent(k)}`
+            : `/trades/${encodeURIComponent(k)}`;
+          const rVal = typeof t.realizedR === "number" ? t.realizedR : null;
+          return (
+            <div
+              key={`${k}-${i}`}
+              onClick={() => router.push(link)}
+              className="cursor-pointer rounded-lg border border-border/50 bg-secondary/20 hover:bg-secondary/50 p-2 flex items-center justify-between text-xs transition"
+            >
+              <div>
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`rounded px-1 py-0.2 text-[9px] font-bold ${
+                      isM
+                        ? "bg-amber-500/20 text-amber-300"
+                        : "bg-indigo-500/20 text-indigo-300"
+                    }`}
+                  >
+                    {isM ? "MISSED" : "EXEC"}
+                  </span>
+                  <span className="font-mono font-bold text-foreground">{t.symbol}</span>
+                  <span className="uppercase text-[10px] text-muted-foreground">
+                    {t.direction}
+                  </span>
+                </div>
+                <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
+                  {String(t.openedAt || "").slice(0, 10)}
+                </div>
+              </div>
+              <div className="text-right font-mono">
+                <div
+                  className={`font-bold ${
+                    Number(t.netPnl ?? 0) >= 0 ? "text-emerald-400" : "text-rose-400"
+                  }`}
+                >
+                  {fmtMoney(Number(t.netPnl ?? 0))}
+                </div>
+                <div className="text-[10px] text-muted-foreground">
+                  {rVal !== null ? `${rVal > 0 ? "+" : ""}${rVal.toFixed(2)}R` : ""}{" "}
+                  <ExternalLink className="inline h-2.5 w-2.5" />
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
 
   const renderMfeCurveSvg = () => {
     const pts: any[] = mfeCurve?.points || [];
@@ -267,17 +425,44 @@ export function EdgeOptimizerView({
 
   return (
     <div className="space-y-6">
-      {/* TOP CONTROL BAR & SAMPLE SIZE ADVISORY */}
+      {/* TOP CONTROL BAR, AI STATUS CHECK, LOGS BUTTON & SAMPLE SIZE ADVISORY */}
       <div className="rounded-xl border border-border/60 bg-card p-4 shadow-sm space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <h2 className="text-base font-bold text-foreground flex items-center gap-2">
+            <div className="flex flex-wrap items-center gap-2">
               <Target className="h-4 w-4 text-muted-foreground" />
-              <span>Quantitative Edge &amp; R-Multiple Optimizer</span>
-              <HintIcon text="Combines exact R-multiple excursion math (MFE/MAE, Partial Scale-Outs, Hold-Time, Post-Win/Loss recency, and Tag/Rule cross-tabs) with AI pattern synthesis." />
-            </h2>
+              <h2 className="text-base font-bold text-foreground">
+                Quantitative Edge &amp; R-Multiple Optimizer
+              </h2>
+              <HintIcon text="Combines exact R-multiple excursion math (MFE/MAE, Partial Scale-Outs, Hold-Time, Overnight Cushion R, Macro News CPI/NFP/FOMC, and Grouped Playbook Rules) with AI pattern synthesis." />
+
+              {/* Live AI / KoboldCpp Status Badge (Same as Progress Tab) */}
+              {aiStatus && (
+                <button
+                  type="button"
+                  onClick={() => void fetchAiCoachStatusAndReports()}
+                  title="Click to refresh AI model connection status"
+                  className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-0.5 text-[10px] font-semibold transition ${
+                    aiStatus.online
+                      ? "border-emerald-500/40 bg-emerald-500/15 text-emerald-300"
+                      : "border-amber-500/40 bg-amber-500/15 text-amber-300"
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full ${
+                      aiStatus.online ? "bg-emerald-400" : "bg-amber-400"
+                    }`}
+                  />
+                  <span>
+                    {aiStatus.online
+                      ? `AI Online · ${aiStatus.modelName}`
+                      : `Desktop AI Offline (Quant Fallback Active)`}
+                  </span>
+                </button>
+              )}
+            </div>
             <p className="text-xs text-muted-foreground mt-0.5">
-              Layer 1 exact mathematical excursion &amp; confluence engine + Layer 2 AI pattern synthesizer (auto-saved to your AI Notebook).
+              Layer 1 exact mathematical excursion, overnight &amp; macro news engine + Layer 2 AI pattern synthesizer.
             </p>
           </div>
 
@@ -347,8 +532,11 @@ export function EdgeOptimizerView({
               ) : (
                 <Sparkles className="h-3.5 w-3.5 text-indigo-400" />
               )}
-              <span>{aiLoading ? "Analyzing & Saving to Notebook..." : "Run AI Pattern & Edge Audit"}</span>
+              <span>{aiLoading ? "Analyzing & Saving..." : "Run AI Pattern & Edge Audit"}</span>
             </Button>
+
+            {/* Live AI Stream Logs Toggle Button (Same as Progress Tab) */}
+            <AiLogButton label="Logs" onAborted={() => void fetchAiCoachStatusAndReports()} />
           </div>
         </div>
 
@@ -367,7 +555,7 @@ export function EdgeOptimizerView({
               </span>
               <span className="ml-2 text-muted-foreground">
                 {b.count >= 20
-                  ? "Statistically actionable sample size reached (N ≥ 20)."
+                  ? "Statistically actionable sample size reached (N ≥ 20). Note: individual sub-buckets with N < 10 may still be skewed by outliers."
                   : "Note: Optimization is running on all available trades below, but data may be skewed due to a small sample size (<20 trades)."}
               </span>
             </div>
@@ -384,43 +572,7 @@ export function EdgeOptimizerView({
         </div>
       </div>
 
-      {/* LAYER 2: AI PATTERN SYNTHESIS PANEL (AUTO-SAVED TO NOTEBOOK) */}
-      {aiReport && (
-        <div className="rounded-xl border border-indigo-500/40 bg-[#12141f] p-5 space-y-3 shadow-lg">
-          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-border/40 pb-2.5">
-            <div className="flex items-center gap-2 text-sm font-bold text-indigo-300">
-              <Sparkles className="h-4 w-4" />
-              <span>{savedReportMeta?.title || "AI Quantitative Strategy & Edge Synthesis"}</span>
-              {savedReportMeta?.source && (
-                <span className="rounded bg-indigo-500/20 px-2 py-0.5 text-[10px] font-mono text-indigo-200">
-                  {savedReportMeta.source}
-                </span>
-              )}
-            </div>
-            <div className="flex items-center gap-3">
-              <Link
-                href="/notebook?tab=ai&folder=optimizer"
-                className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-2.5 py-1 text-xs font-semibold text-emerald-300 transition"
-              >
-                <BookOpen className="h-3.5 w-3.5" />
-                <span>Saved to Notebook → Optimizer Reports ↗</span>
-              </Link>
-              <button
-                type="button"
-                onClick={() => setAiReport(null)}
-                className="text-xs text-muted-foreground hover:text-foreground"
-              >
-                Dismiss ✕
-              </button>
-            </div>
-          </div>
-          <div className="whitespace-pre-wrap text-xs leading-relaxed text-foreground/95 space-y-1">
-            {aiReport}
-          </div>
-        </div>
-      )}
-
-      {/* TOP 6 QUANTITATIVE TELEMETRY CARDS WITH HOVER TOOLTIPS */}
+      {/* TOP 6 QUANTITATIVE TELEMETRY CARDS */}
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6 text-xs">
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
           <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
@@ -497,14 +649,14 @@ export function EdgeOptimizerView({
 
         <div className="rounded-xl border border-border/50 bg-card p-3.5 space-y-1">
           <div className="flex items-center justify-between text-[10px] uppercase font-bold text-muted-foreground">
-            <span>Half-Kelly Safe Risk</span>
-            <HintIcon text="Half of the mathematical Kelly Criterion optimal bet size based on your Win % and Payoff Ratio, plus the statistically expected longest losing streak in 100 trades." />
+            <span>Overnight Cushion R*</span>
+            <HintIcon text="Minimum floating/peak R cushion typically needed before holding a trade overnight has positive expectancy (25th percentile of winning overnight holds)." />
           </div>
           <div className="text-lg font-bold font-mono text-indigo-400">
-            {b.halfKellyPct}%
+            +{ovSummary?.recommendedCushionR ?? 1.0}R
           </div>
           <div className="text-[10px] text-muted-foreground">
-            Max streak (100t): {b.expectedMaxLosingStreak} losses
+            Win median: +{ovSummary?.medianWinnerPeakR ?? "—"}R ({ovSummary?.overnightCount ?? 0} ovn)
           </div>
         </div>
       </div>
@@ -573,30 +725,33 @@ export function EdgeOptimizerView({
         </div>
       </div>
 
-      {/* MODULE 3: MIX & MATCH CROSS-TAB OPTIMIZER MATRIX */}
+      {/* MODULE 3: MIX & MATCH CROSS-TAB OPTIMIZER MATRIX (SORTED NUMBERS + GROUPED PLAYBOOK RULES + OVERNIGHT + MACRO NEWS) */}
       <div className="rounded-xl border border-border/50 bg-card p-4 space-y-4">
         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/30 pb-3">
           <div>
             <h3 className="text-sm font-bold text-foreground flex items-center gap-2">
               <Layers className="h-4 w-4 text-muted-foreground" />
               <span>3. Mix &amp; Match Cross-Tab Matrix (Click any row to view trades)</span>
-              <HintIcon text="Cross-tabulate your selected Strategy against any Tag Category, Entry Timeframe, ICT Killzone, 7H Candle, Hold Duration, Sequential State (Post-Win/Loss), or Symbol × Direction." />
+              <HintIcon text="Organized by Playbook & Rule Group, sorted numbered Tag Categories (1. -> 9.), Hold Duration (up to >8h and >1d), Overnight Hold Cushion R, and Big 3 Macro News (CPI, NFP, FOMC & Bank Holidays)." />
             </h3>
             <p className="text-[11px] text-muted-foreground">
-              Slice your selected Strategy by Tag Category, ICT Killzone, 7H Candle, Hold Duration, Sequential State, or Symbol × Direction.
+              Inspect Grouped Playbook Rules, numbered Tag Categories, Hold Duration (&gt;8h / &gt;1d), Overnight Cushion R, or Macro News (CPI / NFP / FOMC / Holidays).
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-1.5">
             {[
-              { id: "all_categories", label: "All Tag Categories" },
+              { id: "playbook_rules", label: "Playbook Rules (Grouped)" },
+              { id: "macro", label: "Macro News (CPI / NFP / FOMC / Holidays)" },
+              { id: "overnight", label: "Overnight Holds & Cushion R" },
+              { id: "duration", label: "Hold Duration (<5m to >1d)" },
+              { id: "all_categories", label: "All Tag Categories (1–9)" },
               ...(data.tagCategories || []).map((c: any) => ({
                 id: `cat:${c.id}`,
                 label: c.name,
               })),
               { id: "killzone", label: "ICT Killzones" },
               { id: "candle7h", label: "7H Candles" },
-              { id: "duration", label: "Hold Duration" },
               { id: "sequential", label: "Post-Win / Post-Loss" },
               { id: "sym_dir", label: "Symbol × Direction" },
               { id: "dow", label: "Day of Week" },
@@ -621,188 +776,381 @@ export function EdgeOptimizerView({
           </div>
         </div>
 
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead className="border-b border-border/40 text-muted-foreground">
-              <tr>
-                <th className="py-2.5 pl-2">Factor / Bucket</th>
-                <th className="py-2.5 text-right">Setups (N)</th>
-                <th className="py-2.5 text-right">Win %</th>
-                <th className="py-2.5 text-right">Expectancy E[R]</th>
-                <th className="py-2.5 text-right">Total Net R</th>
-                <th className="py-2.5 text-right">Avg MFE / MAE</th>
-                <th className="py-2.5 text-right">R Capture</th>
-                <th className="py-2.5 text-right">Optimal Target R*</th>
-                <th className="py-2.5 pr-2 text-right">Net P&amp;L</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/20">
-              {dimensionRows.map((row: any, rIdx: number) => {
-                const m = row.metrics;
-                const bKey = `${row.key}-${rIdx}`;
-                const isExpanded = expandedBucketKey === bKey;
+        {/* OVERNIGHT HOLD & CUSHION R INSIGHT BANNER */}
+        {activeDimension === "overnight" && ovSummary && (
+          <div className="rounded-xl border border-indigo-500/30 bg-indigo-500/10 p-3.5 text-xs flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Moon className="h-4 w-4 text-indigo-400 shrink-0" />
+              <div>
+                <span className="font-bold text-foreground">
+                  Overnight Hold Cushion Threshold: +{ovSummary.recommendedCushionR}R
+                </span>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Winning overnight trades reached a median peak cushion of{" "}
+                  <strong className="text-emerald-400">
+                    +{ovSummary.medianWinnerPeakR ?? "—"}R
+                  </strong>{" "}
+                  (vs.{" "}
+                  <strong className="text-rose-400">
+                    +{ovSummary.medianLoserPeakR ?? "0.00"}R
+                  </strong>{" "}
+                  on overnight trades that reversed into losses). Holding overnight when near B/E or negative (&lt; +0.75R cushion) significantly increases stop-out risk.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
-                return (
-                  <React.Fragment key={bKey}>
-                    <tr
-                      onClick={() =>
-                        setExpandedBucketKey((prev) => (prev === bKey ? null : bKey))
-                      }
-                      className={`cursor-pointer transition-colors ${
-                        isExpanded ? "bg-secondary/40 font-semibold" : "hover:bg-secondary/20"
-                      }`}
-                    >
-                      <td className="py-2.5 pl-2 font-medium text-foreground">
-                        <div className="flex items-center gap-2">
-                          {isExpanded ? (
-                            <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
-                          ) : (
-                            <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
-                          )}
-                          {row.color && (
-                            <span
-                              className="h-2 w-2 rounded-full shrink-0"
-                              style={{ backgroundColor: row.color }}
-                            />
-                          )}
-                          <span>{row.label}</span>
-                          {row.categoryName && (
-                            <span className="text-[10px] text-muted-foreground">
-                              ({row.categoryName})
-                            </span>
-                          )}
-                        </div>
-                      </td>
-                      <td className="py-2.5 text-right font-mono text-foreground">
-                        {m.count}
-                      </td>
-                      <td className="py-2.5 text-right font-mono">
-                        {m.winRate}%
-                      </td>
-                      <td
-                        className={`py-2.5 text-right font-mono font-bold ${
-                          m.expectancyR > 0
-                            ? "text-emerald-400"
-                            : m.expectancyR < 0
-                            ? "text-rose-400"
-                            : "text-muted-foreground"
-                        }`}
-                      >
-                        {m.expectancyR > 0 ? `+${m.expectancyR}R` : `${m.expectancyR}R`}
-                      </td>
-                      <td
-                        className={`py-2.5 text-right font-mono font-semibold ${
-                          m.totalR > 0
-                            ? "text-emerald-400"
-                            : m.totalR < 0
-                            ? "text-rose-400"
-                            : "text-muted-foreground"
-                        }`}
-                      >
-                        {m.totalR > 0 ? `+${m.totalR}R` : `${m.totalR}R`}
-                      </td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">
-                        {m.avgWinnerMfeR !== null ? `+${m.avgWinnerMfeR}R` : "—"} /{" "}
-                        {m.avgWinnerMaeR !== null ? `-${m.avgWinnerMaeR}R` : "—"}
-                      </td>
-                      <td className="py-2.5 text-right font-mono text-muted-foreground">
-                        {m.avgCaptureEff !== null ? `${m.avgCaptureEff}%` : "—"}
-                      </td>
-                      <td className="py-2.5 text-right font-mono font-bold text-amber-400">
-                        {row.optimalTargetR ? `${row.optimalTargetR}R` : "—"}
-                      </td>
-                      <td
-                        className={`py-2.5 pr-2 text-right font-mono font-semibold ${
-                          m.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
-                        }`}
-                      >
-                        {fmtMoney(m.netPnl)}
-                      </td>
-                    </tr>
+        {/* MACRO NEWS (CPI, NFP, FOMC & BANK HOLIDAY) INSIGHT BANNER */}
+        {activeDimension === "macro" && (
+          <div className="rounded-xl border border-amber-500/30 bg-amber-500/10 p-3.5 text-xs flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5">
+              <Calendar className="h-4 w-4 text-amber-400 shrink-0" />
+              <div>
+                <span className="font-bold text-foreground">
+                  Big 3 Macro News (CPI, NFP, FOMC) &amp; US Bank Holiday Regime Tracker
+                </span>
+                <p className="text-[11px] text-muted-foreground mt-0.5">
+                  Compares your baseline non-event days against: (1) Pre-CPI &amp; Pre-FOMC days in the week vs. Post-release days, (2) 1 Day Before (T-1) CPI / NFP / FOMC / Holidays, (3) Release Day (T-0) post-news execution, and (4) NFP Week Mon–Wed vs. Thu–Fri.
+                </p>
+              </div>
+            </div>
+          </div>
+        )}
 
-                    {isExpanded && Array.isArray(row.trades) && (
-                      <tr>
-                        <td colSpan={9} className="bg-[#0d0f14]/90 p-3">
-                          <div className="rounded-lg border border-border/50 bg-card p-2.5 space-y-1.5">
-                            <div className="text-[11px] font-bold text-foreground">
-                              Setups matching &ldquo;{row.label}&rdquo; ({row.trades.length})
-                            </div>
-                            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                              {row.trades.map((t: any, i: number) => {
-                                const isM = Boolean(t.isMissed);
-                                const k = String(t.key ?? t.id ?? i);
-                                const link = isM
-                                  ? `/missed/${encodeURIComponent(k)}`
-                                  : `/trades/${encodeURIComponent(k)}`;
-                                const rVal =
-                                  typeof t.realizedR === "number" ? t.realizedR : null;
-                                return (
-                                  <div
-                                    key={`${k}-${i}`}
-                                    onClick={() => router.push(link)}
-                                    className="cursor-pointer rounded-lg border border-border/50 bg-secondary/20 hover:bg-secondary/50 p-2 flex items-center justify-between text-xs transition"
-                                  >
-                                    <div>
-                                      <div className="flex items-center gap-1.5">
-                                        <span
-                                          className={`rounded px-1 py-0.2 text-[9px] font-bold ${
-                                            isM
-                                              ? "bg-amber-500/20 text-amber-300"
-                                              : "bg-indigo-500/20 text-indigo-300"
-                                          }`}
-                                        >
-                                          {isM ? "MISSED" : "EXEC"}
-                                        </span>
-                                        <span className="font-mono font-bold text-foreground">
-                                          {t.symbol}
-                                        </span>
-                                        <span className="uppercase text-[10px] text-muted-foreground">
-                                          {t.direction}
-                                        </span>
-                                      </div>
-                                      <div className="text-[10px] text-muted-foreground font-mono mt-0.5">
-                                        {String(t.openedAt || "").slice(0, 10)}
-                                      </div>
-                                    </div>
-                                    <div className="text-right font-mono">
-                                      <div
-                                        className={`font-bold ${
-                                          Number(t.netPnl ?? 0) >= 0
-                                            ? "text-emerald-400"
-                                            : "text-rose-400"
-                                        }`}
-                                      >
-                                        {fmtMoney(Number(t.netPnl ?? 0))}
-                                      </div>
-                                      <div className="text-[10px] text-muted-foreground">
-                                        {rVal !== null
-                                          ? `${rVal > 0 ? "+" : ""}${rVal.toFixed(2)}R`
-                                          : ""}{" "}
-                                        <ExternalLink className="inline h-2.5 w-2.5" />
-                                      </div>
-                                    </div>
-                                  </div>
-                                );
-                              })}
-                            </div>
+        {/* VIEW A: GROUPED PLAYBOOK RULES (PLAYBOOK -> RULE GROUP -> NUMBERED RULES) */}
+        {activeDimension === "playbook_rules" ? (
+          <div className="space-y-4">
+            {(data.groupedPlaybookRules || []).map((pbGroup: any) => {
+              const isPbCollapsed = Boolean(collapsedPlaybooks[pbGroup.playbookId]);
+              return (
+                <div
+                  key={pbGroup.playbookId}
+                  className="rounded-xl border border-border/60 bg-secondary/10 overflow-hidden"
+                >
+                  {/* Playbook Group Header */}
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setCollapsedPlaybooks((prev) => ({
+                        ...prev,
+                        [pbGroup.playbookId]: !prev[pbGroup.playbookId],
+                      }))
+                    }
+                    className="flex w-full items-center justify-between bg-secondary/40 px-4 py-2.5 text-left text-xs font-bold text-foreground hover:bg-secondary/60 transition"
+                  >
+                    <div className="flex items-center gap-2">
+                      {isPbCollapsed ? (
+                        <ChevronRight className="h-4 w-4 text-muted-foreground" />
+                      ) : (
+                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
+                      )}
+                      <span>{pbGroup.playbookIcon}</span>
+                      <span>{pbGroup.playbookName}</span>
+                      <span className="rounded bg-background/80 px-2 py-0.5 text-[10px] font-mono text-muted-foreground">
+                        {pbGroup.totalPlaybookTrades} strategy setups
+                      </span>
+                    </div>
+                    <span className="text-[10px] text-muted-foreground">
+                      {isPbCollapsed ? "Expand Playbook" : "Collapse Playbook"}
+                    </span>
+                  </button>
+
+                  {!isPbCollapsed && (
+                    <div className="p-3 space-y-3">
+                      {(pbGroup.groups || []).map((rg: any, gIdx: number) => {
+                        const rgKey = `${pbGroup.playbookId}::${rg.groupId}`;
+                        const isRgCollapsed = Boolean(collapsedRuleGroups[rgKey]);
+                        const visibleRules = (rg.rules || []).filter(
+                          (r: any) => (r.metrics?.count ?? 0) >= minSampleSize
+                        );
+                        if (visibleRules.length === 0) return null;
+
+                        return (
+                          <div
+                            key={rgKey}
+                            className="rounded-lg border border-border/40 bg-background/50 overflow-hidden"
+                          >
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setCollapsedRuleGroups((prev) => ({
+                                  ...prev,
+                                  [rgKey]: !prev[rgKey],
+                                }))
+                              }
+                              className="flex w-full items-center justify-between bg-secondary/20 px-3 py-2 text-left text-[11px] font-bold uppercase tracking-wider text-muted-foreground hover:text-foreground transition"
+                            >
+                              <div className="flex items-center gap-1.5">
+                                {isRgCollapsed ? (
+                                  <ChevronRight className="h-3.5 w-3.5" />
+                                ) : (
+                                  <ChevronDown className="h-3.5 w-3.5" />
+                                )}
+                                <span>
+                                  {gIdx + 1}. {rg.groupName}
+                                </span>
+                              </div>
+                              <span className="text-[10px] font-normal lowercase">
+                                {visibleRules.length} rules
+                              </span>
+                            </button>
+
+                            {!isRgCollapsed && (
+                              <div className="overflow-x-auto">
+                                <table className="w-full text-left text-xs">
+                                  <thead className="border-b border-border/30 text-[11px] text-muted-foreground">
+                                    <tr>
+                                      <th className="py-2 pl-3">Rule</th>
+                                      <th className="py-2 text-right">Followed (N)</th>
+                                      <th className="py-2 text-right">Win %</th>
+                                      <th className="py-2 text-right">Expectancy E[R]</th>
+                                      <th className="py-2 text-right">Total Net R</th>
+                                      <th className="py-2 text-right">Avg MFE / MAE</th>
+                                      <th className="py-2 text-right">R Capture</th>
+                                      <th className="py-2 text-right">Optimal Target R*</th>
+                                      <th className="py-2 pr-3 text-right">Net P&amp;L</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-border/20">
+                                    {visibleRules.map((ruleRow: any, rIdx: number) => {
+                                      const m = ruleRow.metrics;
+                                      const bKey = `rule-${ruleRow.key}`;
+                                      const isExpanded = expandedBucketKey === bKey;
+                                      return (
+                                        <React.Fragment key={bKey}>
+                                          <tr
+                                            onClick={() =>
+                                              setExpandedBucketKey((prev) =>
+                                                prev === bKey ? null : bKey
+                                              )
+                                            }
+                                            className={`cursor-pointer transition-colors ${
+                                              isExpanded
+                                                ? "bg-secondary/40 font-semibold"
+                                                : "hover:bg-secondary/20"
+                                            }`}
+                                          >
+                                            <td className="py-2.5 pl-3 font-medium text-foreground">
+                                              <div className="flex items-center gap-2">
+                                                {isExpanded ? (
+                                                  <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                                ) : (
+                                                  <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                                                )}
+                                                <span className="font-mono text-[10px] text-muted-foreground">
+                                                  {gIdx + 1}.{rIdx + 1}
+                                                </span>
+                                                <span>{ruleRow.label}</span>
+                                              </div>
+                                            </td>
+                                            <td className="py-2.5 text-right font-mono text-foreground">
+                                              {m.count}{" "}
+                                              <span className="text-[10px] text-muted-foreground">
+                                                ({ruleRow.followRatePct}%)
+                                              </span>
+                                            </td>
+                                            <td className="py-2.5 text-right font-mono">
+                                              {m.winRate}%
+                                            </td>
+                                            <td
+                                              className={`py-2.5 text-right font-mono font-bold ${
+                                                m.expectancyR > 0
+                                                  ? "text-emerald-400"
+                                                  : m.expectancyR < 0
+                                                  ? "text-rose-400"
+                                                  : "text-muted-foreground"
+                                              }`}
+                                            >
+                                              {m.expectancyR > 0
+                                                ? `+${m.expectancyR}R`
+                                                : `${m.expectancyR}R`}
+                                            </td>
+                                            <td
+                                              className={`py-2.5 text-right font-mono font-semibold ${
+                                                m.totalR > 0
+                                                  ? "text-emerald-400"
+                                                  : m.totalR < 0
+                                                  ? "text-rose-400"
+                                                  : "text-muted-foreground"
+                                              }`}
+                                            >
+                                              {m.totalR > 0 ? `+${m.totalR}R` : `${m.totalR}R`}
+                                            </td>
+                                            <td className="py-2.5 text-right font-mono text-muted-foreground">
+                                              {m.avgWinnerMfeR !== null
+                                                ? `+${m.avgWinnerMfeR}R`
+                                                : "—"}{" "}
+                                              /{" "}
+                                              {m.avgWinnerMaeR !== null
+                                                ? `-${m.avgWinnerMaeR}R`
+                                                : "—"}
+                                            </td>
+                                            <td className="py-2.5 text-right font-mono text-muted-foreground">
+                                              {m.avgCaptureEff !== null
+                                                ? `${m.avgCaptureEff}%`
+                                                : "—"}
+                                            </td>
+                                            <td className="py-2.5 text-right font-mono font-bold text-amber-400">
+                                              {ruleRow.optimalTargetR
+                                                ? `${ruleRow.optimalTargetR}R`
+                                                : "—"}
+                                            </td>
+                                            <td
+                                              className={`py-2.5 pr-3 text-right font-mono font-semibold ${
+                                                m.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                                              }`}
+                                            >
+                                              {fmtMoney(m.netPnl)}
+                                            </td>
+                                          </tr>
+                                          {isExpanded && Array.isArray(ruleRow.trades) && (
+                                            <tr>
+                                              <td colSpan={9} className="bg-[#0d0f14]/90 p-3">
+                                                {renderTradesDrillDown(
+                                                  ruleRow.trades,
+                                                  ruleRow.label
+                                                )}
+                                              </td>
+                                            </tr>
+                                          )}
+                                        </React.Fragment>
+                                      );
+                                    })}
+                                  </tbody>
+                                </table>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          /* VIEW B: STANDARD CROSS-TAB TABLE FOR TAG CATEGORIES, MACRO NEWS, OVERNIGHT, DURATION, KILLZONES */
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="border-b border-border/40 text-muted-foreground">
+                <tr>
+                  <th className="py-2.5 pl-2">Factor / Bucket</th>
+                  <th className="py-2.5 text-right">Setups (N)</th>
+                  <th className="py-2.5 text-right">Win %</th>
+                  <th className="py-2.5 text-right">Expectancy E[R]</th>
+                  <th className="py-2.5 text-right">Total Net R</th>
+                  <th className="py-2.5 text-right">Avg MFE / MAE</th>
+                  <th className="py-2.5 text-right">R Capture</th>
+                  <th className="py-2.5 text-right">Optimal Target R*</th>
+                  <th className="py-2.5 pr-2 text-right">Net P&amp;L</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border/20">
+                {dimensionRows.map((row: any, rIdx: number) => {
+                  const m = row.metrics;
+                  const bKey = `${row.key}-${rIdx}`;
+                  const isExpanded = expandedBucketKey === bKey;
+
+                  return (
+                    <React.Fragment key={bKey}>
+                      <tr
+                        onClick={() =>
+                          setExpandedBucketKey((prev) => (prev === bKey ? null : bKey))
+                        }
+                        className={`cursor-pointer transition-colors ${
+                          isExpanded ? "bg-secondary/40 font-semibold" : "hover:bg-secondary/20"
+                        }`}
+                      >
+                        <td className="py-2.5 pl-2 font-medium text-foreground">
+                          <div className="flex items-center gap-2">
+                            {isExpanded ? (
+                              <ChevronDown className="h-3.5 w-3.5 text-muted-foreground" />
+                            ) : (
+                              <ChevronRight className="h-3.5 w-3.5 text-muted-foreground" />
+                            )}
+                            {row.color && (
+                              <span
+                                className="h-2 w-2 rounded-full shrink-0"
+                                style={{ backgroundColor: row.color }}
+                              />
+                            )}
+                            <span>{row.label}</span>
+                            {row.categoryName && (
+                              <span className="text-[10px] text-muted-foreground">
+                                ({row.categoryName})
+                              </span>
+                            )}
                           </div>
                         </td>
+                        <td className="py-2.5 text-right font-mono text-foreground">
+                          {m.count}
+                        </td>
+                        <td className="py-2.5 text-right font-mono">{m.winRate}%</td>
+                        <td
+                          className={`py-2.5 text-right font-mono font-bold ${
+                            m.expectancyR > 0
+                              ? "text-emerald-400"
+                              : m.expectancyR < 0
+                              ? "text-rose-400"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {m.expectancyR > 0 ? `+${m.expectancyR}R` : `${m.expectancyR}R`}
+                        </td>
+                        <td
+                          className={`py-2.5 text-right font-mono font-semibold ${
+                            m.totalR > 0
+                              ? "text-emerald-400"
+                              : m.totalR < 0
+                              ? "text-rose-400"
+                              : "text-muted-foreground"
+                          }`}
+                        >
+                          {m.totalR > 0 ? `+${m.totalR}R` : `${m.totalR}R`}
+                        </td>
+                        <td className="py-2.5 text-right font-mono text-muted-foreground">
+                          {m.avgWinnerMfeR !== null ? `+${m.avgWinnerMfeR}R` : "—"} /{" "}
+                          {m.avgWinnerMaeR !== null ? `-${m.avgWinnerMaeR}R` : "—"}
+                        </td>
+                        <td className="py-2.5 text-right font-mono text-muted-foreground">
+                          {m.avgCaptureEff !== null ? `${m.avgCaptureEff}%` : "—"}
+                        </td>
+                        <td className="py-2.5 text-right font-mono font-bold text-amber-400">
+                          {row.optimalTargetR ? `${row.optimalTargetR}R` : "—"}
+                        </td>
+                        <td
+                          className={`py-2.5 pr-2 text-right font-mono font-semibold ${
+                            m.netPnl >= 0 ? "text-emerald-400" : "text-rose-400"
+                          }`}
+                        >
+                          {fmtMoney(m.netPnl)}
+                        </td>
                       </tr>
-                    )}
-                  </React.Fragment>
-                );
-              })}
 
-              {dimensionRows.length === 0 && (
-                <tr>
-                  <td colSpan={9} className="py-8 text-center text-xs text-muted-foreground">
-                    No buckets in this dimension meet Min N = {minSampleSize}. Click &ldquo;1+&rdquo; in Min N above to view all buckets.
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
+                      {isExpanded && Array.isArray(row.trades) && (
+                        <tr>
+                          <td colSpan={9} className="bg-[#0d0f14]/90 p-3">
+                            {renderTradesDrillDown(row.trades, row.label)}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+
+                {dimensionRows.length === 0 && (
+                  <tr>
+                    <td colSpan={9} className="py-8 text-center text-xs text-muted-foreground">
+                      No buckets in this dimension meet Min N = {minSampleSize}. Click &ldquo;1+&rdquo; in Min N above to view all buckets.
+                    </td>
+                  </tr>
+                )}
+              </tbody>
+            </table>
+          </div>
+        )}
       </div>
 
       {/* MODULE 4: AUTOMATED EDGE AMPLIFIERS, DRAWDOWN LEAKS & HESITATION TAX */}
@@ -957,6 +1305,135 @@ export function EdgeOptimizerView({
             ))}
           </div>
         </div>
+      </div>
+
+      {/* MODULE 5: SAVED OPTIMIZER AI AUDIT REPORTS & INTERACTIVE FOLLOW-UP Q&A ON THIS PAGE */}
+      <div className="rounded-xl border border-indigo-500/40 bg-[#12141f] p-5 space-y-4 shadow-lg">
+        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-border/40 pb-3">
+          <div className="flex items-center gap-2">
+            <Sparkles className="h-4 w-4 text-indigo-400" />
+            <h3 className="text-sm font-bold text-foreground">
+              5. AI Pattern &amp; Edge Audit Report + Interactive Q&amp;A
+            </h3>
+            <HintIcon text="View your AI-generated Edge & R Optimizer reports right on this page and ask follow-up questions. All reports and Q&A threads are synced with Notebook → AI Notebook → Optimizer Reports." />
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {savedOptimizerReports.length > 0 && (
+              <select
+                value={activeSavedReport?.id || ""}
+                onChange={(e) => setSelectedReportId(e.target.value)}
+                className="h-8 rounded-lg border border-border/70 bg-[#0d0f14] px-2.5 text-xs text-foreground outline-none"
+              >
+                {savedOptimizerReports.map((rep) => (
+                  <option key={rep.id} value={rep.id}>
+                    {rep.title} ({rep.modelUsed})
+                  </option>
+                ))}
+              </select>
+            )}
+
+            <Link
+              href="/notebook?tab=ai&folder=optimizer"
+              className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/15 hover:bg-emerald-500/25 px-2.5 py-1 text-xs font-semibold text-emerald-300 transition"
+            >
+              <BookOpen className="h-3.5 w-3.5" />
+              <span>Open in AI Notebook ↗</span>
+            </Link>
+
+            {activeSavedReport && (
+              <button
+                type="button"
+                onClick={() => setShowReportPanel((v) => !v)}
+                className="rounded border border-border/60 bg-background/60 px-2 py-1 text-[11px] text-muted-foreground hover:text-foreground"
+              >
+                {showReportPanel ? "Collapse" : "Expand"}
+              </button>
+            )}
+          </div>
+        </div>
+
+        {!activeSavedReport ? (
+          <div className="py-8 text-center text-xs text-muted-foreground space-y-2">
+            <p>
+              No Optimizer AI Audit generated yet. Click{" "}
+              <strong className="text-foreground">Run AI Pattern &amp; Edge Audit</strong> at the top of the page to synthesize all tables above into an actionable report.
+            </p>
+          </div>
+        ) : (
+          showReportPanel && (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-border/50 bg-[#0d0f14] p-4 whitespace-pre-wrap text-xs leading-relaxed text-foreground/95 max-h-[540px] overflow-y-auto">
+                {activeSavedReport.summaryMd}
+              </div>
+
+              {/* Embedded Report Q&A Thread */}
+              <div className="rounded-xl border border-emerald-500/30 bg-[#0d0f14] p-4 space-y-3">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2 text-xs font-bold text-foreground">
+                    <MessageSquare className="h-4 w-4 text-emerald-400" />
+                    <span>
+                      Ask Follow-up Questions About This Optimizer Report ({activeReportComments.length})
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => void fetchAiCoachStatusAndReports()}
+                    className="inline-flex items-center gap-1 text-[11px] text-muted-foreground hover:text-foreground"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    <span>Refresh Replies</span>
+                  </button>
+                </div>
+
+                {activeReportComments.length > 0 && (
+                  <div className="max-h-72 overflow-y-auto space-y-2.5 pr-1">
+                    {activeReportComments.map((m: any) => (
+                      <div
+                        key={m.id}
+                        className={`rounded-xl p-3 text-xs whitespace-pre-wrap ${
+                          m.role === "user"
+                            ? "bg-indigo-600/20 border border-indigo-500/30 text-foreground ml-6"
+                            : "bg-[#141722] border border-border/60 text-foreground mr-2"
+                        }`}
+                      >
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-muted-foreground mb-1">
+                          {m.role === "user" ? "You" : "AI Quant Analyst"}
+                        </div>
+                        {m.text}
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={qaInput}
+                    onChange={(e) => setQaInput(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" && qaInput.trim()) {
+                        e.preventDefault();
+                        void handleAskReportQuestion();
+                      }
+                    }}
+                    placeholder={`Ask about "${activeSavedReport.title}" (e.g., "Which partial plan works best during London Killzone?" or "Why is my NFP week winrate lower?")...`}
+                    className="h-8 flex-1 rounded-lg border border-border/70 bg-[#141722] px-3 text-xs text-foreground outline-none focus:border-emerald-500"
+                  />
+                  <Button
+                    size="sm"
+                    disabled={!qaInput.trim() || qaSending}
+                    onClick={() => void handleAskReportQuestion()}
+                    className="h-8 text-xs gap-1.5"
+                  >
+                    <Send className="h-3.5 w-3.5" />
+                    <span>Ask AI</span>
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )
+        )}
       </div>
     </div>
   );

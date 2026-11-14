@@ -1,3 +1,4 @@
+import { classifyTradeMacroEvents, classifyOvernightAndSessionHold } from "@/lib/macro-events";
 import { readFilters } from "@luxalgo/journal-core";
 import { db, playbooks as playbooksTable, tradeRuleChecks } from "@/db";
 import { ensurePlaybookTables, getMetaRow, normalizeRuleGroups } from "@/server/playbooks-store";
@@ -16,7 +17,9 @@ const DURATION_BUCKETS = [
   { key: "30-60m", label: "30m – 1h", min: 30 * 60_000, max: 60 * 60_000 },
   { key: "1-2h", label: "1h – 2h", min: 60 * 60_000, max: 120 * 60_000 },
   { key: "2-4h", label: "2h – 4h", min: 120 * 60_000, max: 240 * 60_000 },
-  { key: "4h+", label: "4h+ (Intraday Swing)", min: 240 * 60_000, max: Infinity },
+  { key: "4-8h", label: "4h – 8h (Session Swing)", min: 240 * 60_000, max: 480 * 60_000 },
+  { key: "8-24h", label: "8h – 24h (> 8 Hours)", min: 480 * 60_000, max: 1440 * 60_000 },
+  { key: "24h+", label: "24h+ (> 1 Day Multi-Session)", min: 1440 * 60_000, max: Infinity },
 ];
 
 function percentile(sorted: number[], p: number): number | null {
@@ -532,9 +535,14 @@ export const GET = handler(async (request: Request) => {
     ];
   }
 
+  // Sort Tag Categories naturally by number/name (1., 2., 3., ...)
+  const sortedTagCategories = [...tagCategoriesList].sort((a, b) =>
+    a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" })
+  );
+
   // Build Mix & Match Cross-Tab Dimensions
   const byCategory: Record<string, any[]> = {};
-  for (const cat of tagCategoriesList) {
+  for (const cat of sortedTagCategories) {
     const catTags = managedTagsList.filter((mt) => mt.categoryId === cat.id);
     byCategory[cat.id] = catTags
       .map((mt) => {
@@ -792,22 +800,165 @@ export const GET = handler(async (request: Request) => {
     .filter(Boolean)
     .sort((a: any, b: any) => b.missedTotalR - a.missedTotalR);
 
+  // Build Grouped Playbook Rules (Playbook -> Rule Group -> Rules sorted naturally)
+  const groupedPlaybookRules = allPlaybooks
+    .filter((pb) => selectedStrategyId === "all" || pb.id === selectedStrategyId)
+    .map((pb) => {
+      const meta = getMetaRow(pb.id);
+      const icon = meta?.icon ?? "🚀";
+      const pbTrades = filteredPool.filter(
+        (t: any) => (t.playbookId ?? t.annotations?.playbook) === pb.id
+      );
+      const ruleGroups = normalizeRuleGroups(meta?.rule_groups_json, pb.rulesJson);
+
+      const groups = ruleGroups.map((grp, gIdx) => {
+        const sortedRules = [...grp.rules].sort((a, b) =>
+          a.text.localeCompare(b.text, undefined, { numeric: true, sensitivity: "base" })
+        );
+        const ruleRows = sortedRules.map((r) => {
+          const rk = `${pb.id}::${r.text.trim()}`;
+          const matched = pbTrades.filter((t: any) => {
+            const tk = String(t.key ?? t.id ?? "");
+            return Boolean(ruleMapByTrade.get(tk)?.has(rk));
+          });
+          const m = computeQuantBucketMetrics(matched);
+          const opt = computeMfeTargetCurve(matched).bestTrailing;
+          return {
+            key: rk,
+            label: r.text.trim(),
+            frequency: r.frequency ?? "Always",
+            followRatePct:
+              pbTrades.length > 0
+                ? Number(((matched.length / pbTrades.length) * 100).toFixed(1))
+                : 0,
+            metrics: m,
+            optimalTargetR: opt?.targetR ?? null,
+            trades: matched,
+          };
+        });
+        return {
+          groupId: grp.id || `grp-${gIdx}`,
+          groupName: grp.name,
+          rules: ruleRows,
+        };
+      });
+
+      return {
+        playbookId: pb.id,
+        playbookName: pb.name,
+        playbookIcon: icon,
+        totalPlaybookTrades: pbTrades.length,
+        groups,
+      };
+    });
+
+  // Build Overnight Hold & Cushion R Analysis
+  const overnightBucketsMap = new Map<string, any[]>();
+  const overnightWinCushions: number[] = [];
+  const overnightLossCushions: number[] = [];
+
+  for (const t of filteredPool) {
+    const ov = classifyOvernightAndSessionHold(t);
+    overnightBucketsMap.set(ov.overnightBucket, [
+      ...(overnightBucketsMap.get(ov.overnightBucket) ?? []),
+      t,
+    ]);
+    if (ov.isOvernight && ov.cushionBucket) {
+      overnightBucketsMap.set(ov.cushionBucket, [
+        ...(overnightBucketsMap.get(ov.cushionBucket) ?? []),
+        t,
+      ]);
+      const effR = getEffectiveR(t);
+      if (effR > 0.05) overnightWinCushions.push(ov.peakOrCushionR);
+      else if (effR < -0.05) overnightLossCushions.push(ov.peakOrCushionR);
+    }
+  }
+
+  const sortedWinCushions = [...overnightWinCushions].sort((a, b) => a - b);
+  const sortedLossCushions = [...overnightLossCushions].sort((a, b) => a - b);
+  const recommendedOvernightCushionR =
+    sortedWinCushions.length > 0
+      ? percentile(sortedWinCushions, 25) ?? 1.0
+      : 1.0;
+
+  const byOvernight = Array.from(overnightBucketsMap.entries()).map(([label, list]) => ({
+    key: label,
+    label,
+    metrics: computeQuantBucketMetrics(list),
+    optimalTargetR: computeMfeTargetCurve(list).bestTrailing?.targetR ?? null,
+    trades: list,
+  }));
+
+  const overnightSummary = {
+    recommendedCushionR: recommendedOvernightCushionR,
+    medianWinnerPeakR: percentile(sortedWinCushions, 50),
+    medianLoserPeakR: percentile(sortedLossCushions, 50),
+    overnightCount: overnightWinCushions.length + overnightLossCushions.length,
+  };
+
+  // Build Macro News (CPI, NFP, FOMC) & US Bank Holiday Buckets
+  const macroBucketsMap = new Map<string, any[]>();
+  const MACRO_ORDER = [
+    "Baseline: Normal Non-Event Trading Day",
+    "CPI Week: Pre-CPI Days (Ahead of Release)",
+    "T-1 Pre-News: 1 Day Before CPI",
+    "T-0 Release Day: CPI Day (Post-Release)",
+    "CPI Week: Post-CPI Days (After Release)",
+    "FOMC Week: Pre-FOMC Days (Mon–Tue Ahead of Fed)",
+    "T-1 Pre-News: 1 Day Before FOMC",
+    "T-0 Release Day: FOMC Statement Day",
+    "FOMC Week: Post-FOMC Days (Thu–Fri After Fed)",
+    "NFP Week: Monday – Wednesday (Early Week)",
+    "T-1 Pre-News: 1 Day Before NFP (Thursday)",
+    "T-0 Release Day: NFP Friday (Post-Release)",
+    "NFP Week: Thursday – Friday (Late Week)",
+    "T-1 Pre-Holiday: 1 Day Before US Bank Holiday",
+    "T-0 Holiday: US Bank Holiday Session",
+    "Holiday Week: Pre-Holiday Days in Week",
+    "Holiday Week: Post-Holiday Days in Week",
+  ];
+
+  for (const label of MACRO_ORDER) {
+    macroBucketsMap.set(label, []);
+  }
+
+  for (const t of filteredPool) {
+    const mc = classifyTradeMacroEvents(t.openedAt);
+    for (const bLabel of mc.buckets) {
+      macroBucketsMap.set(bLabel, [...(macroBucketsMap.get(bLabel) ?? []), t]);
+    }
+  }
+
+  const byMacroEvent = Array.from(macroBucketsMap.entries())
+    .map(([label, list]) => ({
+      key: label,
+      label,
+      metrics: computeQuantBucketMetrics(list),
+      optimalTargetR: computeMfeTargetCurve(list).bestTrailing?.targetR ?? null,
+      trades: list,
+    }))
+    .filter((r) => r.metrics.count > 0);
+
   return ok({
     playbooks: allPlaybooks.map((p) => ({
       id: p.id,
       name: p.name,
       icon: getMetaRow(p.id)?.icon ?? "🚀",
     })),
-    tagCategories: tagCategoriesList,
+    tagCategories: sortedTagCategories,
     baseline,
     mfeCurve,
     partialGrid,
     maeSimulator,
+    overnightSummary,
+    groupedPlaybookRules,
     dimensions: {
       byCategory,
       byKillzone: formatMapBuckets(kzBuckets),
       by7hCandle: formatMapBuckets(candle7hBuckets),
       byDuration,
+      byOvernight,
+      byMacroEvent,
       bySequentialState,
       bySymbolDirection: formatMapBuckets(symDirBuckets),
       byDayOfWeek: formatMapBuckets(dowBuckets),

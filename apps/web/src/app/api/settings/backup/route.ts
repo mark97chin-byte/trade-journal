@@ -21,13 +21,23 @@ const BACKUP_TABLES = [
   "journal_entries",
   "journal_days",
   "settings",
+  "journal_kv_settings",
   "playbooks",
+  "playbook_meta",
+  "playbook_notes",
   "trade_rule_checks",
+  "tag_categories",
+  "tag_definitions",
   "folders",
   "notes",
   "note_templates",
+  "ai_coach_reports",
+  "ai_chat_sessions",
+  "ai_chat_messages",
+  "trader_goals",
   "progress_rules",
   "progress_checks",
+  "routine_checks",
   "missed_trades",
   "trade_excursions",
   "market_csv_datasets",
@@ -130,6 +140,17 @@ export async function POST(req: NextRequest) {
     const dbPath = resolveDbPath();
     const db = new Database(dbPath);
     ensureJournalSchema(db);
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS journal_kv_settings (key TEXT PRIMARY KEY, value_json TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS playbook_meta (playbook_id TEXT PRIMARY KEY, icon TEXT NOT NULL DEFAULT '🚀', color TEXT NOT NULL DEFAULT '#6366f1', photo_url TEXT NOT NULL DEFAULT '', tags_json TEXT NOT NULL DEFAULT '[]', rule_groups_json TEXT NOT NULL DEFAULT '[]', archived INTEGER NOT NULL DEFAULT 0);
+      CREATE TABLE IF NOT EXISTS playbook_notes (id TEXT PRIMARY KEY, playbook_id TEXT NOT NULL, title TEXT NOT NULL DEFAULT 'Untitled', content TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS tag_categories (id TEXT PRIMARY KEY, name TEXT NOT NULL, color TEXT NOT NULL, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS tag_definitions (id TEXT PRIMARY KEY, name TEXT NOT NULL, category_id TEXT, description TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ai_coach_reports (id TEXT PRIMARY KEY, horizon TEXT NOT NULL, period_key TEXT NOT NULL, title TEXT NOT NULL, summary_md TEXT NOT NULL, reasoning_trace TEXT, telemetry_json TEXT, suggested_goals_json TEXT, accountability_json TEXT, action_items_json TEXT DEFAULT '[]', reflection_questions_json TEXT DEFAULT '[]', model_used TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ai_chat_sessions (id TEXT PRIMARY KEY, title TEXT NOT NULL, report_id TEXT DEFAULT '', created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ai_chat_messages (id TEXT PRIMARY KEY, session_id TEXT NOT NULL, role TEXT NOT NULL, content TEXT NOT NULL, reasoning TEXT, model_used TEXT, created_at TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS trader_goals (id TEXT PRIMARY KEY, horizon TEXT NOT NULL, period_label TEXT NOT NULL, title TEXT NOT NULL, why_it_matters TEXT, target_metric TEXT, status TEXT NOT NULL, progress_pct INTEGER DEFAULT 0, steps_json TEXT DEFAULT '[]', ai_accountability_note TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+    `);
 
     let restoredRows = 0;
 

@@ -319,6 +319,10 @@ export async function POST(req: NextRequest) {
         if (hasAttachments) {
           tarCmd += ` -C "${dataDir}" attachments`;
         }
+        const candleDbFile = path.join(dataDir, "market_candles.db");
+        if (config.includeCandlesDb && fs.existsSync(candleDbFile)) {
+          tarCmd += ` -C "${dataDir}" market_candles.db`;
+        }
 
         const tarRes = await execShell(tarCmd);
         if (tarRes.code !== 0 || !fs.existsSync(fullPath)) {
