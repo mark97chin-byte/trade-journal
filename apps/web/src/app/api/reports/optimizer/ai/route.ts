@@ -235,30 +235,12 @@ function saveOptimizerReportToNotebooks(params: {
       nowIso
     );
 
+    // Clean up any legacy optimizer report copies from manual scratchpad `notes` & `folders`
     try {
       db.prepare(
-        `INSERT OR IGNORE INTO folders (id, name, kind, created_at) VALUES ('optimizer-reports', 'Optimizer Reports', 'system', ?)`
-      ).run(nowIso);
-    } catch {
-      try {
-        db.prepare(
-          `INSERT OR IGNORE INTO folders (id, name, kind) VALUES ('optimizer-reports', 'Optimizer Reports', 'system')`
-        ).run();
-      } catch {}
-    }
-
-    const htmlBody = params.markdown
-      .replace(/^### (.*)$/gm, "<h3>$1</h3>")
-      .replace(/^## (.*)$/gm, "<h2>$1</h2>")
-      .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-      .replace(/^- (.*)$/gm, "<p>• $1</p>")
-      .replace(/\n\n/g, "<br/>");
-
-    try {
-      db.prepare(
-        `INSERT INTO notes (id, folder_id, title, content, created_at, updated_at)
-         VALUES (?, 'optimizer-reports', ?, ?, ?, ?)`
-      ).run(noteId, params.title, htmlBody, nowIso, nowIso);
+        `DELETE FROM notes WHERE id LIKE 'note_opt_%' OR folder_id = 'optimizer-reports' OR title LIKE 'Edge & R Optimizer Audit%'`
+      ).run();
+      db.prepare(`DELETE FROM folders WHERE id = 'optimizer-reports'`).run();
     } catch {}
   } finally {
     db.close();

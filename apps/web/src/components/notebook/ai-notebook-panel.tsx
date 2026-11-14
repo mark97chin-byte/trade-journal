@@ -512,7 +512,8 @@ export function AiNotebookPanel() {
                     {activeReport.summaryMd}
                   </div>
 
-                  {activeReport.reflectionQuestions &&
+                  {activeReport.horizon !== "optimizer" &&
+                    activeReport.reflectionQuestions &&
                     activeReport.reflectionQuestions.length > 0 && (
                       <SocraticReflectionManager
                         reportId={activeReport.id}

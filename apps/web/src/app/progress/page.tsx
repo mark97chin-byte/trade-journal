@@ -2372,12 +2372,14 @@ function Progress() {
                       <InteractiveCoachMarkdown value={activeReport.summaryMd} onInspectLink={handleInspectLink} />
                     </div>
 
-                    {/* SOCRATIC ALIGNMENT & CONTRADICTION PROBES + UNIVERSAL APPEND MANAGER */}
-                    <SocraticReflectionManager
-                      reportId={activeReport.id}
-                      initialQuestions={activeReport.reflectionQuestions || []}
-                      onUpdated={() => void fetchCoachData()}
-                    />
+                    {/* SOCRATIC ALIGNMENT & CONTRADICTION PROBES (Only for Behavioral Audits, not Optimizer Reports) */}
+                    {activeReport.horizon !== "optimizer" && (
+                      <SocraticReflectionManager
+                        reportId={activeReport.id}
+                        initialQuestions={activeReport.reflectionQuestions || []}
+                        onUpdated={() => void fetchCoachData()}
+                      />
+                    )}
 
                     {/* AI RECOMMENDED MULTI-LEVEL GOALS (WITH PRE-BUILT MULTI-STEP CHECKLISTS) */}
                     {Array.isArray(activeReport.suggestedGoals) &&

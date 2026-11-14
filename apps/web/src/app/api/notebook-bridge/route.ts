@@ -47,6 +47,20 @@ function getDb() {
     db.prepare("ALTER TABLE trades ADD COLUMN review_notes TEXT DEFAULT ''").run();
   } catch {}
 
+  // Remove any AI Optimizer or Audit reports that were placed in the manual `notes` table
+  try {
+    db.prepare(
+      `DELETE FROM notes
+       WHERE id LIKE 'note_opt_%'
+          OR folder_id = 'optimizer-reports'
+          OR title LIKE 'Edge & R Optimizer Audit%'
+          OR title LIKE 'End-of-Week Audit%'
+          OR title LIKE 'End-of-Month Audit%'
+          OR title LIKE 'End-of-Quarter Audit%'`
+    ).run();
+    db.prepare(`DELETE FROM folders WHERE id = 'optimizer-reports'`).run();
+  } catch {}
+
   // Auto-delete archived notes older than 14 days (2 weeks)
   try {
     db.prepare(
@@ -159,7 +173,14 @@ export async function GET(req: NextRequest) {
           score,
         };
       })
-      .filter((n) => (refDate ? n.sameDay || n.symbolMatch : true))
+      .filter((n) => {
+        const isExplicitDraft = (n.title || "").toLowerCase().includes("trade draft") || (n.title || "").toLowerCase().includes("scratchpad");
+        if (refDate) {
+          // Only prompt to move a note into a trade if it was taken on the same day or is an explicit [Trade Draft] for this symbol
+          return n.sameDay || (isExplicitDraft && n.symbolMatch);
+        }
+        return true;
+      })
       .sort((a, b) => b.score - a.score || b.updatedAt.localeCompare(a.updatedAt));
 
     // Also find all trades on that same date so multi-entry matching knows if multiple trades occurred
